@@ -1,0 +1,3 @@
+[submodule "depthcharge-ipq4019"]
+	path = depthcharge-ipq4019
+	url = https://github.com/mithro/depthcharge-ipq4019.git

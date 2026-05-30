@@ -1,0 +1,17 @@
+# Large binaries / firmware are not committed here — see README "Firmware images".
+*.bin
+*.zip
+*.img
+*.itb
+*.dtb
+
+# Per-device identity / secrets must NEVER be committed to this public repo.
+photos/
+*spi-stock*
+*sheets_token*.json
+*-token.json
+
+# Python / OS cruft and scratch.
+__pycache__/
+*.pyc
+tmp/
