@@ -7,7 +7,7 @@
 
 # Per-device identity / secrets must NEVER be committed to this public repo.
 photos/
-*spi-stock*
+*spi-stock-*.bin
 *sheets_token*.json
 *-token.json
 
@@ -15,3 +15,9 @@ photos/
 __pycache__/
 *.pyc
 tmp/
+
+# Exception (must come last to override the broader excludes above): the
+# dev-unit gale's stock SPI backup is committed as a recovery reference.
+# Its VPD (serial / mlb_serial / MAC / region) is for this single dev unit
+# only; other pucks' stock dumps are still considered private.
+!gale-spi-stock-2026-05-28.bin
