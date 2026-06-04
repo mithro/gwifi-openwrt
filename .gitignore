@@ -21,3 +21,11 @@ tmp/
 # Its VPD (serial / mlb_serial / MAC / region) is for this single dev unit
 # only; other pucks' stock dumps are still considered private.
 !gale-spi-stock-2026-05-28.bin
+
+# Exception: this dev unit's EC (STM32F072CB) firmware dumps, read read-only
+# over the EC debug console ('md'). Unlike the SPI image these carry NO
+# per-device identity (the EC code is the same factory image on every gale
+# unit; the option bytes are config only), so they are safe to publish here.
+!gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin
+!gale-ec-systemmem-bootloader-2026-06-04.bin
+!gale-ec-optionbytes-2026-06-04.bin
