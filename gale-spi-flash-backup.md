@@ -46,6 +46,5 @@ Two read caveats, both handled/documented under `tools/`:
 To write a region back (or reflash), use
 [`tools/raiden_write_region.py`](tools/raiden_write_region.py) — stock
 `flashrom -E/-w` does **not** work on this unit (it trips on the flash's `SRP1`
-status-register lock and its erase silently no-ops). For a clean full reflash that
-bypasses the EC entirely, a **CH341A + SOIC-8 clip** on the W25Q64 is the most robust
-option. Details and safety rails are in [`tools/README.md`](tools/README.md).
+status-register lock and its erase silently no-ops). Details and safety rails are in
+[`tools/README.md`](tools/README.md).

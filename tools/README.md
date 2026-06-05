@@ -69,9 +69,7 @@ python3 raiden_write_region.py gale-backup.bin 0x700000:0x100000 --commit
 `flashrom -p raiden_debug_spi … -E/-w` fails on this unit: it logs *"Failed to unlock
 flash status reg with wp support"* (the `SRP1` lock) and its erase silently no-ops (it
 also verifies at the `0x0` blind spot → a false `ERASE_FAILED`). `flashrom -r` works
-only if each read stays `< 84 KiB`. For a clean full reflash that bypasses the EC
-entirely, a **CH341A + SOIC-8 clip** on the W25Q64 is the most robust option (its own
-Vcc + bus master — no cliff, no blind spot, but you must hold the AP off).
+only if each read stays `< 84 KiB`.
 
 ## Configuration (environment variables)
 - `GALE_FLASHROM` — path to a `raiden_debug_spi`-capable flashrom (used by `chunk_read.py`).
@@ -89,5 +87,5 @@ The defaults point at the original test rig; override them for your setup.
 
 ## Safety
 - `raiden_write_region.py` is **dry-run by default**; pass `--commit` to write.
-- RO / bootblock writes are gated behind `--allow-ro` (bricking risk — prefer CH341A).
+- RO / bootblock writes are gated behind `--allow-ro` (bricking risk).
 - **Back up first** (`chunk_read.py all`); the writer verifies every chunk after writing.
