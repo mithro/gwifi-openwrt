@@ -344,7 +344,7 @@ static void print_cc_current(int cc_mv)
 		ccprintf("(%dmA)", 3000);	/* TYPEC_CC_VOLT_SNK_3_0 */
 	else if (cc_mv >= 660)
 		ccprintf("(%dmA)", 1500);	/* TYPEC_CC_VOLT_SNK_1_5 */
-	else if (cc_mv >= 200)
+	else if (cc_mv >= 250)
 		ccprintf("(%dmA)", 900);	/* TYPEC_CC_VOLT_SNK_DEF */
 }
 

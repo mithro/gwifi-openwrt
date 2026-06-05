@@ -40,10 +40,20 @@ register/scheduling/address differences are expected and immaterial).
 2. All 4 fixed, each re-verified **instruction-for-instruction** against the original.
 3. [`EQUIVALENCE-REVIEW-2.md`](EQUIVALENCE-REVIEW-2.md) — re-certification: verdict **FUNCTIONALLY EQUIVALENT**; all 4 *FIXED-MATCHES*, no regressions.
 
-## Documented immaterial deltas (do NOT affect on-device behavior)
-- `console_channel` enum: `CC_USBPD` index 26 (rebuild) vs 23 (dump) — only labels which debug channel a print appears on.
-- `command_cc` current-display lower bound 200 vs 250 mV — console readout only.
-- Version banner/timestamp; instruction scheduling/addresses/struct offsets; the ~20 B size delta.
+## Residual deltas (all non-functional — the certification stands)
+- **`console_channel` enum** — `CC_USBPD` is index **23 in the dump but 26 in a rebuild**.
+  *Root cause (identified):* the public `firmware-gale-8281.B` `include/console_channel.inc`
+  defines three channels — `lpc`, `pwm`, `switch` — **unconditionally**, but the dump's
+  live `chan` list (26 channels) does not contain them, so the *shipped* gale firmware was
+  built from a console-channel list three entries shorter. That difference is in **common
+  code (`include/`), not `board/gale`**, and is unreachable without editing the public tree.
+  It only changes which debug-channel *label* a console print carries — no device behavior.
+- **`command_cc`** — the original read the PD task's private `pd[].cc_status` *level*
+  (`TYPEC_CC_VOLT_SNK_DEF/1_5/3_0`); that state isn't reachable from `board/gale`, so the
+  reconstruction re-derives the advertised current from the sampled CC voltage. The threshold
+  boundary now **matches the original** (`>= 250` mV for `SNK_DEF`). Console readout only.
+- Version banner/timestamp; instruction scheduling / addresses / struct offsets; ~size delta
+  (different-era toolchain — byte-exactness was never the goal).
 
 ## Toolchain
 `gcc-arm-none-eabi 5.4.1` (2016q3). The EC tree pins only the `arm-none-eabi`
