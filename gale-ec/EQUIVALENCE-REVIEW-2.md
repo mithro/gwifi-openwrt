@@ -7,9 +7,9 @@ MATERIAL USB-PD divergences; those were patched. This review independently disas
 BOTH the original dump and the rebuilt-with-symbols ELF to (A) verify each of the 4 is now
 semantically equivalent, (B) confirm no new divergence/regression in surrounding PD code.
 
-- Ground truth dump: `/home/tim/local/gwifi/tmp/work/gale-RW.bin` (load 0x08010000), no symbols.
-- Rebuilt (symbols):  `/home/tim/local/gwifi/tmp/ec/build/gale/RW/ec.RW.elf` (rebuilt 2026-06-05 15:38, newer than first review's artifacts — patches are in).
-- Source:            `/home/tim/local/gwifi/tmp/ec/board/gale/` (usb_pd_config.h 15:37, usb_pd_policy.c 15:38, board.c 15:38 — all post-patch).
+- Ground truth dump: `/home/tim/local/gwifi/ec-rebuild/work/gale-RW.bin` (load 0x08010000), no symbols.
+- Rebuilt (symbols):  `/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RW/ec.RW.elf` (rebuilt 2026-06-05 15:38, newer than first review's artifacts — patches are in).
+- Source:            `/home/tim/local/gwifi/ec-rebuild/ec/board/gale/` (usb_pd_config.h 15:37, usb_pd_policy.c 15:38, board.c 15:38 — all post-patch).
 - Toolchains differ → instruction scheduling / registers / addresses / ~size-delta are NOT divergences. Judging SEMANTIC equivalence only.
 
 Method: hand-disassembled each function in BOTH images with the gcc-5.4 objdump

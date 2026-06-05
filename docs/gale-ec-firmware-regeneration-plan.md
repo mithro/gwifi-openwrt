@@ -45,7 +45,7 @@ gale-ec/
 
 **Files:** `gale-ec/README.md` (create, env notes); `$EC` checkout (external).
 
-- [ ] **Step 1:** Full-checkout the EC tree (the local `tmp/ec-gale` is blobless). Run:
+- [ ] **Step 1:** Full-checkout the EC tree (the local `ec-rebuild/ec-gale` is blobless). Run:
   `git clone --branch firmware-gale-8281.B --single-branch https://chromium.googlesource.com/chromiumos/platform/ec "$EC"`
   Expected: `$EC/common`, `$EC/chip/stm32`, `$EC/core/cortex-m0`, `$EC/board/servo_micro` exist; `$EC/board/gale` is **empty/absent**.
 - [ ] **Step 2:** Identify the toolchain. Run: `sed -n '1,40p' "$EC/Makefile.toolchain"` and `arm-none-eabi-gcc --version`. Record the available version in `gale-ec/README.md` (exact-version match is **not** required per the spec).

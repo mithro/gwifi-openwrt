@@ -2,16 +2,16 @@
 
 Read-only sizing spike. No source trees were modified.
 
-- **Source (port FROM):** `/home/tim/local/gwifi/tmp/ec` @ `firmware-gale-8281.B`
+- **Source (port FROM):** `/home/tim/local/gwifi/ec-rebuild/ec` @ `firmware-gale-8281.B`
   (HEAD `7c97ab0 "Clear OWNERS for factory/firmware branch"`), board
   `board/gale/` — STM32F072CB, Cortex‑M0, 128 KB flash / 16 KB RAM, 1 USB‑PD
   sink port (TCPMv1 + bit‑banged STM32F0 PHY), raiden `usb_spi` bridge to the
   AP's W25Q64, USART‑over‑USB consoles, AP power sequencing, 4 tasks.
-- **Target (port TO):** `/home/tim/local/gwifi/tmp/ec-main` @ `main`
+- **Target (port TO):** `/home/tim/local/gwifi/ec-rebuild/ec-main` @ `main`
   (HEAD `37850ff`, dated **2026‑06‑04**; shallow `--depth 1` clone, so deep git
   history / deletion commits are not visible).
 - **Toolchains available:** system `arm-none-eabi-gcc` 14.2; 2016q3 gcc 5.4 at
-  `/home/tim/local/gwifi/tmp/gcc-arm-none-eabi-5_4-2016q3`.
+  `/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3`.
 
 ---
 

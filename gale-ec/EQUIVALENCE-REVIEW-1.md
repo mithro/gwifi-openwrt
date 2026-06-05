@@ -5,9 +5,9 @@
 Independent, adversarial review: is the reconstructed-from-source RW firmware
 functionally equivalent to the original dumped RW firmware?
 
-- Ground truth dump: `/home/tim/local/gwifi/tmp/work/gale-RW.bin` (load 0x08010000)
-- Reconstruction ELF: `/home/tim/local/gwifi/tmp/ec/build/gale/RW/ec.RW.elf` (symbols)
-- Reconstructed source: `/home/tim/local/gwifi/tmp/ec/board/gale/`
+- Ground truth dump: `/home/tim/local/gwifi/ec-rebuild/work/gale-RW.bin` (load 0x08010000)
+- Reconstruction ELF: `/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RW/ec.RW.elf` (symbols)
+- Reconstructed source: `/home/tim/local/gwifi/ec-rebuild/ec/board/gale/`
 
 Toolchains differ → instruction-level diffs are EXPECTED, not divergences.
 Judging SEMANTIC equivalence only.

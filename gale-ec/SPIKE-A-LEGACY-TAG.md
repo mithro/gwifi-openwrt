@@ -3,9 +3,9 @@
 **Result: SUCCESS.** `make BOARD=gale` produces `build/gale/ec.bin` (full 128 KiB
 image) on the pinned base, with the system `arm-none-eabi-gcc` 14.2 toolchain and
 `CONFIG_LTO`. All board/gale edits are confined to `ec-legacy/board/gale/*`; the
-original 2016 tree (`/home/tim/local/gwifi/tmp/ec`) was not modified.
+original 2016 tree (`/home/tim/local/gwifi/ec-rebuild/ec`) was not modified.
 
-Working tree: `/home/tim/local/gwifi/tmp/ec-legacy` (full clone, 288 MB .git),
+Working tree: `/home/tim/local/gwifi/ec-rebuild/ec-legacy` (full clone, 288 MB .git),
 local branch **`spike-a-gale-base`** checked out at the pinned base.
 
 ---
@@ -56,7 +56,7 @@ same as gale) are present for reference/validation.
 
 ## (b) Toolchain
 
-- **2016q3 GCC 5.4.1** (`/home/tim/local/gwifi/tmp/gcc-arm-none-eabi-5_4-2016q3`):
+- **2016q3 GCC 5.4.1** (`/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3`):
   **FAILS.** The modern build unconditionally passes `-Wimplicit-fallthrough`
   (a GCC ≥7 flag): `arm-none-eabi-gcc: error: unrecognized command line option
   '-Wimplicit-fallthrough'`. The 2016 compiler is too old for this tree.
@@ -199,7 +199,7 @@ parity to the oracle. ~10 mechanical API-drift fixes + 1 file split + LTO.
 
 ## Sanity vs oracle (task 6)
 
-`xxd -l 16` of built `.flat` vs oracle dumps (`/home/tim/local/gwifi/tmp/work/`):
+`xxd -l 16` of built `.flat` vs oracle dumps (`/home/tim/local/gwifi/ec-rebuild/work/`):
 
 ```
 built RO.flat : c004 0020 1901 0008 111c 0008 111c 0008
@@ -225,7 +225,7 @@ against them with zero undefined references.
 
 ## Reproduce
 ```
-cd /home/tim/local/gwifi/tmp/ec-legacy
+cd /home/tim/local/gwifi/ec-rebuild/ec-legacy
 git checkout spike-a-gale-base            # detached base 81ba8f9866 + board/gale port
 make BOARD=gale CROSS_COMPILE=/usr/bin/arm-none-eabi- -j8 build/gale/ec.bin
 # -> build/gale/ec.bin (131072 bytes), build/gale/RW/ec.RW.elf, build/gale/RO/ec.RO.elf

@@ -41,13 +41,13 @@ Zephyr SoC facts and flagged as such.
 
 ## Evidence trees & versions
 
-- **Port TO (target):** `/home/tim/local/gwifi/tmp/ec-main` @ `main`, HEAD
+- **Port TO (target):** `/home/tim/local/gwifi/ec-rebuild/ec-main` @ `main`, HEAD
   `37850ff4dfdad2a8062702be5a3591d195f4c9c1`, dated **2026-06-04** (shallow
   `--depth 1`; deep history / deletion commits not visible). Contains the Zephyr
   EC under `zephyr/`.
-- **Port FROM (gale source):** `/home/tim/local/gwifi/tmp/ec` @ gale factory
+- **Port FROM (gale source):** `/home/tim/local/gwifi/ec-rebuild/ec` @ gale factory
   branch, `board/gale/` (STM32F072CB). Confirmed 27 GPIOs, 4 tasks.
-- **Legacy stack reference:** `/home/tim/local/gwifi/tmp/ec-legacy` still carries
+- **Legacy stack reference:** `/home/tim/local/gwifi/ec-rebuild/ec-legacy` still carries
   `chip/stm32/usb_pd_phy.c` (685 LOC) and `chip/stm32/usb_spi.c` (998 LOC) — the
   two drivers a Zephyr port would have to recreate.
 - **Shipping gale image:** `gale-ec-gale_v1.1.5337-...bin` = **131072 B = 128 KB**
