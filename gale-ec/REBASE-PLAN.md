@@ -3,6 +3,15 @@
 > Companion to [`README.md`](README.md) / [`FIDELITY.md`](FIDELITY.md). Evidence for the
 > findings below is in [`REBASE-GAP-ANALYSIS.md`](REBASE-GAP-ANALYSIS.md).
 
+## ✅ RESOLVED (both spikes run) — DECISION: forward-port to the newest legacy-ARM base (R146)
+
+Full spike reports: [`SPIKE-A-LEGACY-TAG.md`](SPIKE-A-LEGACY-TAG.md), [`SPIKE-B-ZEPHYR.md`](SPIKE-B-ZEPHYR.md).
+
+- **A′ (last legacy-ARM tag) — VIABLE, already builds.** Upstream removed the ARM stack only weeks ago (`usb_pd_protocol.c` + `chip/stm32/usb_spi.c` 2026-01-22; `chip/stm32` + `core/cortex-m0` 2026-02-03). Newest base that still builds gale = **`81ba8f9` (2026-01-29)**, anchored at **`firmware-R146-16581.2.B`** (~9.4 yr newer than the 2016 base). `make BOARD=gale` **builds cleanly with modern gcc 14.2** (RW 61988 B / RO 62368 B, under the 64 KB half). Effort **MODERATE** — USB-mux/USB-SPI/PD-callback API rewrites, all with same-chip `servo_micro`/`servo_v4` precedent. Ported source: [`board-gale-r146/`](board-gale-r146/).
+- **B (Zephyr) — DOES NOT FIT.** No Cortex-M0/STM32F0 target in cros-ec Zephyr (gated to M4/M7; only STM32 EC is bloonchipper = STM32F412 1 MB/256 KB); no TCPMv1, no bit-banged STM32F0 PD-PHY (Zephyr TCPCs are external chips; gale *is* the TCPC), no `usb_spi`; footprint 4–10× adverse (60 KiB-RAM floor vs gale's 16 KiB). From-scratch bring-up, doesn't fit.
+
+**Decision: pursue A′ (R146 forward-port).** Zephyr ruled out for this silicon. Remaining work on A′: behavioral re-validation against the oracle (diff + independent review, as for the 2016 reconstruction), the `rx_disabled` locked-console TODO, and the on-device hardware test. The analysis below is the reasoning that led here.
+
 ## Decisive finding (gap-analysis spike, current `platform/ec` HEAD `37850ff`, 2026-06-04)
 
 **A forward-port onto legacy `main` is not possible — the legacy ARM/STM32 firmware
