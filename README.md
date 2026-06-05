@@ -19,6 +19,10 @@ OpenWrt on it.
 - **[`gale-spi-flash-backup.md`](gale-spi-flash-backup.md)** — how to back up the
   `gale` SPI boot flash over a **SuzyQ/CCD cable** with `flashrom` (no case-opening,
   no eMMC access).
+- **[`gale-ec/`](gale-ec/)** — the **reconstructed `board/gale` EC-firmware source**,
+  reverse-engineered from this unit's EC dump (`gale-ec-*.bin`). `make BOARD=gale`
+  rebuilds it, and an independent reviewer certified the result **functionally
+  equivalent** to the dump. See [`gale-ec/FIDELITY.md`](gale-ec/FIDELITY.md).
 
 ## Approach
 
