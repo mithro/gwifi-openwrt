@@ -17,8 +17,12 @@ OpenWrt on it.
   build recipe, recovery procedures, and the `mithro/depthcharge` fork as a nested
   submodule.
 - **[`gale-spi-flash-backup.md`](gale-spi-flash-backup.md)** — how to back up the
-  `gale` SPI boot flash over a **SuzyQ/CCD cable** with `flashrom` (no case-opening,
-  no eMMC access).
+  `gale` SPI boot flash over a **SuzyQ/CCD cable** (no case-opening, no eMMC access),
+  using the [`tools/`](tools/) toolkit.
+- **[`tools/`](tools/)** — host-side **SPI-flash toolkit**: chunked read/backup, a
+  region-aware **erase+program+verify writer**, and chip / write-protect diagnostics,
+  driving the EC's `raiden_debug_spi` bridge directly (stock `flashrom -E/-w` doesn't
+  work on this unit — see [`tools/README.md`](tools/README.md)).
 - **[`gale-ec/`](gale-ec/)** — the **reconstructed `board/gale` EC-firmware source**,
   reverse-engineered from this unit's EC dump (`gale-ec-*.bin`). `make BOARD=gale`
   rebuilds it, and an independent reviewer certified the result **functionally
@@ -66,6 +70,8 @@ git submodule update --init --recursive
 ```
 README.md                  this file
 gale-spi-flash-backup.md   SuzyQ SPI-flash backup procedure
+tools/                     host-side SPI-flash toolkit (read/backup, write, diagnostics)
+gale-ec/                   reconstructed board/gale EC-firmware source
 depthcharge-ipq4019/       submodule: IPQ4019 netboot driver + docs (+ depthcharge fork)
 ```
 
