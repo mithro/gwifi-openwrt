@@ -82,7 +82,7 @@ DSA presents `wan`/`lan` as switch ports; `wan` configured as a tagged trunk (VL
 - Provisioning: `openwisp-config`, `openwisp-monitoring`
 - Mesh: `kmod-batman-adv`, `batctl`, **`wpad-mesh-mbedtls`** (replaces `wpad-basic-mbedtls`; required for 802.11s SAE)
 - Steering: `usteer`
-- VLAN/bridge: `kmod-8021q` + DSA/bridge-vlan tooling (base)
+- VLAN/bridge: 802.1q is in-kernel (`CONFIG_VLAN_8021Q=y`) + DSA/bridge-vlan tooling (base; no `kmod-8021q` package exists)
 - Services: base `dnsmasq`, `firewall4`
 - Management/diag: `luci`, `ip-full`, `tcpdump-mini`, `ethtool`
 - Wi-Fi: `ath10k-ct` + `ath10k-firmware-qca4019-ct` (already default for the device)

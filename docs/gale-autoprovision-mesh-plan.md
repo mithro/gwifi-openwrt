@@ -84,22 +84,28 @@ git commit -m "gale-image: secrets template + build README"
 CONFIG_PACKAGE_openwisp-config=y
 CONFIG_PACKAGE_openwisp-monitoring=y
 CONFIG_PACKAGE_kmod-batman-adv=y
-CONFIG_PACKAGE_batctl=y
+CONFIG_PACKAGE_batctl-default=y
 # 802.11s SAE: swap basic wpad for the mesh variant
 # CONFIG_PACKAGE_wpad-basic-mbedtls is unset
 CONFIG_PACKAGE_wpad-mesh-mbedtls=y
 CONFIG_PACKAGE_usteer=y
-CONFIG_PACKAGE_kmod-8021q=y
+# NOTE: 802.1q is built into the kernel (CONFIG_VLAN_8021Q=y) — there is no
+# kmod-8021q package, so no line is needed for VLAN sub-interface support.
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_ip-full=y
 CONFIG_PACKAGE_tcpdump-mini=y
 CONFIG_PACKAGE_ethtool=y
 ```
 
-- [ ] **Step 2: Validate package names resolve** against the feeds
+- [ ] **Step 2: Validate the feed package names exist** (typo guard)
 
-Run: `cd openwrt && for p in openwisp-config openwisp-monitoring kmod-batman-adv batctl wpad-mesh-mbedtls usteer kmod-8021q luci ip-full tcpdump-mini ethtool; do ./scripts/feeds list -r "$p" >/dev/null 2>&1 || echo "MISSING: $p"; done; echo done`
-Expected: only `done` (no MISSING lines).
+Feed packages must appear in the feeds index; base/variant packages
+(`wpad-mesh-mbedtls`, `ip-full`, `tcpdump-mini`, `ethtool`, `luci`) live in the
+core `package/` tree and are validated post-defconfig in Task 8 Step 1 (the only
+reliable check that a `CONFIG_PACKAGE_*` symbol actually resolved).
+
+Run: `cd openwrt && ./scripts/feeds list | grep -wE 'openwisp-config|openwisp-monitoring|usteer|batctl-default|kmod-batman-adv'`
+Expected: a line for each of the five feed packages.
 
 - [ ] **Step 3: Commit**
 
@@ -233,7 +239,11 @@ config wifi-device 'radio1'
 
 - [ ] **Step 2: Confirm radio `path` values match the device**
 
-Run: `grep -rn "a000000.wifi\|a800000.wifi" openwrt/target/linux/ipq40xx/` (and cross-check the gale DTS). Expected: both paths exist for ipq4019. If different, correct the `path` lines.
+The per-device DTS isn't in the OpenWrt target tree (it lives in the upstream
+kernel, extracted only during the kernel build), so grep the ath10k caldata
+hotplug script, which references both wifi node addresses:
+Run: `grep -n "a000000.wifi\|a800000.wifi" openwrt/target/linux/ipq40xx/base-files/etc/hotplug.d/firmware/*-ath10k-caldata`
+Expected: both `a000000.wifi` and `a800000.wifi` appear. If different, correct the `path` lines.
 
 - [ ] **Step 3: Commit**
 
@@ -353,7 +363,7 @@ Behavior (use `unsquashfs` on the `root` member of the sysupgrade tar; fall back
 - Assert `/etc/config/openwisp` exists and contains the real `OPENWISP_URL` and **no** `__...__` placeholders.
 - Assert `/etc/config/wireless` contains `mode 'mesh'` and the real `MESH_ID`, no placeholders.
 - Assert `/etc/uci-defaults/99-gale-bootstrap` exists and is executable.
-- Assert the package manifest lists `openwisp-config`, `batman-adv`/`kmod-batman-adv`, `wpad-mesh-mbedtls`, `usteer`.
+- Assert the package manifest lists `openwisp-config`, `kmod-batman-adv`, `batctl-default`, `wpad-mesh-mbedtls`, `usteer` (match `batctl` as a substring to tolerate the `-default` suffix).
 - Print PASS/FAIL; non-zero exit on FAIL. Read secrets from `gale-secrets.conf` to know the expected substituted values.
 
 - [ ] **Step 2: `sh -n`/py-compile the script**
@@ -374,10 +384,11 @@ git commit -m "gale-image: post-build image verification"
 
 **Files:** none new (runs Tasks 6–7).
 
-- [ ] **Step 1: Ensure `wpad-basic-mbedtls` is removed** in the resolved config (the mesh swap)
+- [ ] **Step 1: After defconfig, confirm every selected package resolved** (the real package-name check; also verifies the wpad swap)
 
-Run: `grep -E "wpad" openwrt/.config` after the build's defconfig.
-Expected: `CONFIG_PACKAGE_wpad-mesh-mbedtls=y` present; `wpad-basic-mbedtls` not `=y`.
+Run (after `build-gale-image.sh` runs `make defconfig`, or run defconfig standalone first):
+`for s in openwisp-config openwisp-monitoring kmod-batman-adv batctl-default wpad-mesh-mbedtls usteer luci ip-full tcpdump-mini ethtool; do grep -q "CONFIG_PACKAGE_$s=y" openwrt/.config || echo "NOT RESOLVED: $s"; done; grep -E "wpad" openwrt/.config`
+Expected: no `NOT RESOLVED` lines; `CONFIG_PACKAGE_wpad-mesh-mbedtls=y` present and `wpad-basic-mbedtls` not `=y`.
 
 - [ ] **Step 2: Build**
 
