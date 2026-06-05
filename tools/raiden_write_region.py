@@ -176,7 +176,11 @@ def worker_rd(off, length, outfile):
         while i < length:
             k = min(V1_READ_MAX, length - i)
             _, d = r.xfer([0x03] + a3(off + i), k)
-            buf += d if len(d) == k else (bytes(d) + bytes(k - len(d)))
+            if len(d) != k:
+                raise SystemExit(f"_rd: SHORT READ at 0x{off + i:06x} -- got {len(d)}/{k} B "
+                                 f"(bridge session cliff or USB error). Aborting; NOT zero-filling "
+                                 f"(a silent zero-fill would masquerade as real data).")
+            buf += d
             i += k
         open(outfile, "wb").write(buf)
         print(f"_rd OK off=0x{off:06x} len=0x{length:x}")
@@ -269,6 +273,12 @@ def orchestrate(argv):
     if not commit:
         print("\nDRY-RUN complete. Re-run with --commit to write.")
         return
+
+    if not do_verify:
+        print("\n!! WARNING: --no-verify is set. The bridge silently no-ops past the "
+              "~16 KiB/session cliff, so an un-verified write can leave the flash in an "
+              "UNKNOWN state with NO error and NO diff. Strongly prefer running WITHOUT "
+              "--no-verify; only use it with a separate verification plan.")
 
     ro_ok = ["ro_ok"] if allow_ro else []
     for idx, (a, clen) in enumerate(chunks):
