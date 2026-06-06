@@ -64,12 +64,18 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
   ONLY in access COUNT / init-timing, with identical-or-benign values (e.g. the same
   `WRPR=0xFFFFFFFF` read a different number of times; an `RCC_*ENR`/clock-ready bit
   sampled at slightly different init points — `0x18200001` vs `0x18220001`, a value that
-  appears in BOTH traces; an `adc` value re-read a different number of times). The bulk
-  of divergence is `usart1`/`dma1` **console-TX traffic** (different banner text + a
-  UART-TX-DMA write-width difference — both emit identical console output) and `timer2`
-  **scheduler ticks**. All immaterial; the tool **normalizes nothing** and prints the
-  raw divergences for audit. This is real execution-trace, not console text. It is a
-  **diagnostic** (prints metrics + raw divergences), not an automated pass/fail gate.
+  appears in BOTH traces; `adc`/`gpioPortA`/`usart2` events re-issued a different number of
+  times). The bulk of divergence is `usart1`/`dma1` **console-TX traffic** + `timer2`
+  **scheduler ticks**. The console-TX delta is a real but immaterial config difference: the
+  rebuilt routes UART-TX **DMA on the console `usart1`** (CR3 DMAT + dma1 channel, byte
+  writes to TDR) while the orig drives `usart1` TX by direct 32-bit writes and enables DMAT
+  on `usart2` instead — both emit **byte-identical per-command console output** (proven by
+  `battery.py`; `usart2` is not functionally exercised). All divergence is immaterial; the
+  tool **normalizes nothing** and prints the raw per-peripheral divergence counts for audit.
+  This is real execution-trace, not console text. It is a **diagnostic** (prints metrics +
+  raw divergences), not an automated pass/fail gate. (NB: trace_diff's free-running TX byte
+  multiset legitimately differs — different banner + one image running further in the fixed
+  window; per-command console identity is `battery.py`'s job.)
 - `power_seq.py` — **PASS**: `gale power on/off ap` drives all 6 AP rails
   identically (high then low) on both images.
 - `soak.py` — **PASS**: both run 2 s virtual, alive + panic-free + no crash/halt.
@@ -87,9 +93,23 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
 - **USB enumeration** is covered by *static descriptor* equivalence above; a *live*
   `lsusb` enumeration would additionally need an STM32 USB-FS device-controller model.
 
-**Independent verification:** round 1 = 1 RED (comprehensiveness — most gaps since
-closed) + 2 GREEN (traces-identical, no-shortcuts). All round-1 integrity findings
-addressed. Convergence to 3× green pending (gated on the USB-PD model + re-review).
+**Independent verification — 3 consecutive all-green rounds achieved.**
+Each round = 3 separate adversarial agents (tracing-comprehensive / traces-identical /
+no-shortcuts), each of which independently re-runs the tools against the two binaries.
+- **Round 1**: 1 RED (comprehensiveness — only console text traced) + 2 GREEN. Findings
+  fixed: added the MMIO execution-trace diff, raiden, integrity/disclosure corrections.
+- **Round 2**: ✅✅✅ all GREEN. (Agents confirmed raiden `ef4017` is end-to-end not
+  hardcoded; SPI-DMA interleave faithful to `spi_master.c`; new tests real.)
+- **Round 3**: ✅✅✅ all GREEN. (no-shortcuts caught a README "ZERO divergence"
+  overclaim → corrected to the accurate per-peripheral breakdown.)
+- **Round 4**: ✅✅✅ all GREEN. (only MINOR doc nits — the `usart1↔usart2` DMA-TX
+  config delta now named above; models verified RM0091-faithful, WP_L justified, gaps
+  honestly bounded.)
+Verdict: the rebuilt firmware is **functionally equivalent** to the original on every
+test runnable in EC-only emulation (~11/13), with USB-PD *live negotiation* (needs a
+COMP/PD-PHY + CC-partner model; its register programming IS trace-equivalent) and AP
+boot (needs the IPQ4019 SoC) being the two honestly-bounded structural gaps reserved
+for the on-device HARDWARE-TEST-PLAN.
 
 **Verification:** round 1 = 1 RED + 2 GREEN (integrity findings fixed). **Round 2 =
 all 3 GREEN** (comprehensiveness moved RED→GREEN; agents independently confirmed the
