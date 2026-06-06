@@ -20,6 +20,12 @@ flashif: Miscellaneous.GaleFlash @ sysbus 0x40022000
 dma1: Miscellaneous.GaleDma @ sysbus 0x40020000
     size: 0x400
 
+// STM32F0 12-bit ADC with faithful dynamic USB-PD CC (RM0091). Replaces the stock
+// Analog.STM32F0_ADC so CC1 (AIN1) / CC2 (AIN3) follow the EC's live termination —
+// the per-image cc_pull RAM address is set by the harness via `sysbus.adc CcPullAddress`.
+adc: Miscellaneous.GaleAdc @ sysbus 0x40012400
+    size: 0x400
+
 // W25Q64FV (8 MiB) on the AP-flash bridge — SPI2, chip-select = PB12 (active low,
 // bit-banged by the firmware). Answers JEDEC RDID (EF 40 17) etc. end-to-end: the
 // EC's `spixfer rlen 0 0x1f 3` reads back ef4017 on both images (GaleDma interleaves
