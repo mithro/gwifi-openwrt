@@ -31,7 +31,12 @@ particular image pass.
 | `peripherals/GaleRcc.cs` | STM32F0 **RCC** — oscillator ENABLE bits drive READY bits; `RCC_CSR` not forced to 0 (fixes the `LSION→LSIRDY` boot deadlock). Replaces the stock "FLIPFLOP" stub. |
 | `peripherals/GaleFlash.cs` | STM32F0 **embedded-flash interface** — `WRPR=0xFFFFFFFF`, `SR.BSY=0`, KEYR/OPTKEYR unlock. Stops the write-protect-reconciliation reset loop in `flash_pre_init`. |
 | `data/gale-optionbytes.bin` | Real device option bytes (`md 0x1FFFF800`): RDP=0xAA (level 0), WRP=0xFF (none). sha256 `cdb247d4…`. |
+| `data/gale-optionbytes.bin` (see above) | — |
 | `run_one.py` | Boots one image headless, reports final PC / instr count / halt + unmodeled-peripheral worklist. |
+| `capture_console.py` | Boots one image, injects console commands, prints the USART1 transcript. |
+| `battery.py` | Command-driven equivalence battery + trace-diff (console output), per-test PASS/XFAIL/FAIL. |
+| `trace_diff.py` | **Execution-trace** equivalence — logs the MMIO register-access sequence of both images and compares by longest-common-prefix + order-independent multiset coverage (hardware-level, build-independent). |
+| `peripherals/GaleDma.cs` / `GaleSpiFlash.cs` | DMA1 (UART-TX path) / W25Q64 (SPI bridge — readback gap, see file). |
 
 ## Run
 
