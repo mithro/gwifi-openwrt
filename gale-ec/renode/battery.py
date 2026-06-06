@@ -38,6 +38,13 @@ COMMANDS = [
     "version", "sysinfo", "taskinfo", "gpioget", "flashinfo",
     "chan", "panicinfo", "adc", "gettime",
 ]
+# NOTE: the gale board subcommands (cc/vbus/polarity/...) are verified equivalent
+# manually (e.g. both images print "cc - 0mV, 0mV"), but they interact with the PD
+# task and respond slowly; the long settle they need lets time-evolving async PD
+# output ("C0 stNN", hook logs) pollute other commands' captured sections. The
+# console-section battery is reliable only for static, fast-responding commands.
+# PD-interacting commands are better compared via the MMIO execution trace
+# (trace_diff.py) or a per-command-settle battery (future work).
 
 # Commands whose remaining diff is a KNOWN, justified provisioning/build delta —
 # NOT a firmware-code behavior divergence. These are reported as XFAIL (expected,
