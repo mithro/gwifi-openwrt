@@ -81,12 +81,32 @@ can run USB and be trace-compared. **Implemented and verified** — confined ent
 
 Result (rebuilt `ec.bin` sha a2c186a0): `usb_init`+`ccd_set_mode` restored in both
 RO/RW; USB register-write counts now **match the original** (CNTR 4=4, ISTR 4=4,
-BTABLE 2=2); boots clean; `battery.py` still **8 PASS / 2 XFAIL / 0 FAIL**; PD state
-machine now advances `st2→st15` (SRC states compiled in) like the original
-(`st2→st16→st17`) instead of stalling at `st2`. This is the recreation becoming
-*measurably more faithful*. Re-verification (3× green) is required since the validated
-binary changed. Live USB enumeration is now reachable — next: drive the Renode USB
-host-bridge through the CCD/debug-accessory path on both images and trace-compare.
+BTABLE 2=2); boots clean; `battery.py` still **8 PASS / 2 XFAIL / 0 FAIL`. Re-verification
+(3× green) is required since the validated binary changed.
+
+## Live USB bring-up — progress (the CCD→usb_init chain WORKS)
+
+With CCD restored + the TIM2 frequency fix (10→48MHz, the EC's `get_time` clock; see
+`gale.repl`), and the `GaleAdc` dynamic-CC debug-accessory (`--mon "sysbus.adc
+CcPullAddress 0x20001107"`), the firmware now drives the full Type-C path:
+
+* gale toggles SNK→SRC, senses both CC = Rd (debug accessory) — `adc` reports CC1=CC2
+  =800mV, `pd 0 state` = SRC-DFP / SRC_DISCONNECTED_DEBOUNCE.
+* the `PD_T_CC_DEBOUNCE` (100ms) debounce **completes** → the SRC_ACCESSORY DEBUG_ACC
+  path runs `ccd_set_mode(ENABLED)` → **`usb_init()` is reached and starts**.
+
+Proof it reaches `usb_init`: in the debug-accessory run `RCC_APB1ENR` bit 23 (the USB
+device clock) is **set** (`0x18A20001`) — `usb_init`'s first statement is
+`STM32_RCC_APB1ENR |= STM32_RCC_PB1_USB`; in the audio-accessory run (CC=Ra, no
+`ccd_set_mode`) bit 23 is **clear** (`0x18220001`) and it reaches SRC_ACCESSORY
+(st16). (`task_state` stays st15 in the debug case only because `set_state(SRC_ACCESSORY)`
+runs *after* `usb_init` in `usb_pd_protocol.c`.)
+
+**Open issue (next):** `usb_init` does not run to completion — `USB_CNTR` never reaches
+0xe400, no "USB init done", and a panic (`r4=0xdead6663`, bad `pc`) hits ~1s later. So
+the bring-up stalls/faults after enabling the USB clock — a `GaleUsb` register/IRQ
+interaction (USB IRQ = NVIC 31). Fixing `GaleUsb` so `usb_init` completes is the gate to
+enumeration → USB UART consoles (if00/if01) + raiden-over-USB (if03), then trace-compare.
 
 ## Build-trial detail (for the record — not applied)
 
