@@ -13,15 +13,23 @@ mach create $name
 # Compile the proper peripheral models (replace non-deterministic stubs).
 include $h/peripherals/GaleRcc.cs
 include $h/peripherals/GaleFlash.cs
+include $h/peripherals/GaleDma.cs
 
 # Stock STM32F072 platform (CPU, NVIC, GPIO, USART, SPI, I2C, timers, ADC, EXTI...)
 machine LoadPlatformDescription @platforms/cpus/stm32f072.repl
-# Remove the non-deterministic stock RCC stub, then register the deterministic models.
+# Remove the non-deterministic stock stubs, then register the deterministic models.
 sysbus Unregister sysbus.rcc
+sysbus Unregister sysbus.DMA
 machine LoadPlatformDescription $h/gale.repl
 
 # Real option-byte values (RDP=0xAA level 0, WRP=0xFF none) at 0x1FFFF800.
 sysbus LoadBinary $h/data/gale-optionbytes.bin 0x1FFFF800
+
+# WP_L (write-protect, PB11, active-low) deasserted = HIGH, matching the dev unit
+# with its security screw removed. Renode leaves undriven inputs low (= asserted),
+# which would make flash_pre_init's registers_need_reset() trip on the factory
+# image's RO-protect pstate and OBL_LAUNCH-reset-loop. Deasserted WP = real device.
+gpioPortB OnGPIO 11 true
 
 # Full 128 KB image: RO @ 0x08000000 (+ RW @ 0x08010000) into modeled flash (0x20000)
 sysbus LoadBinary $bin 0x08000000
