@@ -38,17 +38,19 @@ The OM2P hardware is radically smaller than gale (single 2.4 GHz radio, **~7 MB*
 
 ## 5. Hardware constraints (the crux — verified against the OpenWrt tree)
 
-| Profile | SoC | Radio | Wi-Fi `path` | Eth ports |
+| Profile | SoC | Radio | Wi-Fi `path` | External jack |
 |---|---|---|---|---|
-| `openmesh_om2p-lc` | ar9330 | 2.4 GHz (on-SoC wmac) | `platform/ahb/18100000.wmac` | 1 (eth0) |
-| `openmesh_om2p-v1` | ar7240 | 2.4 GHz (**PCI** radio) | PCIe path (no on-SoC wmac) | 2 (eth0=WAN, eth1=LAN) |
-| `openmesh_om2p-v2` | ar9330 | 2.4 GHz (on-SoC wmac) | `platform/ahb/18100000.wmac` | 1 (eth0) |
-| `openmesh_om2p-v4` | qca9533 | 2.4 GHz (on-SoC wmac) | (qca9533 wmac addr) | 2 (eth0=WAN, eth1=LAN) |
+| `openmesh_om2p-lc` | ar9330 | 2.4 GHz (on-SoC wmac) | `platform/ahb/18100000.wmac` | 1 × RJ45 = `eth0` (PoE) |
+| `openmesh_om2p-v1` | ar7240 | 2.4 GHz (**PCI** radio) | PCIe path (no on-SoC wmac) | `eth0` (PoE) |
+| `openmesh_om2p-v2` | ar9330 | 2.4 GHz (on-SoC wmac) | `platform/ahb/18100000.wmac` | 1 × RJ45 = `eth0` (PoE) |
+| `openmesh_om2p-v4` | qca9533 | 2.4 GHz (on-SoC wmac) | (qca9533 wmac addr) | `eth0` (PoE) |
+
+> **`eth1` is not a usable jack.** Where the DTS marks `eth1 status="okay"` it is an internal **CPU↔switch fixed-link** (no `phy-handle`), not a second RJ45. The single external port is `eth0` (`phy-handle = <&swphy4>`) on all four models. So the overlay treats `eth1` as off-limits and is **identical across all four profiles** — `eth0` trunk only.
 
 - **C1 — Flash budget:** `Device/openmesh_common_256k` sets `IMAGE_SIZE := 7168k`. Kernel + rootfs must fit in ~7 MB; OpenWrt **fails the build loudly** on overflow.
 - **C2 — Single radio:** one 2.4 GHz PHY. The client AP(s) and the 802.11s mesh **share** it (no dedicated backhaul band, unlike gale's 5 GHz).
 - **C3 — RAM:** ≥32 MB (om2p-v1/ar7240 = 32 MB; ar9330/qca9533 typically 64 MB). 32 MB is the floor that `openwisp-monitoring`/collectd must tolerate.
-- **C4 — Uplink port:** `target/linux/ath79/generic/base-files/etc/board.d/02_network` assigns `lan_wan "eth1" "eth0"` on the dual-port models (**eth0 = WAN/PoE**) and a single `eth0` on the LC; so **`eth0` is the PoE uplink on all four** — the trunk hangs on the raw `eth0` netdev, not a DSA `wan` port.
+- **C4 — Uplink port:** the single external RJ45 is **`eth0`** (`phy-handle = <&swphy4>`) on all four models; `eth1`, where `status=okay`, is an internal CPU↔switch *fixed-link* (no `phy-handle`), **not** a bridgeable jack. `02_network` sets `eth0` as WAN on the 2-netdev models and the sole port on the LC. So the trunk hangs on the raw **`eth0`** netdev (not a DSA `wan` port), **uniformly across all four**.
 - **C5 — Per-SoC `path`:** the radio `path` differs fundamentally across models (ar9330 AHB wmac vs ar7240 **PCI** radio vs qca9533) → a single static `/etc/config/wireless` with a hard-coded `path` cannot serve all four in one build. Wireless is configured **by radio name** in the bootstrap instead (§8.4).
 - **C6 — Image format:** the recipe emits only `IMAGE/sysupgrade.bin` wrapped by `openmesh-image` (CloudTrax/ap51 format) + `append-metadata`. There is **no separate factory image**; first install is via **ap51-flash** using this artifact (§13).
 
@@ -69,10 +71,11 @@ The OM2P hardware is radically smaller than gale (single 2.4 GHz radio, **~7 MB*
 - **One bridge per VLAN**, spanning the wired trunk + the mesh (+ the matching Wi-Fi AP at steady state):
   - `br-mgmt` = `eth0.5` + `bat0.5` → node's own management IP (DHCP from ten64) + OpenWISP traffic
   - `br-int`  = `eth0.10` + `bat0.10`
-  - `br-roam` = `eth0.20` + `bat0.20` (+ `ap-roam`) — and, on dual-port models, the bonus wired `eth1` (see §8.2)
+  - `br-roam` = `eth0.20` + `bat0.20` (+ `ap-roam`)
   - `br-iot`  = `eth0.90` + `bat0.90` (+ `ap-iot`)
   - `br-guest`= `eth0.99` + `bat0.99`
 - **Baked vs runtime:** the `files/` overlay creates each bridge with **only its `eth0.V` + `bat0.V` members — no `ap-*`**. Client APs are the **post-OpenWISP** steady state: the pulled `wifi-iface` config carries `option network 'br-<name>'`, so netifd auto-attaches each AP to its bridge when the SSID comes up. No client SSIDs exist at first boot.
+- **All five VLAN bridges are baked as pure L2 plumbing.** The OpenWISP template (§12) only attaches client APs to a **subset** (5/20/90) — exactly as on gale, where `br-int`(10)/`br-guest`(99) carry no AP. A VLAN without an AP is still bridged across wired+mesh for transit; it is not "missing".
 
 ## 8. Component design
 
@@ -80,7 +83,7 @@ The OM2P hardware is radically smaller than gale (single 2.4 GHz radio, **~7 MB*
 802.11s mesh point on `radio0` (2.4 GHz); `mesh_id` + SAE key baked so every node forms the same fleet mesh on first boot with no controller involvement. `wpad-mesh-mbedtls` provides the SAE-capable supplicant/AP (replaces `wpad-basic-mbedtls`). batman-adv runs over the 802.11s iface producing `bat0`; BLA on; `gw_mode=client`.
 
 ### 8.2 VLAN bridges (on `eth0`)
-For each VLAN *V*: a tagged uplink sub-interface (`eth0.V`, an `8021q` device), a batman VLAN (`bat0.V`), and an L2 bridge `br-<name>` with members `{eth0.V, bat0.V}`. `br-mgmt` (V=5) additionally runs a DHCP client for the node's management IP and never carries a client AP. **Dual-port bonus (v1/v4):** if `eth1` exists, add it untagged to `br-roam` as a wired client drop; the bootstrap makes this **conditional on `eth1` presence** so the single overlay stays correct on the LC.
+For each VLAN *V*: a tagged uplink sub-interface (`eth0.V`, an `8021q` device), a batman VLAN (`bat0.V`), and an L2 bridge `br-<name>` with members `{eth0.V, bat0.V}`. `br-mgmt` (V=5) additionally runs a DHCP client for the node's management IP and never carries a client AP. The overlay is **identical across all four profiles** — trunk on `eth0` only; `eth1` (an internal CPU↔switch link, per C4) is left untouched, never bridged.
 
 ### 8.3 Provisioning agent
 `/etc/config/openwisp`: `url=https://wisp.welland.mithis.com`, `shared_secret=__OPENWISP_SHARED_SECRET__` (placeholder), `verify_ssl=1`, `interval=120`, `management_interface=br-mgmt` — identical stanza to gale. `openwisp-monitoring` agent installed for telemetry (subject to §10 fit).
@@ -122,7 +125,7 @@ Reuse the `openwrt/` build env; **add** the `ath79/generic` target (first build 
 ```
 om2p-image/
   build-om2p-image.sh        # source fleet-secrets.conf; render overlay; seed .config (4 profiles); make
-  verify-om2p-image.py       # unsquashfs /etc (non-root safe); assert overlay + substituted secret VALUES + packages; report image size vs 7168k
+  verify-om2p-image.py       # unsquashfs /etc (non-root safe); assert overlay + substituted secret VALUES (without ever printing them — redact, per the build-templates.py precedent) + packages; report image size vs 7168k
   om2p.config                # the fragment above
   README.md
   files/etc/
@@ -140,10 +143,11 @@ fleet-secrets.conf.example   # repo root; placeholders + MESH_ID=gwifi-mesh, OPE
 - Committed **`fleet-secrets.conf.example`** documents the keys + the two stable defaults.
 - **`.gitignore`:** add `fleet-secrets.conf` (keep the existing `gale-secrets.conf` line so any leftover stays ignored).
 - **Migration:** one-time — copy the real values from the primary checkout's `gale-image/gale-secrets.conf` into `fleet-secrets.conf`, then retire the old file. `build-gale-image.sh`'s only change is its secrets-source path (same values, same rendering), so the gale build+verify is **re-run after the change** to confirm no regression.
+- **Mesh key single-sourced (critical — see §12 & §15.7):** `MESH_SAE_KEY` in `fleet-secrets.conf` is the **one** fleet mesh key. `build-templates.py` is changed to **read** `mesh_key` from `fleet-secrets.conf` instead of generating a fresh one per run, so the baked images (gale + OM2P) and the OpenWISP templates (puck + OM2P) always agree. On migration, seed `fleet-secrets.conf`'s `MESH_SAE_KEY` with the **currently deployed** value (from `gale-secrets.conf`, which already equals the pucks' live key) so the existing fleet keeps working.
 
 ## 12. OpenWISP template (`gwifi-om2p`, single-radio)
 
-Extend `openwisp/build-templates.py` to also build + attach a single-radio template, **reusing** the secrets it already reads (`ansells_key`, `iot_key`, `mesh_key`) so no new secret handling is introduced. The template is the **2.4 GHz subset** of the `gwifi-puck` netjson (principled: the pucks already run `ansells` + `ansells-iot` + mesh on radio0; `ansells-guest` is 5 GHz-only, so OM2P simply does not carry guest):
+Extend `openwisp/build-templates.py` to also build + attach a single-radio template, **reusing** the same secrets as the puck template: client passphrases (`ansells_key`, `iot_key`) still read from ten64 hostapd at runtime, and the **`mesh_key` now read from `fleet-secrets.conf`** (`MESH_SAE_KEY`) rather than generated — so the OM2P template, the puck template, and both baked images share one mesh key (§11, §15.7). No new secret handling is introduced. The template is the **2.4 GHz subset** of the `gwifi-puck` netjson (principled: the pucks already run `ansells` + `ansells-iot` + mesh on radio0; `ansells-guest` is 5 GHz-only, so OM2P simply does not carry guest):
 
 - **radios:** `radio0` only (802.11n, ch 6, HT20, AU).
 - **interfaces:** `8021q` parents on **`eth0`** (vids 5/20/90) + `bat0` (vids 5/20/90); bridges `br-mgmt` (dhcp), `br-roam`, `br-iot`; `wl-ans-2` (ansells/wpa3 → br-roam), `wl-iot` (ansells-iot/wpa2 → br-iot), `mp0` (802.11s/sae mesh_id gwifi-mesh → mesh0).
@@ -175,16 +179,17 @@ OM2P units currently run Open-Mesh/CloudTrax stock firmware. First install to Op
 4. **batman-adv `gw_mode` + BLA over VLAN-tagged `bat0`** with multiple wired gateways (same caveat as gale Risk #3): `gw_mode` is on raw `bat0` while DHCP runs on tagged `bat0.V`. Fallback: plain DHCP over the bridged mesh (BLA still loop-safe).
 5. **ath79 target addition** to a tree configured for ipq40xx: confirm `make defconfig` + build produces ath79 images without disturbing the ipq40xx outputs (separate `bin/targets/` trees, so expected clean).
 6. **Cold-fleet bootstrap** requires ≥1 wired-uplink node to seed mesh-only nodes.
+7. **Mesh-key regeneration footgun (must fix in the `build-templates.py` extension):** today `build-templates.py` calls `secrets.token_urlsafe(18)` every run and overwrites the puck template's `mesh_key` + `.wifi-secrets`. Re-running it as-is to add the OM2P template would **silently invalidate the deployed pucks and the baked gale image**. The extension must instead **read** `mesh_key` from `fleet-secrets.conf` (§11) and never regenerate. Verify a re-run is idempotent and leaves the puck template's key unchanged. (`.wifi-secrets` becomes a derived/legacy note; `fleet-secrets.conf` is the source of truth.)
 
 ## 16. Decided sub-choices
 
 - Radio plan: **single 2.4 GHz `radio0`** shared (AP + mesh) — forced by hardware (C2).
-- Trunk: **`eth0`** raw netdev (C4); dual-port models add `eth1`→`br-roam` conditionally.
+- Trunk: **`eth0`** raw netdev (C4), uniform across all four; `eth1` (internal CPU↔switch link) is never bridged.
 - Wireless config: **bootstrap-generated by radio name** (C5), not a static per-SoC file.
 - Packages: minimal managed + monitoring (§10) with a defined trim ladder.
 - Code org: **parallel sibling `om2p-image/`** (R6).
 - Secrets: **single shared `fleet-secrets.conf`** (R5).
-- Template: **`gwifi-om2p`** single-radio variant, 2.4 GHz SSID subset (ansells + ansells-iot, no guest), attached to the 6 OM2P devices; built by extending `build-templates.py`.
+- Template: **`gwifi-om2p`** single-radio variant, 2.4 GHz SSID subset (ansells + ansells-iot, no guest), attached to the 6 OM2P devices; built by extending `build-templates.py`, which is also changed to **read the fleet `mesh_key` from `fleet-secrets.conf`** (not regenerate) so images + templates stay coherent (§15.7).
 - Revisions built: all four mapped profiles (`lc/v1/v2/v4`).
 - Version control: feature branch in the `gwifi-openwrt` worktree (`openwisp-controller`); per DEVELOPMENT.md, advance `main` via PR. Built `.bin`s stay gitignored (baked secrets).
 
