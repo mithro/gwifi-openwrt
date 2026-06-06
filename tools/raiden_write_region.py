@@ -48,6 +48,9 @@ TMP = os.environ.get("GALE_WORK", os.path.dirname(SELF))  # scratch dir for chun
 def worker_pgm(off, chunkfile, ro_ok):
     data = open(chunkfile, "rb").read()
     n = len(data)
+    if n == 0:
+        raise SystemExit("_pgm: empty chunk file (0 bytes) -- nothing to program; "
+                         "refusing a silent no-op that would 'verify' against b''")
     if off % SECTOR or n % SECTOR:
         raise SystemExit(f"_pgm: off 0x{off:x}/len 0x{n:x} not 4 KiB aligned")
     if off < RO_LIMIT and not ro_ok:
@@ -97,6 +100,9 @@ def worker_rd(off, length, outfile):
             k = min(V1_MAX, length - i)
             buf += r.read_data(off + i, k)
             i += k
+        if len(buf) != length:
+            raise SystemExit(f"_rd: assembled {len(buf)} B != requested 0x{length:x} "
+                             f"-- refusing to write a short read-back")
         open(outfile, "wb").write(buf)
         print(f"_rd OK off=0x{off:06x} len=0x{length:x}")
 
@@ -207,8 +213,14 @@ def orchestrate(args):
             print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
             if p.returncode != 0:
                 raise SystemExit(f"ABORT: read-back worker failed at 0x{a:06x}")
+            if not os.path.exists(vf):
+                raise SystemExit(f"ABORT: read-back worker exited 0 but wrote no "
+                                 f"verify file at 0x{a:06x}")
             got = open(vf, "rb").read()
             want = image[a:a + clen]
+            if len(got) != clen:
+                raise SystemExit(f"ABORT: read-back at 0x{a:06x} is {len(got)} B, "
+                                 f"expected 0x{clen:x}")
             if got != want:
                 diff = sum(1 for x, y in zip(got, want) if x != y)
                 first = next(j for j in range(len(want)) if got[j] != want[j])
