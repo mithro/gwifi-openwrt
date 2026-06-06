@@ -8,4 +8,7 @@
 # This before-read hook on the ADC data register keeps the CC1 (ch1) / CC2 (ch3)
 # samples in sync with that termination — the faithful dynamic CC a single static
 # voltage cannot provide. ($ccaddr can be overridden per image.)
-sysbus.adc AddBeforeReadDoubleWordHook 0x40 "cc = self.GetMachine().SystemBus.ReadByte(0x20001107); v = 800 if cc == 1 else 0; self.SetDefaultValue(v, 1); self.SetDefaultValue(v, 3)"
+# Hook the conversion-START register (CR @ 0x08, ADSTART) instead of the DR read, so
+# the CC default is set BEFORE the conversion samples it (setting it during the DR read
+# perturbs the in-progress conversion and stalls gale's DRP toggle).
+sysbus.adc AddBeforeWriteDoubleWordHook 0x08 "cc = self.GetMachine().SystemBus.ReadByte(0x20001107); v = 800 if cc == 1 else 0; self.SetDefaultValue(v, 1); self.SetDefaultValue(v, 3)"
