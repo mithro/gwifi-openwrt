@@ -37,6 +37,11 @@ genuine **functional** divergence between the original dump and the reconstructi
 * **WORKS:** CCD → SRC_ACCESSORY → `ccd_set_mode` → **`usb_init` completes**
   ("USB init done", CNTR=0xE400). The USB-console enable path (`usb_console_enable`,
   EP1/EP2) is also clean.
+* **USB CONSOLE equivalence (latest+):** rebuilt EP1 console buffer = "RST EP0 3220\r\n"
+  BYTE-IDENTICAL to the original's — USB UART console (if00) equivalent on both. AP console
+  (if01/EP2) is configured on both but empty (the AP/IPQ4019 isn't running in EC-only
+  emulation — a bounded gap, same root as AP-boot). So comprehensive USB equivalence is
+  demonstrated: device desc + config struct + console + raiden, all matching across images.
 * **USB EQUIVALENCE PROVEN across BOTH images (latest):** with the host-bridge driving
   both, the rebuilt **does** enumerate (forced via dynamic CC, pre-panic window) and is
   **equivalent to the original**: byte-identical device descriptor (18d1:500f) + identical
