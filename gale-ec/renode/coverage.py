@@ -98,8 +98,6 @@ def main():
                 if nxt == tgt:
                     taken.add(a)
                 elif nxt == fall:
-                    nottaken_local = a
-                    nottaken_addset = nottaken
                     nottaken.add(a)
         both = [a for a in reached if a in taken and a in nottaken]
         bcov_reached = 100.0 * len(both) / max(len(reached), 1)
