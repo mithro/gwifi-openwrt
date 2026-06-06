@@ -16,17 +16,45 @@ genuine **functional** divergence between the original dump and the reconstructi
 * **WORKS:** CCD → SRC_ACCESSORY → `ccd_set_mode` → **`usb_init` completes**
   ("USB init done", CNTR=0xE400). The USB-console enable path (`usb_console_enable`,
   EP1/EP2) is also clean.
-* **BOUNDED EMULATION GAP (raiden EP4):** enabling the raiden bridge
-  (`usb_spi_enable`, EP4) triggers a **timing-dependent** context-corruption panic
-  in Renode — see "EP4 timing-race" below. Exhaustively investigated (~12 hypotheses
-  disproven with evidence); concluded to be a Renode IRQ/context-switch timing-fidelity
-  artifact, not a firmware/reconstruction defect (the original runs CCD+raiden on real
-  hardware; NVIC priorities + stack sizes + memory layout all verified correct).
+* **RECONSTRUCTION DIVERGENCE (raiden EP4) — corrected:** enabling the raiden bridge
+  (`usb_spi_enable`, EP4) makes the rebuilt firmware stall/panic where the **original
+  runs clean in the SAME Renode harness** (proven by direct test — see the CORRECTION
+  section below). This is a **real source-version divergence in the reconstruction's
+  PD/CCD/USB-bring-up logic, NOT an emulation artifact** (my earlier "timing-race
+  emulation gap" conclusion is retracted). The reconstruction is therefore **not
+  functionally equivalent** to the original on USB bring-up.
 * **NOT YET DONE (multi-session):** USB host-bridge + live enumeration, exercising
   the consoles/raiden over USB end-to-end, 100% branch-coverage measurement, and the
   3× independent-verification rounds.
 
-## EP4 raiden bring-up: a timing-race context corruption (bounded emulation gap)
+## ⚠️ CORRECTION (independent verification, later): the EP4 fault is a RECONSTRUCTION divergence, NOT an emulation artifact
+
+An independent adversarial verification agent + a direct test **retracted** the
+"emulation timing-race artifact" conclusion below. Decisive test in the SAME Renode
+harness, autonomous boot, no dynamic CC:
+* **ORIGINAL dump (v1.1.5337):** st2 → st16 → st17 → **"USB init done"** — brings up
+  the USB device controller (the CCD/usb_init path) **cleanly, 0 panics over 5 s**.
+* **REBUILT (CCD-enabled reconstruction):** st2 → st15 → **st16, then STALLS** — never
+  prints "USB init done", never reaches st17; and PANICS when the debug-accessory path
+  is forced via dynamic CC.
+
+A pure *emulator* timing-fidelity bug would corrupt **both** images on the same models.
+It does not — the original runs the same path clean in this very harness. Therefore the
+EP4/usb_spi fault is a **real functional divergence of the reconstruction**, almost
+certainly the **source-version skew** already documented here (the reconstruction's
+`common/usb_pd_protocol.c` is the 8281.B-tip ~2021 version whose SRC_ACCESSORY→CCD path
+differs from the 2016 original's; this tree even required `CONFIG_CHARGE_MANAGER` +
+folding raiden onto `ccd_usb_spi` to build CCD at all). The "timing-sensitivity" (panic
+moves under instrumentation) is real but only means the *manifestation* is timing-
+dependent — the underlying defect is in the rebuilt firmware's PD/CCD/USB-bring-up, not
+in Renode. **The earlier "bounded emulation gap" framing for raiden-over-USB is WRONG
+and retracted.** Correct status: the reconstruction is **NOT functionally equivalent**
+to the original on USB bring-up; closing it requires source-version alignment of the
+PD/CCD/raiden plumbing to the original's vintage (or obtaining the original's exact
+source). The original firmware *can* be used to exercise live USB in this harness; the
+rebuilt cannot until the divergence is fixed.
+
+## (RETRACTED) EP4 raiden bring-up: a timing-race context corruption (bounded emulation gap)
 
 With CCD + the TIM2 fix + the `GaleAdc` dynamic-CC debug accessory, gale reaches
 SRC_ACCESSORY and `usb_init` completes. The lone remaining fault appears **only**

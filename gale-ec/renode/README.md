@@ -93,7 +93,22 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
 - **USB enumeration** is covered by *static descriptor* equivalence above; a *live*
   `lsusb` enumeration would additionally need an STM32 USB-FS device-controller model.
 
-**Independent verification — 3 consecutive all-green rounds achieved.**
+> **STATUS UPDATE — the 3×-green rounds below are STALE (binary changed).** Those
+> rounds (2/3/4) were run on the **pre-CCD binary `f07f0a55`**. The validated binary
+> has since changed to **`a2c186a0`** (CCD/`usb_init` restored to match the original,
+> TIM2 clock fixed) — see `FINDINGS-usb-ccd.md`. A fresh independent-verification round
+> on `a2c186a0` returned **RED** on all three dimensions: (1) tracing is NOT
+> comprehensive — the USB device controller is never driven live (no host-bridge;
+> `GaleUsb.SignalTransfer/SignalReset` have zero call sites), USB coverage is
+> static-descriptor-only, and there is no branch-coverage measurement; (2) traces are
+> equivalent-with-documented-deltas (battery 8 PASS/2 XFAIL/0 FAIL) but NOT byte-
+> identical (different source versions), and there are NO live-USB traces; (3) the
+> reconstruction is **not functionally equivalent** to the original on USB bring-up —
+> the original brings up `usb_init` cleanly in this harness while the rebuilt
+> stalls/panics (a real source-version divergence, see FINDINGS). **Re-verification to
+> 3× green is owed and not yet re-achieved on the current binary.**
+
+**Independent verification (historical, pre-CCD binary `f07f0a55`) — 3 consecutive all-green rounds.**
 Each round = 3 separate adversarial agents (tracing-comprehensive / traces-identical /
 no-shortcuts), each of which independently re-runs the tools against the two binaries.
 - **Round 1**: 1 RED (comprehensiveness — only console text traced) + 2 GREEN. Findings
