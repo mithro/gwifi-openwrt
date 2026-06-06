@@ -31,12 +31,12 @@ particular image pass.
 | `peripherals/GaleRcc.cs` | STM32F0 **RCC** — oscillator ENABLE bits drive READY bits; `RCC_CSR` not forced to 0 (fixes the `LSION→LSIRDY` boot deadlock). Replaces the stock "FLIPFLOP" stub. |
 | `peripherals/GaleFlash.cs` | STM32F0 **embedded-flash interface** — `WRPR=0xFFFFFFFF`, `SR.BSY=0`, KEYR/OPTKEYR unlock. Stops the write-protect-reconciliation reset loop in `flash_pre_init`. |
 | `data/gale-optionbytes.bin` | Real device option bytes (`md 0x1FFFF800`): RDP=0xAA (level 0), WRP=0xFF (none). sha256 `cdb247d4…`. |
-| `data/gale-optionbytes.bin` (see above) | — |
 | `run_one.py` | Boots one image headless, reports final PC / instr count / halt + unmodeled-peripheral worklist. |
+| `power_seq.py` / `soak.py` / `usb_descriptors.py` | Power-sequencing / soak-stability / USB-enumeration-identity equivalence tests. |
 | `capture_console.py` | Boots one image, injects console commands, prints the USART1 transcript. |
 | `battery.py` | Command-driven equivalence battery + trace-diff (console output), per-test PASS/XFAIL/FAIL. |
 | `trace_diff.py` | **Execution-trace** equivalence — logs the MMIO register-access sequence of both images and compares by longest-common-prefix + order-independent multiset coverage (hardware-level, build-independent). |
-| `peripherals/GaleDma.cs` / `GaleSpiFlash.cs` | DMA1 (UART-TX path) / W25Q64 (SPI bridge — readback gap, see file). |
+| `peripherals/GaleDma.cs` / `GaleSpiFlash.cs` | DMA1 (UART-TX + full-duplex SPI TX/RX interleave) / W25Q64 (SPI bridge — `spixfer` reads back `ef4017` end-to-end). |
 
 ## Run
 
@@ -59,8 +59,13 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
   gettime, **raiden SPI-flash RDID = ef4017**), **2 XFAIL** documented deltas (chan,
   flashinfo), 0 unexpected FAIL, no crashes.
 - `trace_diff.py` — **execution-trace** (MMIO register-access) equivalence: 201
-  identical accesses in order + 992 common access-events; differences trace to the
-  documented console/timing deltas. (This is real execution-trace, not console text.)
+  identical accesses in order + 992 common access-events. Every behaviorally-meaningful
+  peripheral has ZERO divergence (RCC, flashif, spi1, exti, gpioPortB/C/F). The only
+  diverging accesses are: usart1/dma1 **console-TX traffic** (different banner text +
+  a UART-TX-DMA-write-width difference — both emit identical console output), timer2
+  **scheduler ticks**, and one **adc** live-value read. All immaterial, all visible in
+  the tool's raw output (it normalizes nothing). This is real execution-trace, not
+  console text.
 - `power_seq.py` — **PASS**: `gale power on/off ap` drives all 6 AP rails
   identically (high then low) on both images.
 - `soak.py` — **PASS**: both run 2 s virtual, alive + panic-free + no crash/halt.
@@ -82,7 +87,11 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
 closed) + 2 GREEN (traces-identical, no-shortcuts). All round-1 integrity findings
 addressed. Convergence to 3× green pending (gated on the USB-PD model + re-review).
 
-**Next (toward green):** capture per-command instruction/peripheral-access traces
-(make it a real execution-trace diff); SPI TX/RX DMA interleaving → wire `spixfer`
-(raiden); `gale` subcommands + longer-settle taskinfo + soak; then USB-FS device
-and COMP/PD-PHY for USB/PD; then re-run the 3-agent gate to convergence.
+**Verification:** round 1 = 1 RED + 2 GREEN (integrity findings fixed). **Round 2 =
+all 3 GREEN** (comprehensiveness moved RED→GREEN; agents independently confirmed the
+raiden ef4017 is end-to-end not hardcoded, the SPI-DMA interleaving is faithful to
+spi_master.c, and the new tests are real). Need 3 consecutive all-green rounds.
+
+**Next:** continue verification rounds to 3× green; for full USB-PD live negotiation,
+add a COMP + bit-banged PD-PHY + modeled CC partner (the one remaining big peripheral);
+then publish to main.
