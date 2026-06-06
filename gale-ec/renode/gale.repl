@@ -43,6 +43,18 @@ usb: Miscellaneous.GaleUsb @ sysbus 0x40005C00
 usbram: Memory.MappedMemory @ sysbus 0x40006000
     size: 0x400
 
+// TIM2 is the EC's 32-bit system time base (TIM_CLOCK32=2). The firmware programs
+// PSC = clock_get_freq()/1MHz - 1 = 47 (CPU_CLOCK=48MHz) to tick get_time() at 1 us.
+// Renode's stock timer2 base is 10MHz, so 10MHz/48 ~= 208kHz -> firmware-time runs
+// ~5x slow and PD timing (cc_debounce, DRP toggle) + deferred hooks (board_no_charger)
+// never land correctly. Override to the real 48MHz APB1 timer-input clock so the
+// prescaler yields a true 1MHz tick. (Re-declared with the same type/address/IRQ to
+// change the constructor frequency.)
+timer2: Timers.STM32_Timer @ sysbus 0x40000000
+    frequency: 48000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@15
+
 // Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
 // (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
 optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800
