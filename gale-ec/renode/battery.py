@@ -145,8 +145,13 @@ def normalize(lines):
         s = re.sub(r"^Build:.*$", "Build: NORM", s)
         # gettime hex + decimal timestamp value
         s = re.sub(r"0x[0-9a-fA-F]+ = \d+\.\d+ s", "TIMEVAL", s)
-        # taskinfo stack high-water "used/size": used varies by build, size is fixed
-        s = re.sub(r"\b\d+/(\d+)\b", r"STK/\1", s)
+        # taskinfo stack high-water "used/size" (always the last column of a task
+        # row): the USED high-water legitimately differs between the two different-era
+        # toolchain builds (same tasks, allocated SIZE preserved and compared). Anchor
+        # to end-of-line so this can only ever fire on the StkUsed column, never on a
+        # mid-line value. NOTE: this is the one rule that hides a real (immaterial)
+        # numeric delta — see the per-build raw values in transcripts/report.txt diffs.
+        s = re.sub(r"(?<=\s)\d+/(\d+)$", r"STK/\1", s)
         # bare uptime / Time(s) decimal columns
         s = re.sub(r"\b\d+\.\d{6}\b", "TIME", s)
         out.append(s)

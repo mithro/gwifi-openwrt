@@ -42,25 +42,41 @@ uv run python run_one.py --bin ../../gale-ec-gale_v1.1.5337-0115719-2026-06-04.b
 (`ec-rebuilt.bin`, a local copy of `build/gale/ec.bin`, is git-ignored — rebuild it
 per [`../README.md`](../README.md).)
 
-## Status (in progress)
+## Status (in progress — honest accounting)
 
-**Done — boot bring-up.** With the RCC + FLASH + option-byte models, the firmware
-boots cleanly past `system_pre_init` and `flash_pre_init` (no boot-reset loop) and
-reaches console/USB initialization and the banner print (`system_get_build_info`,
-`uart_vprintf`, `watchdog_init`). Reset vector matches the dump
-(`SP=0x200004C0 PC=0x080000ED`). Remaining unmodeled accesses are deterministic
-Tags (PWR/SYSCFG/DBGMCU, all return 0) — modeled later only if a test needs a
-non-zero reply.
+**Working & committed.** Five deterministic models (RCC, FLASH, DMA1, option-byte
+memory) + the correct WP_L pin boot BOTH the original dump and the rebuilt `ec.bin`
+to the interactive `>` prompt (reset vector matches: `SP=0x200004C0 PC=0x080000ED`).
+The bidirectional USART1 console + `battery.py` diff the two images command-by-command.
 
-**Next.**
-1. **DMA1** — the UART console TX and other paths use DMA; the stock DMA is a
-   Python hack that throws (`'sysbus' is not defined`) on first use. Replace with
-   a real STM32F0 DMA model (mem↔periph channels) — required to capture console
-   output and to avoid the crash.
-2. **Interrupt sources** (SysTick / timers) so the EC scheduler runs its normal
-   loop instead of freezing in WFI.
-3. **USART1 console** bidirectional (inject commands, capture responses).
-4. **ADC**, **COMP + bit-banged PD PHY**, **USB-FS device**, **W25Q64 on the
-   raiden bridge** — as the test battery reaches them.
-5. **Test battery** mirroring `../HARDWARE-TEST-PLAN.md`, **trace-diff harness**,
-   and the **independent 3×-green verification gate**.
+**Equivalence result — command-driven tests only:**
+`7 PASS` (version, sysinfo, taskinfo, gpioget, panicinfo, adc, gettime),
+`2 XFAIL` documented deltas (chan, flashinfo), `0 unexpected FAIL`, no crashes.
+This portion also caught a real reconstruction bug (`CONFIG_TASK_PROFILING`), which
+was **fixed in the firmware**, not normalized away.
+
+**NOT yet done — this is what the comparison does NOT cover (do not overread the
+7 PASS):**
+- **The comparison is console-output equivalence, not full execution-trace
+  equivalence.** It diffs USART1 text only; no instruction / register / peripheral-
+  access trace is captured or compared. Two images could diverge internally yet
+  print identical tables. (Highest-priority depth gap.)
+- **Raiden SPI bridge — not validated.** `GaleSpiFlash.cs` is wired to SPI2/PB12 and
+  the model itself returns JEDEC `EF 40 17` correctly, BUT the EC reads back
+  `ff0000`: gale's SPI is full-duplex DMA-driven and `GaleDma` does instant,
+  independent per-channel transfers, so SPI TX/RX don't interleave (and the stock
+  STM32SPI has no RX FIFO). No battery command yet exercises `spixfer`/`gale`.
+- **USB enumeration — not modeled** (no STM32 USB-FS device model).
+- **USB-PD negotiation — not modeled** (no COMP / bit-banged PD-PHY; PD async state
+  is time-evolving and currently filtered out of the diff).
+- **Power-sequencing, soak/stability, `gale` subcommands — not yet in the battery.**
+
+**Independent verification (run on the command-driven portion):** tracing-
+comprehensive = RED (the gaps above); traces-identical = GREEN (PASSes byte-
+identical, XFAILs justified); no-shortcuts = GREEN (models RM0091-faithful, gaps
+disclosed). Not yet 3× green.
+
+**Next (toward green):** capture per-command instruction/peripheral-access traces
+(make it a real execution-trace diff); SPI TX/RX DMA interleaving → wire `spixfer`
+(raiden); `gale` subcommands + longer-settle taskinfo + soak; then USB-FS device
+and COMP/PD-PHY for USB/PD; then re-run the 3-agent gate to convergence.

@@ -12,8 +12,14 @@
 // and latches the per-channel Transfer-Complete flag (TCIF) + Global flag (GIF)
 // in ISR. The EC's dma.c detects completion by polling CNDTR (dma_bytes_done)
 // and ISR.TCIF (dma_wait), so an instantaneous, deterministic transfer matches
-// the firmware's expectations exactly and makes the UART console output (and any
-// other DMA path, e.g. SPI) observable for trace comparison.
+// the firmware's expectations for the UART console TX path (mem->periph, one-
+// directional) and makes console output observable for trace comparison.
+//
+// LIMITATION: each channel's transfer runs instantly and independently on the
+// CCR.EN edge. Correct for one-directional DMA (UART TX), but it does NOT model
+// full-duplex SPI, where the SPI2 TX and RX DMA channels must interleave byte-by-
+// byte (RX captures the slave response to each TX byte). So the SPI-flash readback
+// (raiden bridge) does not work yet — see peripherals/GaleSpiFlash.cs.
 //
 // Registers (DMA1 base 0x40020000):
 //   ISR  0x00 (RO flags), IFCR 0x04 (W1C), then per channel c=1..7:

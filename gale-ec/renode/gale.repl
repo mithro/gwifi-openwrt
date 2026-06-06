@@ -21,8 +21,11 @@ dma1: Miscellaneous.GaleDma @ sysbus 0x40020000
     size: 0x400
 
 // W25Q64FV (8 MiB) on the AP-flash bridge — SPI2, chip-select = PB12 (active low,
-// bit-banged by the firmware). Answers JEDEC RDID (EF 40 17) etc. so the EC's
-// spixfer / raiden SPI-flash-read path can be exercised and trace-compared.
+// bit-banged by the firmware). The model answers JEDEC RDID (EF 40 17) etc.
+// correctly, but the EC's readback is NOT yet end-to-end (it reads ff0000): gale's
+// SPI is full-duplex DMA-driven and GaleDma does not interleave TX/RX. See the
+// KNOWN GAP note in peripherals/GaleSpiFlash.cs. Present so the path can be wired
+// up once SPI TX/RX DMA interleaving lands; not yet validated by any test.
 spiflash: Miscellaneous.GaleSpiFlash @ spi2
 
 gpioPortB:
