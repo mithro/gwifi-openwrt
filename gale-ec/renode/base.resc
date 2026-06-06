@@ -1,0 +1,28 @@
+# gale EC differential-equivalence harness — base machine setup.
+# Builds the gale STM32F072 machine with deterministic, RM0091-faithful
+# peripheral models overlaid on Renode's stock STM32F072 platform.
+#
+# Variables (set via -e before `include`):
+#   $bin : firmware image path (@-prefixed)   — required
+#   $name: machine name                        — default "gale"
+#   $h   : harness root dir (@-prefixed)       — required (dir holding this file)
+$name?="gale"
+
+mach create $name
+
+# Compile the proper peripheral models (replace non-deterministic stubs).
+include $h/peripherals/GaleRcc.cs
+include $h/peripherals/GaleFlash.cs
+
+# Stock STM32F072 platform (CPU, NVIC, GPIO, USART, SPI, I2C, timers, ADC, EXTI...)
+machine LoadPlatformDescription @platforms/cpus/stm32f072.repl
+# Remove the non-deterministic stock RCC stub, then register the deterministic models.
+sysbus Unregister sysbus.rcc
+machine LoadPlatformDescription $h/gale.repl
+
+# Real option-byte values (RDP=0xAA level 0, WRP=0xFF none) at 0x1FFFF800.
+sysbus LoadBinary $h/data/gale-optionbytes.bin 0x1FFFF800
+
+# Full 128 KB image: RO @ 0x08000000 (+ RW @ 0x08010000) into modeled flash (0x20000)
+sysbus LoadBinary $bin 0x08000000
+cpu VectorTableOffset 0x08000000

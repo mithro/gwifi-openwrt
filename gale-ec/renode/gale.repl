@@ -1,0 +1,20 @@
+// gale EC — deterministic peripheral overrides on top of the stock STM32F072.
+// Loaded by base.resc AFTER platforms/cpus/stm32f072.repl, with the stock stub
+// peripherals first removed via `sysbus Unregister` (Renode forbids changing a
+// peripheral's TYPE by redefinition, so the stub is unregistered then replaced).
+// Peripheral C# sources are compiled via `include` in base.resc beforehand.
+
+// Real RCC: oscillator ENABLE bits drive READY bits; RCC_CSR is not forced to 0,
+// so the firmware's `LSION -> wait LSIRDY` handshake in system_pre_init completes.
+rcc: Miscellaneous.GaleRcc @ sysbus 0x40021000
+    size: 0x400
+
+// Real embedded-FLASH interface: WRPR=0xFFFFFFFF (nothing write-protected) + SR.BSY=0,
+// so flash_pre_init's write-protect reconciliation is a no-op (no boot reset loop).
+flashif: Miscellaneous.GaleFlash @ sysbus 0x40022000
+    size: 0x400
+
+// Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
+// (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
+optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800
+    size: 0x400
