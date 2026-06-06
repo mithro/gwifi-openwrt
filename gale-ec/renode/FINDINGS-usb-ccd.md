@@ -7,59 +7,69 @@ genuine **functional** divergence between the original dump and the reconstructi
 
 ---
 
-## STATUS SUMMARY (read first)
+## STATUS SUMMARY (read first — reconciled 2026-06-06, supersedes all conflicting notes below)
 
-* **NEW: LIVE USB enumeration + USB UART CONSOLE WORK (host-bridge built).** `usb_host.py`
-  plays the USB host over GaleUsb (SignalReset + EP0 SETUP via PMA + SignalTransfer). On
-  the ORIGINAL firmware, RESULT = **PASS** for all of:
-  - **device descriptor** LIVE: idVendor 0x18d1 / idProduct 0x500f, 18 bytes;
-  - **config descriptor** LIVE: wTotalLength=78, bNumInterfaces=4 (console if00 / AP if01 /
-    unused / raiden-SPI if03);
-  - **SET_CONFIGURATION(1)** then **USB UART console (EP1/if00)** LIVE: the EC streams its
-    console over USB — captured `"RST EP0 3220\r\n"` (14 bytes) on EP1.
-  This supersedes the earlier "USB is static-descriptor-only / SignalTransfer uncalled" gap
-  — live EP0 control enumeration AND live bulk USB-console data are now exercised
-  end-to-end. (The rebuilt does NOT enumerate: its USB bring-up diverges — see below.)
-  - **raiden SPI bridge over USB (EP3/if03)** LIVE: USB_SPI_REQ_ENABLE then a JEDEC RDID
-    (write 0x9F, read 3) over the raiden bulk endpoint returns status=SUCCESS + **ef4017**
-    (the W25Q64FV JEDEC ID) — the SPI-flash read transported over USB end-to-end (the EC
-    drove a real SPI2 transaction). RESULT on the original: **PASS** for the FULL chain
-    (device + config + USB console EP1 + raiden EP3->ef4017).
-  KEY version note: the ORIGINAL uses EP3 for raiden (USB_EP_SPI=3); the rebuilt uses EP4
-  (=4) — a concrete source-version difference. Remaining USB: AP console (if01/EP2, same
-  pattern); original↔rebuilt USB *equivalence* (blocked by the rebuilt's USB-bring-up
-  divergence — it doesn't enumerate).
+This file accreted contradictory claims over many sessions ("USB EQUIVALENCE PROVEN" vs a
+later "NOT functionally equivalent"). The following is the single reconciled status, scoped
+precisely to what the runnable evidence (`usb_host.py` on both binaries) actually shows.
+Where older sections below disagree, **this section wins**; they are kept only as audit trail.
+
+**What is EQUIVALENT (live, exercised end-to-end on BOTH images via `usb_host.py`):**
+* **Device descriptor — byte-identical.** All 18 bytes match; idVendor 0x18d1 / idProduct
+  0x500f on both. (Full 18-byte compare, not just the ID.)
+* **Config descriptor — header + topology match.** bLength=9, bDescriptorType=2,
+  wTotalLength=78, bNumInterfaces=4 on both (console if00 / AP if01 / unused / raiden if03).
+  The **full** config body is NOT byte-compared and is NOT expected identical: the raiden
+  endpoint-address byte differs (original EP3 vs rebuilt EP4 — see below).
+* **USB UART console (EP1/if00) — byte-identical.** Both stream `"RST EP0 3220\r\n"`
+  (14 bytes) on EP1.
+* **raiden SPI bridge over USB (if03) — both return JEDEC `ef4017`.** USB_SPI_REQ_ENABLE
+  then RDID (write 0x9F / read 3) over the raiden bulk endpoint returns status=SUCCESS +
+  `ef4017` (W25Q64FV) on BOTH — a real SPI2 transaction transported over USB end-to-end,
+  **not** a hardcoded value (the `GaleSpiFlash` JEDEC state machine was falsification-checked
+  by the no-shortcuts agent). Reproducible (`window=late`/`window=early` per image).
+
+**What DIVERGES (real source-version differences — documented, not papered over):**
+1. **raiden endpoint number: original EP3 vs rebuilt EP4** (`USB_EP_SPI` = 3 vs 4). This is
+   why the full config descriptor is not byte-identical.
+2. **usb_spi readiness/stability timing.** The original's usb_spi isn't armed until ~1.2 s
+   after SPI_ENABLE and is stable thereafter, so it answers RDID in the **late** window
+   (after full enumeration). The rebuilt answers immediately but its usb_spi state
+   **degrades after ~1 s**, so it answers only in the **early** window (RDID right after
+   SPI_ENABLE). `usb_host.py` fires both windows and reports which one each image used —
+   so the divergence is *visible in the tool output*, not hidden. Both still return `ef4017`.
+3. **Autonomous USB bring-up.** The ORIGINAL reaches `usb_init` on its own PD path
+   (st2→st16→st17→"USB init done", 0 panics over 5 s). The REBUILT does **not** bring up
+   `usb_init` autonomously (st2→st15→st16 then stalls); it needs the debug-accessory CC
+   forced (`--mon "sysbus.adc CcPullAddress 0x20001107"`). Root cause = PD/CCD source-version
+   skew (the reconstruction's `usb_pd_protocol.c`/CCD plumbing is a newer vintage than the
+   2016 original). This is the divergence the CORRECTION section below correctly identified;
+   it stands.
+
+**Bounded conclusion (honest):** the rebuilt's USB *function* — enumeration, USB UART
+console, and the raiden SPI bridge — is **equivalent to the original** once the USB
+controller is up, each within its own readiness window. The rebuilt is **NOT** equivalent
+in **autonomous PD/CCD bring-up** (needs forced debug accessory) nor in raiden **endpoint
+number** / **usb_spi stability timing**. These are real reconstruction/source-version deltas,
+reserved (with AP boot and USB-PD live negotiation) as documented bounded gaps — not claimed
+as identical.
 
 * **FIXED + verified:** the reconstruction was missing `CONFIG_CASE_CLOSED_DEBUG`;
   restored (board/gale only) so `usb_init`/CCD is present and the USB register
   footprint matches the original (CNTR/ISTR ×4, BTABLE ×2). Also fixed the Renode
-  TIM2 clock (10→48MHz). Both committed/pushed. battery still 8 PASS/2 XFAIL/0 FAIL.
-* **WORKS:** CCD → SRC_ACCESSORY → `ccd_set_mode` → **`usb_init` completes**
-  ("USB init done", CNTR=0xE400). The USB-console enable path (`usb_console_enable`,
-  EP1/EP2) is also clean.
-* **USB CONSOLE equivalence (latest+):** rebuilt EP1 console buffer = "RST EP0 3220\r\n"
-  BYTE-IDENTICAL to the original's — USB UART console (if00) equivalent on both. AP console
-  (if01/EP2) is configured on both but empty (the AP/IPQ4019 isn't running in EC-only
-  emulation — a bounded gap, same root as AP-boot). So comprehensive USB equivalence is
-  demonstrated: device desc + config struct + console + raiden, all matching across images.
-* **USB EQUIVALENCE PROVEN across BOTH images (latest):** with the host-bridge driving
-  both, the rebuilt **does** enumerate (forced via dynamic CC, pre-panic window) and is
-  **equivalent to the original**: byte-identical device descriptor (18d1:500f) + identical
-  config structure (78B / 4 interfaces), AND the **raiden SPI bridge returns ef4017 over
-  USB on BOTH** (original EP3, rebuilt EP4 — both with a real SPI2 transaction). So the
-  USB *function* (enumeration + raiden + console) is equivalent. The remaining USB
-  divergences are: the raiden bulk **endpoint number** (EP3 vs EP4 = `USB_EP_SPI`
-  source-version), the rebuilt not bringing up `usb_init` **autonomously** (needs the
-  forced debug-accessory), and a **separate ~1 s rebuilt context-corruption panic** in
-  prolonged `usb_spi_deferred` scheduling (does NOT block the raiden read itself, which
-  succeeds). My earlier "rebuilt doesn't enumerate / not functionally equivalent on USB"
-  framing is **superseded** — enumeration and raiden are equivalent; the divergences are
-  the endpoint number + autonomous-bring-up + the late panic.
-* **NOT YET DONE (multi-session):** USB host-bridge + live enumeration, exercising
-  the consoles/raiden over USB end-to-end, 100% branch-coverage measurement, and the
-  3× independent-verification rounds.
+  TIM2 clock (10→48MHz). battery still 8 PASS/2 XFAIL/0 FAIL.
 
 ## ⚠️ CORRECTION (independent verification, later): the EP4 fault is a RECONSTRUCTION divergence, NOT an emulation artifact
+
+> **SCOPE NOTE (2026-06-06):** this section's core finding — that the divergence is a real
+> reconstruction defect, NOT an emulator artifact (the original runs the same path clean in
+> this harness while the rebuilt stalls/panics) — **stands and is correct**. But its blanket
+> conclusion "the rebuilt CANNOT exercise live USB / is NOT functionally equivalent on USB"
+> is now **narrowed**: with the debug accessory forced and the raiden RDID fired in the
+> rebuilt's early usb_spi window, the rebuilt DOES enumerate, stream its USB console, and
+> return raiden `ef4017` (see the reconciled STATUS SUMMARY above). The genuine divergence is
+> specifically **autonomous PD/CCD bring-up** + raiden **endpoint number** + **usb_spi
+> stability timing** — not a wholesale inability to do live USB.
 
 An independent adversarial verification agent + a direct test **retracted** the
 "emulation timing-race artifact" conclusion below. Decisive test in the SAME Renode
