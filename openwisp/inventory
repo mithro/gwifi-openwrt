@@ -1,0 +1,17 @@
+# OpenWISP runs Ansible against itself (the wisp VM), so the controller box
+# provisions and later upgrades itself with no separate control node.
+#
+#   * inventory_hostname = wisp.welland.mithis.com
+#       -> used verbatim for the nginx server_name, the self-signed TLS cert
+#          CN, Django ALLOWED_HOSTS and the /etc/hosts self-reference.
+#       -> MUST be the FQDN, never a bare IP (postfix breaks on an IP, which
+#          would turn some admin actions into HTTP 500s).
+#   * ansible_connection=local
+#       -> tasks run on this machine directly (fast, no SSH fan-out, no
+#          ProxyJump fragility for the hundreds of connections a run makes).
+#
+# Run as user `tim` (passwordless sudo); `become: true` in the playbook
+# escalates per-task.
+
+[openwisp2]
+wisp.welland.mithis.com ansible_connection=local

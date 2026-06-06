@@ -1,0 +1,5 @@
+# Never commit the OpenWISP secrets (admin password, mesh key)
+.admin-credentials
+.wifi-secrets
+__pycache__/
+*.pyc

@@ -1,0 +1,28 @@
+---
+# OpenWISP Ansible role + required collections, pinned for reproducibility.
+#
+# Installed on the wisp VM with:
+#     ansible-galaxy install -r requirements.yml
+#
+# The role's meta/main.yml declares two further role dependencies that
+# ansible-galaxy pulls in automatically (both from git, hence git is a
+# prerequisite on the box):
+#   - Stouts.postfix          (local MTA for notification e-mail)
+#   - openwisp.influxdb       (InfluxDB 1.x time-series backend for monitoring)
+#
+# Role version 25.10.2 pins the OpenWISP modules to released "~=1.2.0"
+# versions (the role's master branch instead tracks each module's dev
+# tarball/master, which we deliberately avoid on this box).
+
+roles:
+  - name: openwisp.openwisp2
+    version: 25.10.2
+  # Issues + renews the Let's Encrypt cert for wisp (HTTP-01, --standalone).
+  # wisp terminates its own TLS; ten64 SNI-passes :443 through to it.
+  - name: geerlingguy.certbot
+    version: 5.4.1
+
+collections:
+  - name: community.general
+    version: ">=3.6.0"
+  - name: ansible.posix

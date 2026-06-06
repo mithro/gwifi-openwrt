@@ -1,0 +1,23 @@
+# Pin InfluxDB to the 1.8.10 line on the wisp VM.
+#
+# Installed to /etc/apt/preferences.d/influxdb BEFORE running the playbook.
+#
+# Why: the openwisp.influxdb sub-role installs the `influxdb` package with
+# `state: latest` and exposes no version variable. The InfluxData "stable
+# main" repo now carries the continued v1 line up to 1.12.x, so an
+# unconstrained install would land on 1.12.4-1 -- a version openwisp-monitoring
+# is not documented/tested against, and whose influxdb.conf layout the
+# sub-role's line-edits were not written for.
+#
+# Pin-Priority 1001 makes 1.8.10-1 *the* candidate, so the role's
+# `state: latest` resolves to it and never drifts. This is the version our
+# earlier dependency check verified installs cleanly on Debian 13 / arm64,
+# and the version openwisp-monitoring targets.
+#
+# To move to a newer v1 (e.g. 1.12.x) later: delete this file, `apt update`,
+# `apt install --only-upgrade influxdb`, then restart influxdb + the openwisp
+# monitoring celery worker and re-check writes.
+
+Package: influxdb
+Pin: version 1.8.10-1
+Pin-Priority: 1001
