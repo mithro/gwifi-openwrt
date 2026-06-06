@@ -62,7 +62,25 @@ cannot reach it under any input.
   standard is functional equivalence with documented deltas (see `battery.py`
   `DOCUMENTED_DELTAS`).
 
-## Fix attempted — and what it revealed (version skew, not a one-liner)
+## Scope decision (user, 2026-06-06)
+
+The comparison is **original dump vs the recreation that was confirmed functionally
+equivalent** — `ec/` @ `firmware-gale-8281.B` (→ `ec-rebuilt.bin`, sha f07f0a55…),
+the gale factory-branch vintage — **not** a rebase onto latest (`ec-main`). The
+recreation must **not** be modified to chase live USB. A trial edit that enabled
+`CONFIG_CASE_CLOSED_DEBUG`/`CONFIG_CHARGE_MANAGER` was **reverted**; the recreation is
+restored byte-for-byte to its validated binary. So the `usb_init`/CCD difference below
+stands as an **honestly-disclosed bounded divergence**, not something to patch away.
+
+This means live USB-device enumeration (consoles if00/if01, raiden if03) is **not
+exercisable on the confirmed-equivalent recreation as-built**: it does not compile the
+CCD path that powers the USB controller, and that path only activates with a physical
+Type-C debug accessory — outside the device's normal operating behavior over which the
+equivalence was confirmed. The equivalence standard remains functional-equivalence-
+with-documented-deltas (battery.py 8 PASS / 2 XFAIL + trace_diff), with this USB-CCD
+difference recorded as a disclosed gap.
+
+## Build-trial detail (for the record — not applied)
 
 Added `#define CONFIG_CASE_CLOSED_DEBUG` to `board/gale/board.h` and rebuilt
 (`make BOARD=gale build/gale/ec.bin`). It does NOT link — two version-skew conflicts:
