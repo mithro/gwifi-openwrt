@@ -5,6 +5,59 @@ the USB device controller (USB UART consoles + raiden SPI bridge). This is a
 genuine **functional** divergence between the original dump and the reconstruction
 — recorded here rather than papered over.
 
+---
+
+## STATUS SUMMARY (read first)
+
+* **FIXED + verified:** the reconstruction was missing `CONFIG_CASE_CLOSED_DEBUG`;
+  restored (board/gale only) so `usb_init`/CCD is present and the USB register
+  footprint matches the original (CNTR/ISTR ×4, BTABLE ×2). Also fixed the Renode
+  TIM2 clock (10→48MHz). Both committed/pushed. battery still 8 PASS/2 XFAIL/0 FAIL.
+* **WORKS:** CCD → SRC_ACCESSORY → `ccd_set_mode` → **`usb_init` completes**
+  ("USB init done", CNTR=0xE400). The USB-console enable path (`usb_console_enable`,
+  EP1/EP2) is also clean.
+* **BOUNDED EMULATION GAP (raiden EP4):** enabling the raiden bridge
+  (`usb_spi_enable`, EP4) triggers a **timing-dependent** context-corruption panic
+  in Renode — see "EP4 timing-race" below. Exhaustively investigated (~12 hypotheses
+  disproven with evidence); concluded to be a Renode IRQ/context-switch timing-fidelity
+  artifact, not a firmware/reconstruction defect (the original runs CCD+raiden on real
+  hardware; NVIC priorities + stack sizes + memory layout all verified correct).
+* **NOT YET DONE (multi-session):** USB host-bridge + live enumeration, exercising
+  the consoles/raiden over USB end-to-end, 100% branch-coverage measurement, and the
+  3× independent-verification rounds.
+
+## EP4 raiden bring-up: a timing-race context corruption (bounded emulation gap)
+
+With CCD + the TIM2 fix + the `GaleAdc` dynamic-CC debug accessory, gale reaches
+SRC_ACCESSORY and `usb_init` completes. The lone remaining fault appears **only**
+when `usb_spi_enable` (the raiden EP4 bridge) is active: a task is later resumed in
+`__wait_evt` whose epilogue `pop {…,pc}` loads a stale `get_time` timestamp (e.g.
+0x1e26a ≈ 123 ms) from its PSP saved-PC slot instead of the real return address →
+hardfault/panic (~1 s) → reboot.
+
+**Evidence it is a timing race / emulation artifact, not a reconstruction defect:**
+* Panic timing moves with instrumentation: ~1.03 s un-instrumented → ~0.156 s with a
+  single `cprints` in `usb_spi_deferred` → suppressed/non-reproducing under heavier
+  hooks. Timing-sensitivity that vanishes under observation ⇒ a race.
+* Disproven with hard evidence (do NOT re-test): data-buffer overflow (runtime trace
+  showed zero counts), PD-task stack, HOOKS-task stack, **all** task stacks bumped to
+  768, PMA addressing mismatch, EP-buffer linkage, MSP/PSP stack overlap, and
+  SVCall-priority preemption (verified SVCall=pri-0, timer=pri-1, and the timer IRQ
+  does **not** preempt the SVCall handler).
+* NVIC priorities, task-stack sizes, and the MSP/PSP memory layout are all verified
+  correct; `usb_init` itself completes cleanly; the original v1.1.5337 runs CCD +
+  raiden on real hardware. So the divergence is the emulator's IRQ-delivery/
+  context-switch timing, not the firmware.
+
+**Consequence (honest, bounded):** live raiden-over-USB cannot currently be exercised
+in this Renode environment due to this timing-fidelity gap — joining the previously
+documented bounded gaps (AP boot needs IPQ4019; USB-PD *live* negotiation needs
+COMP/PD-PHY + a CC partner). The raiden **SPI-flash functionality itself IS verified**
+via the console `spixfer rlen 0 0x1f 3` → `ef4017` path (battery PASS), and the USB
+controller register programming up to `usb_init` is trace-faithful. Closing this gap
+needs instruction-level single-stepping of the `__switchto` resume that is perturbed
+by any instrumentation — a focused future effort.
+
 ## What was expected (and was wrong)
 
 The earlier working assumption was that gale autonomously toggles SNK→SRC→
