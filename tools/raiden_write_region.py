@@ -25,6 +25,7 @@ USAGE
   Internal worker subcommands (spawned automatically; not for direct use):
     _pgm <0xoff> <chunkfile> [ro_ok]      _rd <0xoff> <0xlen> <outfile>
 """
+import argparse
 import os
 import struct
 import subprocess
@@ -132,16 +133,13 @@ def parse_fmap(buf):
 
 # ---------- orchestrator ----------
 
-def orchestrate(argv):
-    src = argv[0]
-    spec = argv[1]
-    opts = argv[2:]
-    chunk = 0x4000   # 16 KiB: safe under the ~1444-transaction per-session cliff
-    if "--chunk" in opts:
-        chunk = int(opts[opts.index("--chunk") + 1], 0)
-    commit = "--commit" in opts
-    allow_ro = "--allow-ro" in opts
-    do_verify = "--no-verify" not in opts
+def orchestrate(args):
+    src = args.src
+    spec = args.region
+    chunk = args.chunk
+    commit = args.commit
+    allow_ro = args.allow_ro
+    do_verify = not args.no_verify
 
     image = open(src, "rb").read()
     if len(image) != CHIP_SIZE:
@@ -226,11 +224,23 @@ def main():
                    len(sys.argv) > 4 and sys.argv[4] == "ro_ok")
     elif len(sys.argv) >= 2 and sys.argv[1] == "_rd":
         worker_rd(int(sys.argv[2], 16), int(sys.argv[3], 16), sys.argv[4])
-    elif len(sys.argv) >= 3:
-        orchestrate(sys.argv[1:])
     else:
-        print(__doc__)
-        raise SystemExit(2)
+        ap = argparse.ArgumentParser(
+            prog="raiden_write_region.py",
+            description="Region-aware erase+program+verify writer for gale's AP SPI "
+                        "flash over the EC raiden bridge. Dry-run by default.")
+        ap.add_argument("src", help="8 MiB source image (must contain a valid FMAP)")
+        ap.add_argument("region", help="FMAP region name (e.g. RW_LEGACY) or 0xOFF:0xLEN")
+        ap.add_argument("--chunk", type=lambda x: int(x, 0), default=0x4000, metavar="N",
+                        help="bytes per fresh-session chunk (default 0x4000; larger "
+                             "risks the per-session cliff)")
+        ap.add_argument("--commit", action="store_true",
+                        help="actually erase+program (default: dry-run only)")
+        ap.add_argument("--allow-ro", action="store_true",
+                        help="permit writes below 0x400000 (RO/bootblock; bricking risk)")
+        ap.add_argument("--no-verify", action="store_true",
+                        help="skip per-chunk read-back verify (DANGEROUS)")
+        orchestrate(ap.parse_args())
 
 
 if __name__ == "__main__":
