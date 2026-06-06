@@ -78,7 +78,10 @@ def read_chunk(off, size, outpath, retries=1):
                "-l", LAY, "-i", f"chunk:{outpath}", "-r", THROW]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         data = open(outpath, "rb").read() if os.path.exists(outpath) else b""
-        if len(data) == size:
+        # A read is valid only if BOTH signals agree: full length AND flashrom
+        # exited 0. A nonzero rc with a full-size file (e.g. a stale same-size
+        # file from a prior failed attempt) must NOT be accepted as good data.
+        if len(data) == size and proc.returncode == 0:
             return proc.returncode, data, proc.stdout + proc.stderr, attempt
         if attempt < retries:
             time.sleep(0.5)
@@ -115,7 +118,7 @@ def main():
         for idx in range(n):
             off = idx * CHUNK
             rc, data, log, att = read_chunk(off, CHUNK, f"{TMP}/_chunk_cur.bin")
-            if len(data) != CHUNK:
+            if len(data) != CHUNK or rc != 0:
                 bad.append(off)
                 print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  FAILED rc={rc} got={len(data)}B")
                 print("    " + log.strip().replace("\n", "\n    "))
@@ -145,6 +148,9 @@ def main():
             print(f"  first diff   = {('0x%06x' % first_diff) if first_diff is not None else 'NONE (identical)'}")
         if bad:
             print(f"  FAILED offsets: {[hex(x) for x in bad]}")
+            # Loud process-level failure: a zero-filled/partial image must never
+            # exit 0, or a caller will treat the corrupt output as a faithful read.
+            sys.exit(1)
         return
 
     if args[0] == "test":
@@ -152,12 +158,14 @@ def main():
     else:
         offs = [int(x, 0) for x in args]
 
+    failed = []
     for off in offs:
         rc, data, log, att = read_chunk(off, CHUNK, f"{TMP}/chunk_{off:06x}.bin")
         print(f"\n===== chunk @ 0x{off:06x} (64 KiB) =====")
         print(f"  flashrom rc={rc}  got={len(data)}B  retries_used={att}")
-        if len(data) != CHUNK:
-            print("  READ DID NOT RETURN 64 KiB -- log:")
+        if len(data) != CHUNK or rc != 0:
+            failed.append(off)
+            print(f"  READ FAILED (rc={rc}, got {len(data)}B, want {CHUNK}) -- log:")
             print("    " + log.strip().replace("\n", "\n    "))
             continue
         live_nonzero = sum(1 for x in data if x != 0)
@@ -178,6 +186,9 @@ def main():
     for p in (THROW, LAY):
         if os.path.exists(p):
             os.remove(p)
+    if failed:
+        sys.exit(f"FAILED chunks (short read or flashrom rc!=0): "
+                 f"{[hex(x) for x in failed]}")
 
 
 if __name__ == "__main__":
