@@ -42,6 +42,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public long Size => size;
 
+        // USB-PD RX capture: number of TIM1-input-capture sample bytes the CC partner has
+        // pre-staged into the channel's memory buffer (pd_phy.raw_samples). When the firmware
+        // arms the TIM1-CCR1 source channel (pd_rx_start), this model reports these bytes as
+        // captured WITHOUT overwriting the buffer (the staged samples ARE the captured CC
+        // waveform), so dma_bytes_done() returns this count. 0 disables the special case.
+        public uint TimRxSampleCount { get; set; }
+
         public void Reset()
         {
             isr = 0;
@@ -100,6 +107,18 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             var psize = ElemSize((control >> 8) & 0x3);
             var ma = cmar[c];
             var pa = cpar[c];
+
+            // --- USB-PD TIM1 input-capture RX special case ------------------------
+            // pd_rx_start() arms a periph->mem channel sourcing TIM1_CCR1 to capture the CC
+            // edge timestamps. There is no analog comparator; the CC partner has pre-staged
+            // the encoded sample bytes into the destination buffer (raw_samples). Report
+            // TimRxSampleCount bytes as captured by leaving CNDTR = n - count (so
+            // dma_bytes_done() = count) and DO NOT overwrite the buffer.
+            if(!mem2mem && !dirMemToPeriph && pa == TIM1_CCR1 && TimRxSampleCount != 0)
+            {
+                cndtr[c] = n > TimRxSampleCount ? n - TimRxSampleCount : 0;
+                return; // leave staged samples intact; no TCIF (firmware polls CNDTR)
+            }
 
             // --- Full-duplex SPI DMA special case ---------------------------------
             // gale's SPI master pairs a TX channel (mem->SPI_DR) with an RX channel
@@ -233,6 +252,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const int NumChannels = 7;
         private const uint SPI1_DR = 0x4001300C; // SPI1 base 0x40013000 + DR 0x0C
         private const uint SPI2_DR = 0x4000380C; // SPI2 base 0x40003800 + DR 0x0C
+        private const uint TIM1_CCR1 = 0x40012C34; // TIM1 base 0x40012C00 + CCR1 0x34 (PD RX)
         private const long ISR  = 0x00;
         private const long IFCR = 0x04;
 

@@ -55,6 +55,13 @@ timer2: Timers.STM32_Timer @ sysbus 0x40000000
     initialLimit: 0xFFFFFFFF
     -> nvic@15
 
+// STM32F0 EXTI with a USB-PD COMP-edge injector. Replaces the stock STM32F4_EXTI so a
+// modeled CC partner can play the comparator (COMP1->EXTI21 / COMP2->EXTI22 -> ADC_COMP
+// IRQ 12) via `sysbus.exti FireComp 21`, waking pd_task through the real pd_rx_handler.
+exti: Miscellaneous.GaleExti @ sysbus 0x40010400
+    size: 0x400
+    IRQ -> nvic@12
+
 // Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
 // (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
 optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800

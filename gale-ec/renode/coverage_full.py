@@ -23,6 +23,9 @@ import os
 import re
 import subprocess
 
+import pd_encode
+import pd_inject
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
 TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
@@ -76,7 +79,17 @@ def scenarios(boot):
     s.append(("reboot", [], ["reboot hard", "version"]))
     s.append(("hibernate", [], ["hibernate 1", "version"]))
     s.append(("gale", [], ["gale", "gale power on ap", "gale power off ap"]))
-    return [(n, m, cc, boot) for (n, m, cc) in s]
+    out = [(n, m, cc, boot, []) for (n, m, cc) in s]
+    # LIVE USB-PD: attach as sink, then inject a battery of PD messages over the modeled
+    # CC-partner PD-PHY (GaleExti COMP-IRQ wake + GaleDma RX-sample feed). Each message is
+    # decoded by the real pd_analyze_rx and dispatched by handle_request -> covers the
+    # PD-PHY decode chain + protocol dispatch (the largest uncovered category).
+    pd_pre = ['sysbus.adc CcPullAddress 0x20001107', 'sysbus.adc PartnerSource true']
+    pd_post = []
+    for _name, msg in pd_encode.battery():
+        pd_post += pd_inject.stage(msg)
+    out.append(("pd_live", pd_pre, [], boot, pd_post))
+    return out
 
 
 def disasm_branches(elf):
@@ -103,7 +116,7 @@ def disasm_branches(elf):
     return set(insns), cond, sym
 
 
-def run_scenario(name, mon, cmds, boot):
+def run_scenario(name, mon, cmds, boot, post=None):
     trace = os.path.join(TMP, "cov_%s.txt" % name)
     c = ['$h=@%s' % HERE, '$bin=@%s' % REBUILT, '$name="cov"', 'include @%s' % BASE] + mon
     c += ['cpu CreateExecutionTracing "tr_%s" @%s PC' % (name, trace),
@@ -111,6 +124,7 @@ def run_scenario(name, mon, cmds, boot):
     for cmd in cmds:
         c += ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")]
         c.append('emulation RunFor "0.08"')
+    c += (post or [])              # post-boot monitor commands (e.g. PD message injection)
     c += ['cpu DisableExecutionTracing', 'quit']
     subprocess.run(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
                    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=600)
@@ -148,9 +162,9 @@ def main():
     scns = scenarios(args.boot)
     print("Running %d scenarios (each a separate traced renode run)..." % len(scns))
     traces = []
-    for name, mon, cmds, boot in scns:
+    for name, mon, cmds, boot, post in scns:
         print("  scenario: %-18s (%d cmds)" % (name, len(cmds)))
-        traces.append((name, run_scenario(name, mon, cmds, boot)))
+        traces.append((name, run_scenario(name, mon, cmds, boot, post)))
 
     executed, taken, nottaken = set(), set(), set()
     for name, elf in []:  # placeholder

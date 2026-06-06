@@ -32,17 +32,22 @@ coverage is cumulative: a branch is "both-directions" if its taken side is seen 
 scenario and its not-taken side in *some* scenario.) Measured union:
 
 ```
-RO image:  instructions 7928/20089 = 39.5%;  cond branches 1583 total, 726 reached, 244 both-dirs
+RO image:  instructions 9663/20089 = 48.1%;  cond branches 1583 total, 856 reached, 283 both-dirs
 RW image:  instructions 5608/20085 = 27.9%;  cond branches 1583 total, 542 reached, 163 both-dirs
 ```
 
-This is a real, large improvement over a single boot (RO 28%→39.5% instr; RW 0%→27.9%), and
-it **quantifies the ceiling**: 857/1583 RO branches are not reached by ANY of the 21 scenarios.
-The dominant uncovered category is the PD physical-layer / protocol state machine; closing it
-needs a live PD contract via the integrated CC-partner peripheral (COMP-IRQ wake + RX-DMA
-sample feed) specified in `STATUS-PD-PHY.md`. The AP host-command branches need the
-host-command injector (task #17). Neither reaches literal 100% (reset-only fault branches and
-the absent AP SoC remain) — see the per-category table below.
+This is a large improvement over a single boot (RO 28%→48.1% instr; RW 0%→27.9%). The
+**`pd_live`** scenario alone — injecting a 14-message battery over the modeled CC-partner
+PD-PHY (`GaleExti` COMP-IRQ wake + `GaleDma` RX-sample feed; see `STATUS-PD-PHY.md`) so the
+real `pd_analyze_rx` decodes and `handle_request` dispatches each — added **+130 reached
+branches** (726→856) by executing the `pd_task`/`pd_find_preamble`/`pd_dequeue_bits`/
+`pd_analyze_rx`/`handle_*_request`/`pd_build_request` chain that was previously the single
+largest uncovered category. 727/1583 RO branches remain unreached by ANY of the 22 scenarios.
+With the PD-PHY now driven live, the remaining uncovered set is dominated by `COVERABLE_GAP`
+(reached-one-direction — drivable with more inputs / full PD contract) and the structural
+classes (HW-can't-fail error returns, AP host-commands — task #17, reset-only fault handlers).
+Literal 100% is still not reachable (the absent AP SoC + reset-only faults), as the
+per-category table shows.
 
 ## Why literal 100% branch coverage is NOT achievable here — quantified at branch granularity
 
@@ -51,12 +56,15 @@ the absent AP SoC remain) — see the per-category table below.
 
 | Category (RO) | branches | why both-directions can't be driven in EC-only emulation |
 |---|---|---|
-| `UNREACHED_OTHER` | 629 | overwhelmingly the **PD physical-layer / protocol** state machine — `pd_task` alone holds **179** uncovered branches, plus `pd_analyze_rx`, `pd_build_request`, `pd_dequeue_bits`, `pd_find_preamble`, `pd_svdm` — which only execute when real PD messages are received/sent over a COMP + bit-banged PD-PHY against a live CC partner (the documented **USB-PD live-negotiation gap**) |
-| `HW_CANT_FAIL` | 194 | `EC_ERROR_*` returns for modeled hardware that never errors (flash never BSY, SPI slave always responds, ADC/DMA never fail) |
-| `COVERABLE_GAP` | 391 | reached in some scenario but only one direction seen — the honest work-list (drivable with more inputs; does not change the ceiling) |
-| `AP_DEPENDENT` | 85 | `host_command_process`, `hc_remote_flash`, `hc_usb_pd_control`, LPC/keyboard/charger — need the **IPQ4019 AP** (the documented **AP-boot gap**) |
+| `UNREACHED_OTHER` | 502 | residual PD/console/libc paths not hit by the current scenario set (the bulk of the PD-PHY/protocol chain is now covered by `pd_live`); reducible with more message types + a full PD contract |
+| `COVERABLE_GAP` | 472 | reached in some scenario but only one direction seen — the honest work-list (drivable with more inputs / the contract-accepted PD paths); does not change the structural ceiling |
+| `HW_CANT_FAIL` | 189 | `EC_ERROR_*` returns for modeled hardware that never errors (flash never BSY, SPI slave always responds, ADC/DMA never fail) |
+| `AP_DEPENDENT` | 84 | `host_command_process`, `hc_remote_flash`, `hc_usb_pd_control`, LPC/keyboard/charger — need the **IPQ4019 AP** (host-command injector = task #17) |
 | `UNREACHABLE_FAULT` | 41 | panic/hard-fault/assert/reboot/hibernate handlers — the not-taken side is the normal path; taking the other side resets the CPU |
 | `WATCHDOG_TIMEOUT` | 12 | watchdog-trip / timeout-expiry guards that never fire deterministically |
+
+(Pre-`pd_live` the largest category was `UNREACHED_OTHER`=629, dominated by `pd_task` alone =
+179 uncovered PD branches; driving the live CC-partner moved most of those to reached.)
 
 (RW is analogous: 747 `UNREACHED_OTHER`, 320 `COVERABLE_GAP`, 210 `HW_CANT_FAIL`, 86 `AP_DEPENDENT`, 44 `UNREACHABLE_FAULT`, 13 `WATCHDOG_TIMEOUT`.)
 

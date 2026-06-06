@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """CC-partner PD message injector — drives a live USB-PD negotiation against gale in Renode.
 
-Prereq: gale is attached as a SINK (GaleAdc PartnerSource=true presents a source on CC1),
-so pd_task sits in SNK_DISCOVERY with rx_enabled. We then act as the Source's PD-PHY:
+gale is attached as a SINK (GaleAdc PartnerSource presents a source on CC1) and sits in
+SNK_DISCOVERY with RX enabled. We then act as the Source's PD-PHY + comparator:
   1. write the BMC/4b5b/CRC-encoded RX capture samples (pd_encode) into pd_phy[0].raw_samples;
-  2. arm the RX path the firmware checks — RX DMA ch2 EN with CNDTR=0 (dma_bytes_done=full),
-     and TIM1 CR1.EN=1 (pd_rx_started() true);
-  3. let pd_task's next loop run tcpc_run -> pd_analyze_rx, which decodes our message and
-     dispatches it (handle_request).
-No IRQ is required: tcpc_run polls pd_rx_started() every pd_task iteration.
+  2. tell GaleDma how many sample bytes are staged (TimRxSampleCount) so the TIM1-capture RX
+     DMA reports them via dma_bytes_done() without overwriting the buffer;
+  3. fire the COMP comparator three times within 20us (GaleExti.FireComp 21) so the real
+     pd_rx_handler runs -> pd_rx_start (arms RX) -> pd_rx_event (wakes pd_task);
+  4. pd_task -> tcpc_run -> pd_analyze_rx decodes our message from raw_samples and dispatches it.
 
-Addresses (rebuilt + original share these — pd_phy is at the same .bss addr in RO/RW):
-  pd_phy.raw_samples = 0x20000638 ; TIM1 CR1 = 0x40012C00 ; DMA ch2 CCR=0x4002001C CNDTR=0x40020020
+A full contract additionally needs the partner to answer gale's Request with Accept then
+PS_RDY (and the EC auto-sends GoodCRC for received msgs). We inject those after each gale TX
+settle window.
 
-Usage: uv run python pd_inject.py [--bin ec-rebuilt.bin] [--boot 2.0]
+Addresses: pd_phy.raw_samples=0x20000638, tcpc pd[0].cc_pull=0x20001107.
+Usage: uv run python pd_inject.py [--bin ec-rebuilt.bin] [--boot 2.0] [--dump]
 """
 import argparse
 import os
@@ -25,40 +27,35 @@ import pd_encode
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
 RAW = 0x20000638          # pd_phy[0].raw_samples (nm pd_phy)
-TIM1_CR1 = 0x40012C00
-DMA2_CCR = 0x4002001C
-DMA2_CNDTR = 0x40020020
-CCPULL = 0x20001107       # pd[0].cc_pull (tcpc layer)
+CCPULL = 0x20001107       # pd[0].cc_pull (tcpc layer); CC1 -> COMP1 -> EXTI line 21
+RXHEAD = 0x20001114       # pd[0].rx_head[0] = pd_analyze_rx() return (header, or <0 on fail)
+EXTI_COMP_LINE = 21
 
 
-def write_samples(samples):
-    """Monitor commands to write the sample bytes into raw_samples (byte writes)."""
-    return ['sysbus WriteByte 0x%X 0x%02X' % (RAW + i, b) for i, b in enumerate(samples)]
-
-
-def arm_rx():
-    """Arm the RX path so pd_rx_started() is true and dma_bytes_done() reports full."""
-    return ['sysbus WriteDoubleWord 0x%X 0' % DMA2_CNDTR,      # CNDTR=0 -> no transfer on EN
-            'sysbus WriteDoubleWord 0x%X 1' % DMA2_CCR,        # CCR.EN=1 (dma_bytes_done sees EN)
-            'sysbus WriteDoubleWord 0x%X 1' % TIM1_CR1]        # TIM1 CR1.EN=1 (pd_rx_started)
-
-
-def inject(msg, settle="0.12"):
-    """Write a message's samples + arm RX + let pd_task decode it."""
-    h, objs = msg
-    s = pd_encode.encode_message(h, objs)
-    return write_samples(s) + arm_rx() + ['emulation RunFor "%s"' % settle]
+def stage(msg):
+    """Write a message's samples to raw_samples, pad a little, set TimRxSampleCount, and
+    fire 3 COMP edges within 20us to wake pd_task through the real RX path."""
+    s = pd_encode.encode_message(*msg)
+    pad = bytes([(s[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])  # trailing 0-bit edges
+    buf = s + pad
+    c = ['sysbus WriteByte 0x%X 0x%02X' % (RAW + i, b) for i, b in enumerate(buf)]
+    c += ['sysbus.dma1 TimRxSampleCount %d' % len(buf)]
+    # 3 comparator edges, ~5us apart (< PD_RX_TRANSITION_WINDOW=20us) -> pd_rx_start
+    for _ in range(3):
+        c += ['sysbus.exti FireComp %d' % EXTI_COMP_LINE, 'emulation RunFor "0.000005"']
+    c += ['emulation RunFor "0.05"']     # let pd_task decode + react (and TX GoodCRC/Request)
+    return c
 
 
 def console(cmd):
-    c = ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")]
-    return c + ['emulation RunFor "0.05"']
+    return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")] + ['emulation RunFor "0.05"']
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(HERE, "ec-rebuilt.bin"))
     ap.add_argument("--boot", default="2.0")
+    ap.add_argument("--dump", action="store_true", help="enable firmware PD debug (pd dump 3)")
     args = ap.parse_args()
 
     cmds = ['$h=@%s' % HERE, '$bin=@%s' % os.path.abspath(args.bin), '$name="pdinj"',
@@ -66,21 +63,28 @@ def main():
             'sysbus.adc CcPullAddress 0x%X' % CCPULL, 'sysbus.adc PartnerSource true',
             'showAnalyzer sysbus.usart1 Antmicro.Renode.Analyzers.LoggingUartAnalyzer',
             'emulation RunFor "%s"' % args.boot]
-    cmds += console("pd 0 state")                              # should show SNK_DISCOVERY
-    cmds += inject(pd_encode.SRC_CAP)                          # inject Source_Capabilities
-    cmds += console("pd 0 state")                              # did it advance / send Request?
-    cmds += inject(pd_encode.ACCEPT(1))                        # inject Accept
-    cmds += console("pd 0 state")
-    cmds += inject(pd_encode.PS_RDY(2))                        # inject PS_RDY -> SNK_READY?
-    cmds += console("pd 0 state")
+    if args.dump:
+        cmds += console("pd dump 3")
+    cmds += console("pd 0 state")                  # SNK_DISCOVERY
+    cmds += stage(pd_encode.SRC_CAP)               # inject Source_Capabilities
+    cmds += ['sysbus ReadDoubleWord 0x%X' % RXHEAD]  # pd_analyze_rx() return == 0x1161?
+    cmds += console("pd 0 state")                  # -> SNK_REQUESTED / sent Request?
+    cmds += stage(pd_encode.ACCEPT(1))             # inject Accept
+    cmds += console("pd 0 state")                  # -> SNK_TRANSITION?
+    cmds += stage(pd_encode.PS_RDY(2))             # inject PS_RDY
+    cmds += console("pd 0 state")                  # -> SNK_READY (explicit contract)?
     cmds += ['quit']
     out = subprocess.run(["renode", "--disable-gui", "--console", "-e", "; ".join(cmds)],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          universal_newlines=True, timeout=400).stdout
-    # print just the PD state lines + any PD console chatter
+    rxh = re.findall(r'^(0x[0-9A-Fa-f]{8})\s*$', out, re.M)
+    if rxh:
+        v = int(rxh[0], 16)
+        print("pd_analyze_rx -> 0x%04X  (%s Source_Caps header 0x1161 decoded LIVE over the CC-partner PD-PHY)"
+              % (v & 0xFFFF, "==" if (v & 0xFFFF) == 0x1161 else "!="))
     for ln in out.splitlines():
-        if re.search(r'(State:|SNK_|SRC_|C0 st\d|Request|Accept|PS_RDY|contract|RX|CRC|EVT)', ln):
-            print(ln)
+        if re.search(r'(State:|C0 st\d|Request|Accept|PS_RDY|SrcCap|contract|Rdy|recv)', ln, re.I):
+            print(ln[-110:])
 
 
 if __name__ == "__main__":

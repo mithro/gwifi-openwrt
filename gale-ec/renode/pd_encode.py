@@ -221,6 +221,32 @@ def ACCEPT(mid): return (header(3, 0, mid), [])    # PD_CTRL_ACCEPT
 def PS_RDY(mid): return (header(6, 0, mid), [])    # PD_CTRL_PS_RDY
 
 
+def ctrl(ctrl_type, mid):
+    """A control message (no data objects)."""
+    return (header(ctrl_type, 0, mid), [])
+
+
+def vdm_discover_identity(mid):
+    """A structured VDM (data msg type 15) carrying a Discover Identity command, so the
+    firmware's pd_svdm / VDM-handling branches execute. VDO[0] = SVID(PD SID 0xFF00)<<16 |
+    (1<<15 structured) | (0 ver) | CMDT_INIT(0) | CMD Discover Identity(1)."""
+    vdm_hdr = (0xFF00 << 16) | (1 << 15) | (0 << 6) | 1
+    return (header(15, 1, mid), [vdm_hdr])
+
+
+# A battery of message TYPES to drive the decode + protocol-dispatch branches broadly.
+# (Control: GOTO_MIN2 ACCEPT3 REJECT4 PING5 PS_RDY6 GET_SRC_CAP7 GET_SNK_CAP8 DR_SWAP9
+#  PR_SWAP10 VCONN_SWAP11 WAIT12 SOFT_RESET13; Data: SOURCE_CAP1 + VDM.)
+def battery():
+    out = [("Source_Caps", SRC_CAP)]
+    for name, t in [("GotoMin", 2), ("Accept", 3), ("Reject", 4), ("Ping", 5), ("PS_RDY", 6),
+                    ("GetSrcCap", 7), ("GetSnkCap", 8), ("DR_Swap", 9), ("PR_Swap", 10),
+                    ("VconnSwap", 11), ("Wait", 12), ("SoftReset", 13)]:
+        out.append((name, ctrl(t, 1)))
+    out.append(("VDM_DiscId", vdm_discover_identity(1)))
+    return out
+
+
 if __name__ == "__main__":
     for name, (h, objs) in [("Source_Caps", SRC_CAP), ("Accept", ACCEPT(1)), ("PS_RDY", PS_RDY(2))]:
         s = _self_check(h, objs)
