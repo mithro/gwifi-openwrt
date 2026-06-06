@@ -25,6 +25,10 @@
 /* This is not actually an EC, so disable some features. */
 #undef  CONFIG_WATCHDOG_HELP
 #undef  CONFIG_LID_SWITCH
+/* The factory gale image was built without task profiling (its `taskinfo` prints
+ * only the task table, no IRQ/exception/switch stats). Match it. Found via the
+ * Renode trace-equivalence battery (renode/battery.py). */
+#undef  CONFIG_TASK_PROFILING
 
 /* USB Configuration */
 #define CONFIG_USB
