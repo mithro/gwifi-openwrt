@@ -1,0 +1,31 @@
+diff --git a/target/linux/ipq40xx/image/chromium.mk b/target/linux/ipq40xx/image/chromium.mk
+index f6ac69e..25e37c6 100644
+--- a/target/linux/ipq40xx/image/chromium.mk
++++ b/target/linux/ipq40xx/image/chromium.mk
+@@ -21,12 +21,26 @@ define Build/cros-vboot
+ 	@mv $@.new $@
+ endef
+ 
++# depthcharge's TFTP netboot hands the downloaded file straight to fit_load(),
++# which requires a raw FIT (magic 0xd00dfeed). The cros-vboot-wrapped image
++# instead leads with the "CHROMEOS" vboot keyblock and is rejected. Run this
++# *before* cros-vboot, while $@ still holds the raw FIT, and copy it out as the
++# sibling .itb (same name, minus the .vboot suffix) so a netboot-ready kernel
++# lands in $(BIN_DIR) alongside the signed image.
++define Build/emit-raw-fit
++	mkdir -p $(BIN_DIR)
++	cp $@ $(BIN_DIR)/$(patsubst %.vboot,%,$(notdir $@))
++endef
++
+ define Device/google_wifi
+ 	DEVICE_VENDOR := Google
+ 	DEVICE_MODEL := WiFi (Gale)
+ 	SOC := qcom-ipq4019
+ 	KERNEL_SUFFIX := -fit-zImage.itb.vboot
+ 	KERNEL = kernel-bin | fit none $$(KDIR)/image-$$(DEVICE_DTS).dtb | cros-vboot
++	# initramfs build also emits the unwrapped FIT (…-initramfs-fit-zImage.itb)
++	# for depthcharge TFTP netboot (RAM boot, no eMMC write).
++	KERNEL_INITRAMFS = kernel-bin | fit none $$(KDIR)/image-$$(DEVICE_DTS).dtb | emit-raw-fit | cros-vboot
+ 	KERNEL_NAME := zImage
+ 	IMAGES += factory.bin
+ 	IMAGE/factory.bin := cros-gpt | append-kernel-part | append-rootfs

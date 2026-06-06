@@ -37,7 +37,10 @@ OpenWrt on it.
 2. **Netboot OpenWrt over TFTP** using a depthcharge build that includes the
    IPQ4019 driver (see the submodule's `docs/build.md` and
    `docs/post-recovery-recipe.md`).
-3. Once validated, install OpenWrt to eMMC.
+3. Once validated, install OpenWrt to eMMC — see
+   **[`docs/gale-openwrt-netboot-install.md`](docs/gale-openwrt-netboot-install.md)**
+   for the full TFTP-netboot → eMMC-install runbook (DHCP/TFTP/HTTP setup,
+   in-RAM `dd`, and later `sysupgrade`).
 
 Full, verified step-by-step procedures live in the
 [`depthcharge-ipq4019`](https://github.com/mithro/depthcharge-ipq4019) submodule's

@@ -10,6 +10,11 @@ photos/
 *spi-stock-*.bin
 *sheets_token*.json
 *-token.json
+# Gale auto-provisioning overlay credentials (OpenWISP shared secret, mesh SAE
+# key): committed overlay files use placeholders; real values live untracked
+# here. See docs/gale-autoprovision-mesh-design.md, "Secrets handling".
+gale-secrets.conf
+*.secret
 
 # Python / OS cruft and scratch.
 __pycache__/

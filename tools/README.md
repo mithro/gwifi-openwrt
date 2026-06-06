@@ -43,6 +43,16 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
   doesn't decode.
 - **`ec_console.py`** — minimal EC USB-console client (`gale power off`, `version`,
   `gpioget`, …). Note: EC-reported gpio values can be stale; don't trust them as proof.
+- **`fmap_dump.py`** — print the FMAP region table (name / offset / size) from a flash
+  image; no hardware needed. `python3 fmap_dump.py <image.bin>`.
+
+## Other gale helpers (device-side, over SSH — not flash)
+- **`validate_sysupgrade.py`** — end-to-end OpenWrt sysupgrade check: scp a
+  `*-sysupgrade.bin` to gale, flash it, wait for reboot, verify the running version
+  and that `/overlay` survived. `python3 validate_sysupgrade.py <image-sysupgrade.bin>`.
+- **`fix_ath10k_retries.py`** — apply the ath10k-ct retry-limit fix (UCI clamp to 2;
+  `--swap-firmware` swaps to upstream non-CT firmware) that stops the periodic SoC
+  reset when the AP is exercised under load.
 
 ## Usage
 ```sh
