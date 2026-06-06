@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--settle", default="0.03", help="virtual seconds to run after each command")
     ap.add_argument("--cmd", action="append", default=[],
                     help="console command to send after boot (repeatable)")
+    ap.add_argument("--mon", action="append", default=[],
+                    help="Renode monitor command to run before boot (repeatable)")
     ap.add_argument("--logfile", default=os.path.join(HERE, "console.log"))
     args = ap.parse_args()
 
@@ -40,6 +42,9 @@ def main():
         '$bin=@%s' % os.path.abspath(args.bin),
         '$name="%s"' % args.name,
         'include @%s' % BASE,
+    ]
+    cmds += list(args.mon)   # e.g. inject ADC CC values for a USB-debug-accessory scenario
+    cmds += [
         'showAnalyzer sysbus.usart1 Antmicro.Renode.Analyzers.LoggingUartAnalyzer',
         'emulation RunFor "%s"' % args.boot,
     ]
