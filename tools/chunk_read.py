@@ -94,8 +94,14 @@ def printable(b, n=24):
 
 
 def main():
-    stock = open(STOCK, "rb").read()
-    assert len(stock) == SIZE, f"stock size {len(stock)} != {SIZE}"
+    if os.path.exists(STOCK):
+        stock = open(STOCK, "rb").read()
+        if len(stock) != SIZE:
+            print(f"# reference {STOCK} is {len(stock)} B (!= {SIZE}); ignoring it")
+            stock = None
+    else:
+        stock = None
+        print(f"# no reference at {STOCK} (set GALE_STOCK); skipping vs-stock comparison")
     args = sys.argv[1:]
     if not args:
         args = ["test"]
@@ -115,24 +121,28 @@ def main():
                 print("    " + log.strip().replace("\n", "\n    "))
                 continue
             image[off:off + CHUNK] = data
-            same = sum(1 for a, b in zip(data, stock[off:off + CHUNK]) if a == b)
-            if idx % 8 == 0 or same != CHUNK:
-                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att} "
-                      f"vs-stock={100 * same / CHUNK:5.1f}%")
+            if stock is not None:
+                same = sum(1 for a, b in zip(data, stock[off:off + CHUNK]) if a == b)
+                if idx % 8 == 0 or same != CHUNK:
+                    print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att} "
+                          f"vs-stock={100 * same / CHUNK:5.1f}%")
+            elif idx % 8 == 0:
+                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att}")
         with open(outbin, "wb") as f:
             f.write(image)
         dt = time.time() - t0
         live_sha = hashlib.sha256(image).hexdigest()
-        stock_sha = hashlib.sha256(stock).hexdigest()
-        same = sum(1 for a, b in zip(image, stock) if a == b)
-        first_diff = next((i for i in range(SIZE) if image[i] != stock[i]), None)
         print("\n=== FULL CHUNKED READ COMPLETE ===")
         print(f"  out          = {outbin}")
         print(f"  elapsed      = {dt:.0f}s   failed chunks = {len(bad)}")
         print(f"  live  sha256 = {live_sha}")
-        print(f"  stock sha256 = {stock_sha}")
-        print(f"  vs stock     = {same}/{SIZE} ({100 * same / SIZE:.2f}%) identical")
-        print(f"  first diff   = {('0x%06x' % first_diff) if first_diff is not None else 'NONE (identical)'}")
+        if stock is not None:
+            stock_sha = hashlib.sha256(stock).hexdigest()
+            same = sum(1 for a, b in zip(image, stock) if a == b)
+            first_diff = next((i for i in range(SIZE) if image[i] != stock[i]), None)
+            print(f"  stock sha256 = {stock_sha}")
+            print(f"  vs stock     = {same}/{SIZE} ({100 * same / SIZE:.2f}%) identical")
+            print(f"  first diff   = {('0x%06x' % first_diff) if first_diff is not None else 'NONE (identical)'}")
         if bad:
             print(f"  FAILED offsets: {[hex(x) for x in bad]}")
         return
@@ -144,21 +154,22 @@ def main():
 
     for off in offs:
         rc, data, log, att = read_chunk(off, CHUNK, f"{TMP}/chunk_{off:06x}.bin")
-        ref = stock[off:off + CHUNK]
         print(f"\n===== chunk @ 0x{off:06x} (64 KiB) =====")
         print(f"  flashrom rc={rc}  got={len(data)}B  retries_used={att}")
         if len(data) != CHUNK:
             print("  READ DID NOT RETURN 64 KiB -- log:")
             print("    " + log.strip().replace("\n", "\n    "))
             continue
-        same = sum(1 for a, b in zip(data, ref) if a == b)
         live_nonzero = sum(1 for x in data if x != 0)
-        print(f"  vs stock     : {same}/{CHUNK} ({100 * same / CHUNK:.2f}%) identical")
         print(f"  live non-zero: {live_nonzero}/{CHUNK} bytes")
         print(f"  live  [0:16] : {hx(data)}   |{printable(data)}|")
-        print(f"  stock [0:16] : {hx(ref)}   |{printable(ref)}|")
-        if off == 0x300000:
-            print(f"  FMAP sig live : {data[0:8]!r}   (stock: {ref[0:8]!r})")
+        if stock is not None:
+            ref = stock[off:off + CHUNK]
+            same = sum(1 for a, b in zip(data, ref) if a == b)
+            print(f"  vs stock     : {same}/{CHUNK} ({100 * same / CHUNK:.2f}%) identical")
+            print(f"  stock [0:16] : {hx(ref)}   |{printable(ref)}|")
+            if off == 0x300000:
+                print(f"  FMAP sig live : {data[0:8]!r}   (stock: {ref[0:8]!r})")
         if b"Google_Gale" in data:
             i = data.find(b"Google_Gale")
             print(f"  FOUND 'Google_Gale' @0x{off + i:06x}: {printable(data[i:], 28)!r}")
