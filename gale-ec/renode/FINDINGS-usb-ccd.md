@@ -9,14 +9,20 @@ genuine **functional** divergence between the original dump and the reconstructi
 
 ## STATUS SUMMARY (read first)
 
-* **NEW: LIVE USB enumeration WORKS (host-bridge built).** `usb_host.py` plays the USB
-  host over GaleUsb (SignalReset + EP0 SETUP via PMA + SignalTransfer). On the ORIGINAL
-  firmware it returns the real **device descriptor LIVE** (idVendor 0x18d1 / idProduct
-  0x500f, 18 bytes) AND the **config descriptor** (wTotalLength=78, **bNumInterfaces=4**
-  = console if00 / AP if01 / unused / raiden-SPI if03). RESULT: PASS. This supersedes the
-  earlier "USB is static-descriptor-only / SignalTransfer uncalled" gap — live EP0 control
-  enumeration is now exercised end-to-end. (The rebuilt does NOT enumerate: its USB
-  bring-up diverges — see below.)
+* **NEW: LIVE USB enumeration + USB UART CONSOLE WORK (host-bridge built).** `usb_host.py`
+  plays the USB host over GaleUsb (SignalReset + EP0 SETUP via PMA + SignalTransfer). On
+  the ORIGINAL firmware, RESULT = **PASS** for all of:
+  - **device descriptor** LIVE: idVendor 0x18d1 / idProduct 0x500f, 18 bytes;
+  - **config descriptor** LIVE: wTotalLength=78, bNumInterfaces=4 (console if00 / AP if01 /
+    unused / raiden-SPI if03);
+  - **SET_CONFIGURATION(1)** then **USB UART console (EP1/if00)** LIVE: the EC streams its
+    console over USB — captured `"RST EP0 3220\r\n"` (14 bytes) on EP1.
+  This supersedes the earlier "USB is static-descriptor-only / SignalTransfer uncalled" gap
+  — live EP0 control enumeration AND live bulk USB-console data are now exercised
+  end-to-end. (The rebuilt does NOT enumerate: its USB bring-up diverges — see below.)
+  Remaining USB items: raiden-over-USB (if03/EP4, needs the USB_SPI enable request) and the
+  AP console (if01); plus original↔rebuilt USB *equivalence* (blocked by the rebuilt
+  divergence).
 
 * **FIXED + verified:** the reconstruction was missing `CONFIG_CASE_CLOSED_DEBUG`;
   restored (board/gale only) so `usb_init`/CCD is present and the USB register

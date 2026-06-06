@@ -92,6 +92,22 @@ def main():
         'sysbus ReadWord 0x%X' % (tx + 2),                # wTotalLength
         'sysbus ReadWord 0x%X' % (tx + 4),                # bNumInterfaces/bConfigValue
     ]
+    # SET_CONFIGURATION(1): control-OUT, no data stage — enables the bulk endpoints
+    # (EP1 = USB UART console if00). Then read the EP1 TX buffer: the EC streams its
+    # console output over USB, so this captures the live USB-console text.
+    for i, hw in enumerate([0x0900, 0x0001, 0x0000, 0x0000]):
+        cmds.append('sysbus WriteWord 0x%X 0x%04X' % (rx + 2 * i, hw))
+    cmds += [
+        'sysbus WriteWord 0x%X 0x8408' % (BTABLE0 + 6),
+        'sysbus.usb SignalTransfer 0 true true',
+        'emulation RunFor "0.3"',
+        'sysbus ReadWord 0x%X' % (BTABLE0 + 0x0A),        # btable_ep[1].tx_count
+        'sysbus ReadWord 0x%X' % (BTABLE0 + 0x04 + 0x04), # EP1R is at USB+0x04 (read below instead)
+    ]
+    # EP1 console TX buffer @ PMA 0xC0 (read 16 halfwords = up to 32 bytes of console text)
+    ep1tx = PMA + 0xC0
+    for i in range(16):
+        cmds.append('sysbus ReadWord 0x%X' % (ep1tx + 2 * i))
     cmds.append('quit')
 
     out = renode(cmds)
@@ -139,8 +155,26 @@ def main():
         cfg_ok = (cfg_bLength == 9 and cfg_bType == 2 and num_ifaces == 4)
         print("CONFIG DESC:", "PASS (4 interfaces: console if00/AP if01/unused/raiden if03)"
               if cfg_ok else "CHECK")
-    print("RESULT:", "PASS — live USB enumeration (device + config)" if (dev_ok and cfg_ok)
-          else "PARTIAL/CHECK")
+
+    # USB UART console (if00 / EP1): after SET_CONFIGURATION the EC streams its console
+    # over EP1. reads[17]=ep1 tx_count, reads[18]=btable_ep[1].tx_addr, reads[19..34]=buffer.
+    console_ok = False
+    if len(reads) >= 35:
+        ep1_txc = int(reads[17], 16)
+        cons_b = []
+        for hw_s in reads[19:35]:
+            hw = int(hw_s, 16)
+            cons_b.append(hw & 0xFF); cons_b.append((hw >> 8) & 0xFF)
+        text = "".join(chr(x) if 32 <= x < 127 else ("\\r" if x == 13 else ("\\n" if x == 10 else "."))
+                       for x in cons_b[:max(ep1_txc, 0) or len(cons_b)])
+        printable = sum(1 for x in cons_b[:ep1_txc] if 32 <= x < 127) if ep1_txc else 0
+        print("USB CONSOLE (EP1/if00): tx_count=%d bytes, text=%r" % (ep1_txc, text))
+        console_ok = (ep1_txc > 0 and printable >= 3)  # real ASCII console text streamed over USB
+        print("USB CONSOLE:", "PASS (live EC console data over USB EP1)" if console_ok else "CHECK")
+
+    print("RESULT:", "PASS — live USB enumeration (device + config) + USB UART console (EP1)"
+          if (dev_ok and cfg_ok and console_ok)
+          else ("PASS enumeration; console CHECK" if (dev_ok and cfg_ok) else "PARTIAL/CHECK"))
 
 
 if __name__ == "__main__":
