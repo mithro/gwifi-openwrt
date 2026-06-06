@@ -29,6 +29,14 @@ spiflash: Miscellaneous.GaleSpiFlash @ spi2
 gpioPortB:
     12 -> spiflash@0
 
+// STM32F0 USB full-speed DEVICE controller (regs) + its 1 KB packet-memory SRAM (PMA).
+// Lets the firmware run usb_init / enumeration / the USB UART consoles + raiden bridge.
+usb: Miscellaneous.GaleUsb @ sysbus 0x40005C00
+    size: 0x400
+    IRQ -> nvic@31
+usbram: Memory.MappedMemory @ sysbus 0x40006000
+    size: 0x400
+
 // Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
 // (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
 optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800
