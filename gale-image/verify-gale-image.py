@@ -81,8 +81,10 @@ def extract_rootfs_member(tar_path, dest_dir):
 
 
 def unsquash(squashfs_file, dest_dir):
+    # Extract only /etc — all our assertions live there, and it avoids the
+    # device nodes under /dev that unsquashfs cannot create as non-root.
     out = os.path.join(dest_dir, "squashfs-root")
-    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file],
+    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file, "/etc"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("unsquashfs failed:\n%s" % r.stderr)
