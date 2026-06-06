@@ -102,33 +102,20 @@ def printable(b, n=24):
     return "".join(chr(x) if 32 <= x < 127 else "." for x in b[:n])
 
 
-def main():
-    if os.path.exists(STOCK):
-        stock = open(STOCK, "rb").read()
-        if len(stock) != SIZE:
-            # A *wrong-size* reference is almost always a mistake (truncated file,
-            # or GALE_STOCK pointing at the wrong thing). Silently skipping the
-            # comparison would make a miscompare look identical to "no reference",
-            # so fail loud. A deliberately-absent reference (else branch) is the
-            # only tolerated no-comparison case.
-            sys.exit(f"FATAL: reference {STOCK} is {len(stock)} B (!= {SIZE}); "
-                     f"fix it or unset GALE_STOCK to run without a comparison")
-    else:
-        stock = None
-        print(f"# no reference at {STOCK} (set GALE_STOCK); skipping vs-stock comparison")
-    args = sys.argv[1:]
-    if not args:
-        args = ["test"]
-
+def _run(stock, args, scratch):
+    """Dispatch the requested read mode. Adds every scratch temp file it creates
+    to `scratch` (removed by main's finally); never adds the user's output file."""
     if args[0] == "all":
         outbin = args[1] if len(args) > 1 else f"{TMP}/gale-chunked-full.bin"
+        cur = f"{TMP}/_chunk_cur.bin"
+        scratch.add(cur)
         image = bytearray(SIZE)
         bad = []
         t0 = time.time()
         n = SIZE // CHUNK
         for idx in range(n):
             off = idx * CHUNK
-            rc, data, log, att = read_chunk(off, CHUNK, f"{TMP}/_chunk_cur.bin")
+            rc, data, log, att = read_chunk(off, CHUNK, cur)
             if len(data) != CHUNK or rc != 0:
                 bad.append(off)
                 print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  FAILED rc={rc} got={len(data)}B")
@@ -171,7 +158,9 @@ def main():
 
     failed = []
     for off in offs:
-        rc, data, log, att = read_chunk(off, CHUNK, f"{TMP}/chunk_{off:06x}.bin")
+        cur = f"{TMP}/chunk_{off:06x}.bin"
+        scratch.add(cur)
+        rc, data, log, att = read_chunk(off, CHUNK, cur)
         print(f"\n===== chunk @ 0x{off:06x} (64 KiB) =====")
         print(f"  flashrom rc={rc}  got={len(data)}B  retries_used={att}")
         if len(data) != CHUNK or rc != 0:
@@ -193,13 +182,38 @@ def main():
             i = data.find(b"Google_Gale")
             print(f"  FOUND 'Google_Gale' @0x{off + i:06x}: {printable(data[i:], 28)!r}")
 
-    # clean throwaway
-    for p in (THROW, LAY):
-        if os.path.exists(p):
-            os.remove(p)
     if failed:
         sys.exit(f"FAILED chunks (short read or flashrom rc!=0): "
                  f"{[hex(x) for x in failed]}")
+
+
+def main():
+    if os.path.exists(STOCK):
+        stock = open(STOCK, "rb").read()
+        if len(stock) != SIZE:
+            # A *wrong-size* reference is almost always a mistake (truncated file,
+            # or GALE_STOCK pointing at the wrong thing). Silently skipping the
+            # comparison would make a miscompare look identical to "no reference",
+            # so fail loud. A deliberately-absent reference (else branch) is the
+            # only tolerated no-comparison case.
+            sys.exit(f"FATAL: reference {STOCK} is {len(stock)} B (!= {SIZE}); "
+                     f"fix it or unset GALE_STOCK to run without a comparison")
+    else:
+        stock = None
+        print(f"# no reference at {STOCK} (set GALE_STOCK); skipping vs-stock comparison")
+    args = sys.argv[1:]
+    if not args:
+        args = ["test"]
+
+    # Remove every scratch temp file on ANY exit (return, sys.exit, exception).
+    # _run() registers the paths it creates; the user's output file is never added.
+    scratch = {LAY, THROW}
+    try:
+        _run(stock, args, scratch)
+    finally:
+        for p in scratch:
+            if os.path.exists(p):
+                os.remove(p)
 
 
 if __name__ == "__main__":

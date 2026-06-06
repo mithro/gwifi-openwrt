@@ -197,37 +197,42 @@ def orchestrate(args):
               "--no-verify; only use it with a separate verification plan.")
 
     ro_ok = ["ro_ok"] if allow_ro else []
-    for idx, (a, clen) in enumerate(chunks):
-        cf = f"{TMP}/_wr_chunk.bin"
-        open(cf, "wb").write(image[a:a + clen])
-        print(f"\n[{idx+1}/{len(chunks)}] writing 0x{a:06x} len 0x{clen:x} ...")
-        p = subprocess.run([sys.executable, SELF, "_pgm", hex(a), cf] + ro_ok,
-                           capture_output=True, text=True)
-        print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
-        if p.returncode != 0:
-            raise SystemExit(f"ABORT: program worker failed at 0x{a:06x}")
-        if do_verify:
-            vf = f"{TMP}/_wr_verify.bin"
-            p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), vf],
+    cf = f"{TMP}/_wr_chunk.bin"        # scratch: per-chunk source slice
+    vf = f"{TMP}/_wr_verify.bin"       # scratch: per-chunk read-back
+    try:
+        for idx, (a, clen) in enumerate(chunks):
+            open(cf, "wb").write(image[a:a + clen])
+            print(f"\n[{idx+1}/{len(chunks)}] writing 0x{a:06x} len 0x{clen:x} ...")
+            p = subprocess.run([sys.executable, SELF, "_pgm", hex(a), cf] + ro_ok,
                                capture_output=True, text=True)
             print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
             if p.returncode != 0:
-                raise SystemExit(f"ABORT: read-back worker failed at 0x{a:06x}")
-            if not os.path.exists(vf):
-                raise SystemExit(f"ABORT: read-back worker exited 0 but wrote no "
-                                 f"verify file at 0x{a:06x}")
-            got = open(vf, "rb").read()
-            want = image[a:a + clen]
-            if len(got) != clen:
-                raise SystemExit(f"ABORT: read-back at 0x{a:06x} is {len(got)} B, "
-                                 f"expected 0x{clen:x}")
-            if got != want:
-                diff = sum(1 for x, y in zip(got, want) if x != y)
-                first = next(j for j in range(len(want)) if got[j] != want[j])
-                raise SystemExit(f"ABORT: verify MISMATCH at 0x{a:06x} "
-                                 f"({diff} bytes, first +0x{first:x})")
-            print(f"   verify OK (0x{clen:x} bytes match source)")
-    print(f"\n== DONE: {region} written and verified ({len(chunks)} chunks).")
+                raise SystemExit(f"ABORT: program worker failed at 0x{a:06x}")
+            if do_verify:
+                p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), vf],
+                                   capture_output=True, text=True)
+                print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
+                if p.returncode != 0:
+                    raise SystemExit(f"ABORT: read-back worker failed at 0x{a:06x}")
+                if not os.path.exists(vf):
+                    raise SystemExit(f"ABORT: read-back worker exited 0 but wrote no "
+                                     f"verify file at 0x{a:06x}")
+                got = open(vf, "rb").read()
+                want = image[a:a + clen]
+                if len(got) != clen:
+                    raise SystemExit(f"ABORT: read-back at 0x{a:06x} is {len(got)} B, "
+                                     f"expected 0x{clen:x}")
+                if got != want:
+                    diff = sum(1 for x, y in zip(got, want) if x != y)
+                    first = next(j for j in range(len(want)) if got[j] != want[j])
+                    raise SystemExit(f"ABORT: verify MISMATCH at 0x{a:06x} "
+                                     f"({diff} bytes, first +0x{first:x})")
+                print(f"   verify OK (0x{clen:x} bytes match source)")
+        print(f"\n== DONE: {region} written and verified ({len(chunks)} chunks).")
+    finally:
+        for tmpf in (cf, vf):
+            if os.path.exists(tmpf):
+                os.remove(tmpf)
 
 
 def main():
