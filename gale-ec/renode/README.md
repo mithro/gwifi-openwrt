@@ -83,15 +83,27 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
   18d1:500f + strings EC_PD/Gale debug/Google Inc.) byte-identical (static).
 - Also caught + **fixed** a real reconstruction bug (`CONFIG_TASK_PROFILING`).
 
-**Remaining (NOT covered):**
-- **USB-PD negotiation** — the one genuine remaining big peripheral. PD-PHY *register
-  programming* IS covered by the execution-trace diff (SPI1/TIM16/EXTI/ADC), but a live
-  `pd 0 state` snapshot is non-deterministic (DRP toggle phase offset + the state
-  machine can't complete `SRC_DISCONNECTED_DEBOUNCE` without CC voltage sensing). Needs
-  a COMP + bit-banged PD-PHY model + a modeled CC partner.
-- **AP boot** — structurally impossible in EC-only emulation (no IPQ4019).
-- **USB enumeration** is covered by *static descriptor* equivalence above; a *live*
-  `lsusb` enumeration would additionally need an STM32 USB-FS device-controller model.
+**USB-PD — now driven LIVE (was the remaining big peripheral; BUILT).** A modeled CC-partner
+PD-PHY (`peripherals/GaleExti.cs` COMP-IRQ source wired to `nvic@12` + `GaleDma.TimRxSampleCount`
+RX-sample feed + `GaleAdc.PartnerSource` sink-attach + `pd_encode.py` BMC/4b5b/CRC encoder)
+drives the firmware's GENUINE PD RX path: a live-injected Source_Capabilities message is decoded
+by the real `pd_analyze_rx` (`pd[0].rx_head[0]==0x1161`) and gale transmits a Request in
+response. The `pd_live` scenario in `coverage_full.py` injects a 14-message battery, covering the
+`pd_task`/`pd_find_preamble`/`pd_dequeue_bits`/`pd_analyze_rx`/`handle_*_request`/`pd_build_request`
+chain (+130 reached branches). See `STATUS-PD-PHY.md`. (A full explicit contract to SNK_READY
+additionally needs TX-reactive GoodCRC timing — incremental, documented there.)
+
+**Remaining (NOT covered) — honestly bounded structural gaps:**
+- **AP boot / host commands** — structurally impossible in EC-only emulation: gale compiles
+  NO host-command transport (no I2C-slave host addr / LPC / SPI / `CONFIG_CMD_HOSTCMD`), so the
+  `host_command_process`/`hc_*` handlers are unreachable dead code (transport funcs GC'd) — see
+  `COVERAGE.md`. No IPQ4019 model would change this for gale-as-built.
+- **USB enumeration** is also exercised *live* on both images by `usb_host.py` (device + config
+  + USB UART console + raiden `ef4017`), beyond the static-descriptor equivalence above.
+- **Branch coverage** — measured (`coverage_full.py`/`classify.py`/`COVERAGE.md`): RO 48.1%
+  instr / 856 reached / 283 both-dirs over 22 scenarios; literal 100% is impossible in EC-only
+  emulation (no host-cmd transport, no-fault HW models, reset-only fault branches), with every
+  uncovered branch enumerated + classified.
 
 > **STATUS UPDATE (2026-06-06) — current binary `a2c186a0`, live-USB gaps now closed.**
 > The 3×-green rounds listed below were run on the **pre-CCD binary `f07f0a55`** and are
@@ -154,11 +166,29 @@ Verdict: the rebuilt firmware is **functionally equivalent** to the original on 
 runnable in EC-only emulation (boot/clocks, console, ADC/CC, raiden SPI-flash over USB +
 console, live USB enumeration, USB UART console, DMA, power rails, timers), with all deltas
 honestly documented (raiden EP3-vs-EP4, usb_spi readiness/stability late-vs-early window,
-autonomous PD/CCD bring-up). The two structural gaps reserved for the on-device
-HARDWARE-TEST-PLAN are **USB-PD live CC negotiation** (needs a COMP + bit-banged PD-PHY +
-modeled CC partner; its register programming IS trace-equivalent) and **AP boot** (needs the
-IPQ4019 SoC).
+autonomous PD/CCD bring-up).
 
-**Next:** the COMP + PD-PHY + CC-partner model would close the USB-PD live-negotiation gap;
-AP boot is out of scope for EC-only emulation. Merge of this branch to `main` is gated on
-user approval (direct-to-main push is restricted).
+## Independent verification on the PD-augmented harness — 3 more consecutive all-green rounds ✅✅✅ (2026-06-07)
+
+After building the **live USB-PD CC-partner** (`GaleExti` COMP-IRQ + `GaleDma` RX-feed +
+`GaleAdc.PartnerSource` + `pd_encode.py`/`pd_inject.py`) and the cumulative branch-coverage
+campaign (`coverage_full.py`, RO 8%→48.1% instr / +130 reached branches from live PD), the
+3-agent verification was re-run from scratch — 3 more consecutive all-green rounds:
+- **Round 1**: ✅✅✅ — no-shortcuts agent falsified the live PD decode (altered the injected
+  header → firmware returned the *changed* value `0x1561`; corrupted samples → error; DMA-count
+  gated). Coverage reproduced exactly; equivalence not regressed by the EXTI replacement.
+- **Round 2**: ✅✅✅ — flagged 2 honesty nits (classify.py over-binned ~100 *reached* branches
+  into structural-exclusion categories; a stale COVERAGE.md Conclusion). Both FIXED (commit
+  `61ac378`: reached-one-dir ⇒ COVERABLE_GAP only; structural categories are unreached-only).
+- **Round 3** (final): ✅✅✅ — independently audited the classify fix (0 reachable branches
+  excused; `COVERABLE_GAP` == reached-one-dir count exactly) and the AP-host-command
+  dead-code finding (transport funcs GC'd, no host-cmd transport in `board/gale`).
+
+The remaining structural gaps are now: **AP host-commands** (unreachable dead code — gale
+compiles no host-command transport, a stronger bound than "needs IPQ4019") and **AP boot**
+(needs the IPQ4019 SoC). The live USB-PD RX/decode/dispatch gap is **closed** (driven live);
+a full PD contract to SNK_READY is an incremental TX-reactive-GoodCRC refinement.
+
+**Next:** AP boot is out of scope for EC-only emulation; the full PD SNK_READY contract is an
+optional incremental refinement. Merge of this branch to `main` is gated on user approval
+(direct-to-main push is restricted).
