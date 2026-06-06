@@ -108,6 +108,29 @@ def main():
     ep1tx = PMA + 0xC0
     for i in range(16):
         cmds.append('sysbus ReadWord 0x%X' % (ep1tx + 2 * i))
+    # raiden SPI bridge over USB: enable it (USB_SPI_REQ_ENABLE -> iface 3), then issue a
+    # JEDEC RDID (write 0x9F, read 3) over the raiden bulk endpoint and read ef4017 back.
+    # NOTE endpoint number is version-specific: original v1.1.5337 uses EP3 (USB_EP_SPI=3);
+    # the rebuilt's is EP4 — the documented source-version divergence.
+    for i, hw in enumerate([0x0041, 0x0000, 0x0003, 0x0000]):  # OUT|VENDOR|IFACE, REQ_ENABLE, wIndex=3
+        cmds.append('sysbus WriteWord 0x%X 0x%04X' % (rx + 2 * i, hw))
+    cmds += [
+        'sysbus WriteWord 0x%X 0x8408' % (BTABLE0 + 6),
+        'sysbus.usb SignalTransfer 0 true true',
+        'emulation RunFor "0.2"',
+    ]
+    EP3RX = PMA + 0x180; EP3TX = PMA + 0x140; EP3_RXCOUNT = BTABLE0 + 0x1E; EP3_TXCOUNT = BTABLE0 + 0x1A
+    cmds += [
+        'sysbus WriteWord 0x%X 0x0301' % EP3RX,            # write_count=1, read_count=3
+        'sysbus WriteWord 0x%X 0x009F' % (EP3RX + 2),      # SPI cmd 0x9F (RDID)
+        'sysbus WriteWord 0x%X 0x8403' % EP3_RXCOUNT,      # 3 bytes received
+        'sysbus.usb SignalTransfer 3 true false',          # deliver on raiden bulk EP (rx, not setup)
+        'emulation RunFor "0.3"',
+        'sysbus ReadWord 0x%X' % EP3_TXCOUNT,              # raiden response length
+        'sysbus ReadWord 0x%X' % EP3TX,                    # status
+        'sysbus ReadWord 0x%X' % (EP3TX + 2),              # ef 40
+        'sysbus ReadWord 0x%X' % (EP3TX + 4),              # 17
+    ]
     cmds.append('quit')
 
     out = renode(cmds)
@@ -172,9 +195,22 @@ def main():
         console_ok = (ep1_txc > 0 and printable >= 3)  # real ASCII console text streamed over USB
         print("USB CONSOLE:", "PASS (live EC console data over USB EP1)" if console_ok else "CHECK")
 
-    print("RESULT:", "PASS — live USB enumeration (device + config) + USB UART console (EP1)"
-          if (dev_ok and cfg_ok and console_ok)
-          else ("PASS enumeration; console CHECK" if (dev_ok and cfg_ok) else "PARTIAL/CHECK"))
+    # raiden SPI bridge over USB: reads[35]=ep3 tx_count, [36]=status, [37]=ef40, [38]=17
+    raiden_ok = False
+    if len(reads) >= 39:
+        r_txc = int(reads[35], 16); status = int(reads[36], 16)
+        b = [int(reads[37], 16) & 0xFF, (int(reads[37], 16) >> 8) & 0xFF, int(reads[38], 16) & 0xFF]
+        jedec = "%02x%02x%02x" % (b[0], b[1], b[2])
+        print("RAIDEN-over-USB (EP3/if03): resp=%d bytes, status=0x%04x, JEDEC RDID=%s"
+              % (r_txc, status, jedec))
+        raiden_ok = (status == 0 and jedec == "ef4017")
+        print("RAIDEN-over-USB:", "PASS (W25Q64 ef4017 via USB SPI bridge)" if raiden_ok else "CHECK")
+
+    allok = dev_ok and cfg_ok and console_ok and raiden_ok
+    print("RESULT:", "PASS — LIVE USB: enumeration + UART console (EP1) + raiden SPI bridge (EP3->ef4017)"
+          if allok
+          else ("PASS enumeration+console; raiden CHECK" if (dev_ok and cfg_ok and console_ok)
+                else "PARTIAL/CHECK"))
 
 
 if __name__ == "__main__":

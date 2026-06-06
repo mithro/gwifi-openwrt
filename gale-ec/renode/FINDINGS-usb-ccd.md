@@ -20,9 +20,15 @@ genuine **functional** divergence between the original dump and the reconstructi
   This supersedes the earlier "USB is static-descriptor-only / SignalTransfer uncalled" gap
   — live EP0 control enumeration AND live bulk USB-console data are now exercised
   end-to-end. (The rebuilt does NOT enumerate: its USB bring-up diverges — see below.)
-  Remaining USB items: raiden-over-USB (if03/EP4, needs the USB_SPI enable request) and the
-  AP console (if01); plus original↔rebuilt USB *equivalence* (blocked by the rebuilt
-  divergence).
+  - **raiden SPI bridge over USB (EP3/if03)** LIVE: USB_SPI_REQ_ENABLE then a JEDEC RDID
+    (write 0x9F, read 3) over the raiden bulk endpoint returns status=SUCCESS + **ef4017**
+    (the W25Q64FV JEDEC ID) — the SPI-flash read transported over USB end-to-end (the EC
+    drove a real SPI2 transaction). RESULT on the original: **PASS** for the FULL chain
+    (device + config + USB console EP1 + raiden EP3->ef4017).
+  KEY version note: the ORIGINAL uses EP3 for raiden (USB_EP_SPI=3); the rebuilt uses EP4
+  (=4) — a concrete source-version difference. Remaining USB: AP console (if01/EP2, same
+  pattern); original↔rebuilt USB *equivalence* (blocked by the rebuilt's USB-bring-up
+  divergence — it doesn't enumerate).
 
 * **FIXED + verified:** the reconstruction was missing `CONFIG_CASE_CLOSED_DEBUG`;
   restored (board/gale only) so `usb_init`/CCD is present and the USB register
