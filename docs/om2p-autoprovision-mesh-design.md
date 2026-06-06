@@ -50,7 +50,7 @@ The OM2P hardware is radically smaller than gale (single 2.4 GHz radio, **~7 MB*
 - **C1 — Flash budget:** `Device/openmesh_common_256k` sets `IMAGE_SIZE := 7168k`. Kernel + rootfs must fit in ~7 MB; OpenWrt **fails the build loudly** on overflow.
 - **C2 — Single radio:** one 2.4 GHz PHY. The client AP(s) and the 802.11s mesh **share** it (no dedicated backhaul band, unlike gale's 5 GHz).
 - **C3 — RAM:** ≥32 MB (om2p-v1/ar7240 = 32 MB; ar9330/qca9533 typically 64 MB). 32 MB is the floor that `openwisp-monitoring`/collectd must tolerate.
-- **C4 — Uplink port:** the single external RJ45 is **`eth0`** (`phy-handle = <&swphy4>`) on all four models; `eth1`, where `status=okay`, is an internal CPU↔switch *fixed-link* (no `phy-handle`), **not** a bridgeable jack. `02_network` sets `eth0` as WAN on the 2-netdev models and the sole port on the LC. So the trunk hangs on the raw **`eth0`** netdev (not a DSA `wan` port), **uniformly across all four**.
+- **C4 — Uplink port:** the single external RJ45 is **`eth0`** (`phy-handle = <&swphy4>`) on all four models; `eth1`, where `status=okay`, is an internal CPU↔switch *fixed-link* (no `phy-handle`), **not** a bridgeable jack. The `02_network` lan/wan **roles are inconsistent across the family** (`eth0`=WAN on v1/v4 via `lan_wan "eth1" "eth0"`, but `eth0`=LAN on lc/v2 via the default `lan_wan "eth0" "eth1"`), so the bootstrap **does not rely on those roles** — it hangs the trunk on the raw **`eth0`** netdev directly, **uniformly across all four**.
 - **C5 — Per-SoC `path`:** the radio `path` differs fundamentally across models (ar9330 AHB wmac vs ar7240 **PCI** radio vs qca9533) → a single static `/etc/config/wireless` with a hard-coded `path` cannot serve all four in one build. Wireless is configured **by radio name** in the bootstrap instead (§8.4).
 - **C6 — Image format:** the recipe emits only `IMAGE/sysupgrade.bin` wrapped by `openmesh-image` (CloudTrax/ap51 format) + `append-metadata`. There is **no separate factory image**; first install is via **ap51-flash** using this artifact (§13).
 
@@ -90,7 +90,7 @@ For each VLAN *V*: a tagged uplink sub-interface (`eth0.V`, an `8021q` device), 
 
 ### 8.4 First-boot bootstrap (`/etc/uci-defaults/99-om2p-bootstrap`)
 Establishes the pre-OpenWISP working state, **idempotent** (fixed UCI section names), runs once then is removed. Departs from gale in two ways:
-1. **Network** on `eth0` (not DSA `wan`): batman `bat0` + `mesh_hardif`, then the VLAN loop building `eth0.V`/`bat0.V`/`br-<name>` (mgmt=DHCP, rest=none), plus the conditional `eth1`→`br-roam` (§8.2).
+1. **Network** on `eth0` (the raw external netdev, not a DSA `wan` role): batman `bat0` + `mesh_hardif`, then the VLAN loop building `eth0.V`/`bat0.V`/`br-<name>` (mgmt=DHCP, rest=none). `eth1` is left untouched (§8.2).
 2. **Wireless by name (C5):** rather than ship a static `/etc/config/wireless` with a per-SoC `path`, the bootstrap ensures the wireless config exists (running `wifi config` if board-detection has not yet generated it), then sets `radio0` params (`band=2g`, `channel`, `htmode=HT20`, `disabled=0`) and adds the `mesh0` `wifi-iface` referencing `device 'radio0'` with the baked mesh creds + `network 'mesh_hardif'`. The single-radio name `radio0` is stable across all four SoCs; the per-SoC `path` is supplied by detection. **Boot-ordering of uci-defaults vs wireless generation is a validation item** (§15.1).
 
 ### 8.5 Steering
@@ -139,7 +139,7 @@ fleet-secrets.conf.example   # repo root; placeholders + MESH_ID=gwifi-mesh, OPE
 
 **Secrets (R5) — one shared file:**
 - New **`fleet-secrets.conf`** at the repo root (untracked, `0600`): `OPENWISP_SHARED_SECRET`, `MESH_SAE_KEY`, `MESH_ID`, `OPENWISP_URL`.
-- **Both** `build-om2p-image.sh` and `build-gale-image.sh` source it (default path + `FLEET_SECRETS=` env override); each escapes sed replacement metacharacters as the gale script already does.
+- **Both** `build-om2p-image.sh` and `build-gale-image.sh` source it (default path + `FLEET_SECRETS=` env override); each escapes sed replacement metacharacters as the gale script already does. `openwisp/build-templates.py` reads the same file (default `../fleet-secrets.conf` relative to `openwisp/`, with the same `FLEET_SECRETS=` override for test isolation).
 - Committed **`fleet-secrets.conf.example`** documents the keys + the two stable defaults.
 - **`.gitignore`:** add `fleet-secrets.conf` (keep the existing `gale-secrets.conf` line so any leftover stays ignored).
 - **Migration:** one-time — copy the real values from the primary checkout's `gale-image/gale-secrets.conf` into `fleet-secrets.conf`, then retire the old file. `build-gale-image.sh`'s only change is its secrets-source path (same values, same rendering), so the gale build+verify is **re-run after the change** to confirm no regression.
@@ -179,7 +179,7 @@ OM2P units currently run Open-Mesh/CloudTrax stock firmware. First install to Op
 4. **batman-adv `gw_mode` + BLA over VLAN-tagged `bat0`** with multiple wired gateways (same caveat as gale Risk #3): `gw_mode` is on raw `bat0` while DHCP runs on tagged `bat0.V`. Fallback: plain DHCP over the bridged mesh (BLA still loop-safe).
 5. **ath79 target addition** to a tree configured for ipq40xx: confirm `make defconfig` + build produces ath79 images without disturbing the ipq40xx outputs (separate `bin/targets/` trees, so expected clean).
 6. **Cold-fleet bootstrap** requires ≥1 wired-uplink node to seed mesh-only nodes.
-7. **Mesh-key regeneration footgun (must fix in the `build-templates.py` extension):** today `build-templates.py` calls `secrets.token_urlsafe(18)` every run and overwrites the puck template's `mesh_key` + `.wifi-secrets`. Re-running it as-is to add the OM2P template would **silently invalidate the deployed pucks and the baked gale image**. The extension must instead **read** `mesh_key` from `fleet-secrets.conf` (§11) and never regenerate. Verify a re-run is idempotent and leaves the puck template's key unchanged. (`.wifi-secrets` becomes a derived/legacy note; `fleet-secrets.conf` is the source of truth.)
+7. **Mesh-key regeneration footgun (must fix in the `build-templates.py` extension):** today `build-templates.py` calls `secrets.token_urlsafe(18)` every run and overwrites the puck template's `mesh_key` + `.wifi-secrets`. Re-running it as-is to add the OM2P template would **silently invalidate the deployed pucks and the baked gale image**. The extension must instead **read** `mesh_key` from `fleet-secrets.conf` (§11) and never regenerate. Verify a re-run is idempotent and leaves the puck template's key unchanged. The edited script should also **stop writing `.wifi-secrets`** (or write it only as a read-back of the fleet key) so that file can't drift back into being a second source of truth — `fleet-secrets.conf` is the sole source.
 
 ## 16. Decided sub-choices
 
