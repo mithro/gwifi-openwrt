@@ -131,11 +131,34 @@ COMP/PD-PHY + CC-partner model; its register programming IS trace-equivalent) an
 boot (needs the IPQ4019 SoC) being the two honestly-bounded structural gaps reserved
 for the on-device HARDWARE-TEST-PLAN.
 
-**Verification:** round 1 = 1 RED + 2 GREEN (integrity findings fixed). **Round 2 =
-all 3 GREEN** (comprehensiveness moved RED→GREEN; agents independently confirmed the
-raiden ef4017 is end-to-end not hardcoded, the SPI-DMA interleaving is faithful to
-spi_master.c, and the new tests are real). Need 3 consecutive all-green rounds.
+## Independent verification on the CURRENT binary `a2c186a0` — 3 consecutive all-green rounds ✅✅✅ (2026-06-06/07)
 
-**Next:** continue verification rounds to 3× green; for full USB-PD live negotiation,
-add a COMP + bit-banged PD-PHY + modeled CC partner (the one remaining big peripheral);
-then publish to main.
+The historical rounds above were on the stale pre-CCD binary `f07f0a55`. After CCD/`usb_init`
+was restored, live USB driving (`usb_host.py`) + branch-coverage measurement (`coverage.py`)
+were added, and FINDINGS was reconciled, the verification was **re-run from scratch on
+`a2c186a0`** — 3 independent adversarial agents per round (tracing-comprehensive /
+traces-equivalent / no-shortcuts), each re-running every tool against both binaries:
+- **Round 1**: ✅✅✅ all GREEN. Minor doc nits fixed (coverage.py docstring overstated its
+  scenario + dead vars; COVERAGE.md figures noted scenario-dependent; a stale FINDINGS
+  "Open issue" block marked superseded).
+- **Round 2**: ✅✅✅ all GREEN. No-shortcuts agent **falsified** the raiden path by editing a
+  COPY of `GaleSpiFlash.cs` (JEDEC → sentinel) and confirming the changed value propagates
+  end-to-end on BOTH images → `ef4017` is a real SPI transaction, not a constant. Negative
+  control (rebuilt without the `--mon` debug accessory) FAILS cleanly, not a faked pass.
+- **Round 3** (final, maximally rigorous): ✅✅✅ all GREEN. Independently re-derived the
+  `GaleAdc.CcPullAddress` symbol (0x20001107 = tcpc `pd` 0x20001104 + cc_pull offset 3),
+  re-counted USB register literals (CNTR 4=4, ISTR 4=4, BTABLE 2=2), re-confirmed RW=0%
+  (never sysjumped) and the raiden falsification.
+
+Verdict: the rebuilt firmware is **functionally equivalent** to the original on every test
+runnable in EC-only emulation (boot/clocks, console, ADC/CC, raiden SPI-flash over USB +
+console, live USB enumeration, USB UART console, DMA, power rails, timers), with all deltas
+honestly documented (raiden EP3-vs-EP4, usb_spi readiness/stability late-vs-early window,
+autonomous PD/CCD bring-up). The two structural gaps reserved for the on-device
+HARDWARE-TEST-PLAN are **USB-PD live CC negotiation** (needs a COMP + bit-banged PD-PHY +
+modeled CC partner; its register programming IS trace-equivalent) and **AP boot** (needs the
+IPQ4019 SoC).
+
+**Next:** the COMP + PD-PHY + CC-partner model would close the USB-PD live-negotiation gap;
+AP boot is out of scope for EC-only emulation. Merge of this branch to `main` is gated on
+user approval (direct-to-main push is restricted).
