@@ -32,11 +32,13 @@ coverage is cumulative: a branch is "both-directions" if its taken side is seen 
 scenario and its not-taken side in *some* scenario.) Measured union:
 
 ```
-RO image:  instructions 10989/20089 = 54.7%;  cond branches 1583 total, 1002 reached, 380 both-dirs
+RO image:  instructions 11323/20089 = 56.4%;  cond branches 1583 total, 1031 reached, 393 both-dirs
 RW image:  instructions  7707/20085 = 38.4%;  cond branches 1583 total,  758 reached, 277 both-dirs
 ```
-(33 scenarios: + per-image cmd_args/console-edit/usb-live/pd-live RW variants via `sysjump rw`,
-flash fault-injection, and a live PD contract attempt. Combined 1760/3166 reached, 657 both-dirs.)
+(34 scenarios: + per-image cmd_args/console-edit/usb-live/pd-live RW variants via `sysjump rw`,
+flash fault-injection, and a LIVE explicit PD contract to **SNK_READY** via the context-aware
+CC-partner — gale's Request GoodCRC is auto-injected with the right msg_id, then ready-state
+ops. Combined 1789/3166 reached, 670 both-dirs. Was 8%/0% before this campaign was built.)
 
 This is a large improvement over a single boot (RO 28%→54.7% instr; RW 0%→38.4%). The
 **`pd_live`** scenario alone — injecting a 14-message battery over the modeled CC-partner

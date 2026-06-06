@@ -59,15 +59,32 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // task at its async waits. Empty queue -> falls back to the TimRxSampleCount behaviour.
         public void StageResponse(string hex)
         {
+            pdQueue.Enqueue(Unhex(hex));
+        }
+
+        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; }
+
+        // CONTEXT-AWARE PD CC-PARTNER (for a live explicit contract). Two delivery contexts are
+        // distinguished so the FIFO never desyncs against gale's pd_rx_start pattern:
+        //  * A pop is a CONTRACT message (Source_Caps/Accept/PS_RDY) when the harness armed it
+        //    via ExpectContractMsg() right before FireComp (a message gale was asleep waiting for).
+        //  * Otherwise the pop is the synchronous GoodCRC wait inside send_validate_message right
+        //    after gale's own PD TX (detected as an SPI1 mem->DR transfer): deliver a GoodCRC whose
+        //    msg_id matches gale's current protocol msg_id (read from RAM), from a pre-staged bank.
+        // GoodCRcMsgIdAddress = &pd_protocol[0].msg_id (image-specific; 0 disables auto-GoodCRC).
+        public uint GoodCrcMsgIdAddress { get; set; }
+        public void SetGoodCrc(int id, string hex) { goodCrcBank[id & 7] = Unhex(hex); }
+        public void ExpectContractMsg() { nextIsContract = true; }
+
+        private static byte[] Unhex(string hex)
+        {
             var b = new byte[hex.Length / 2];
             for(var i = 0; i < b.Length; i++)
             {
                 b[i] = System.Convert.ToByte(hex.Substring(i * 2, 2), 16);
             }
-            pdQueue.Enqueue(b);
+            return b;
         }
-
-        public void ClearResponses() { pdQueue.Clear(); }
 
         public void Reset()
         {
@@ -136,10 +153,26 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             // dma_bytes_done() = count) and DO NOT overwrite the buffer.
             if(!mem2mem && !dirMemToPeriph && pa == TIM1_CCR1)
             {
-                if(pdQueue.Count > 0)
+                // Context-aware delivery: a harness-armed contract message, else (after gale's
+                // own PD TX) the GoodCRC gale is synchronously waiting for, else a queued response.
+                byte[] resp = null;
+                if(nextIsContract && pdQueue.Count > 0)
                 {
-                    // CC-partner: deliver the next queued PD response into the capture buffer.
-                    var resp = pdQueue.Dequeue();
+                    resp = pdQueue.Dequeue();
+                    nextIsContract = false;
+                }
+                else if(pendingGoodCrc && GoodCrcMsgIdAddress != 0)
+                {
+                    var id = sysbus.ReadByte(GoodCrcMsgIdAddress) & 7;
+                    resp = goodCrcBank[id];
+                    pendingGoodCrc = false;
+                }
+                else if(pdQueue.Count > 0)
+                {
+                    resp = pdQueue.Dequeue();
+                }
+                if(resp != null)
+                {
                     for(var i = 0; i < resp.Length; i++) { sysbus.WriteByte(ma + (uint)i, resp[i]); }
                     cndtr[c] = (uint)(n > resp.Length ? n - resp.Length : 0);
                     return;
@@ -165,6 +198,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }
             if(dirMemToPeriph && IsSpiDr(pa))
             {
+                // gale's USB-PD TX bit-bangs the CC line via SPI1 (DMAC_SPI_TX = ch3 -> SPI1_DR).
+                // A TX is immediately followed (in send_validate_message) by a synchronous GoodCRC
+                // wait, so arm the auto-GoodCRC for the next TIM1-CCR1 RX pop.
+                if(pa == SPI1_DR) { pendingGoodCrc = true; }
                 RxPend rx = pendingRx.ContainsKey(pa) ? pendingRx[pa] : null;
                 for(uint i = 0; i < n; i++)
                 {
@@ -279,6 +316,9 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             new System.Collections.Generic.Dictionary<uint, RxPend>();
         private readonly System.Collections.Generic.Queue<byte[]> pdQueue =
             new System.Collections.Generic.Queue<byte[]>();
+        private readonly byte[][] goodCrcBank = new byte[8][];
+        private bool pendingGoodCrc;
+        private bool nextIsContract;
         private readonly IBusController sysbus;
         private readonly long size;
 

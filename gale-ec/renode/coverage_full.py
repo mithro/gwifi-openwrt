@@ -95,14 +95,29 @@ def _firecomp(settle):
     return c
 
 
+def _fire_contract(settle):
+    c = ['sysbus.dma1 ExpectContractMsg']
+    for _ in range(3):
+        c += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+    return c + ['emulation RunFor "%s"' % settle]
+
+
 def _contract_post():
-    """Live explicit PD contract: stage Source_Caps/GoodCRC/Accept/PS_RDY in the GaleDma
-    response queue (auto-delivered on each pd_rx_start), then FireComp to wake gale at each
-    async wait. Drives the Request build/TX + GoodCRC handshake + contract-state branches."""
-    c = ['sysbus.dma1 ClearResponses']
-    for m in (pd_encode.SRC_CAP, pd_encode.ctrl(1, 0), pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
+    """Live explicit PD contract to SNK_READY via the context-aware CC-partner: the GoodCRC
+    gale waits for after its Request is auto-injected (msg_id read from RAM) by GaleDma on the
+    synchronous pd_rx_start; the Source_Caps/Accept/PS_RDY are FireComp-driven contract msgs.
+    Then exercise ready-state ops (Get_Sink_Cap, VDM Discover Identity, PR/DR swap requests) so
+    pd_task's SNK_REQUESTED/TRANSITION/READY + handle_ctrl/data + pd_svdm + swap branches run."""
+    c = ['sysbus.dma1 ClearResponses', 'sysbus.dma1 GoodCrcMsgIdAddress 0x20000fdc']
+    for i in range(8):
+        c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, _hexmsg(pd_encode.ctrl(1, i)))]
+    for m in (pd_encode.SRC_CAP, pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
         c += ['sysbus.dma1 StageResponse "%s"' % _hexmsg(m)]
-    c += _firecomp("0.15") + _firecomp("0.15") + _firecomp("0.4")
+    c += _fire_contract("0.2") + _fire_contract("0.2") + _fire_contract("0.5")
+    # SNK_READY now: inject ready-state messages the EC responds to (each FireComp-driven).
+    for m in (pd_encode.ctrl(8, 3), pd_encode.vdm_discover_identity(4),
+              pd_encode.ctrl(9, 5), pd_encode.ctrl(10, 6), pd_encode.ctrl(2, 7)):  # GetSnkCap/VDM/DR_Swap/PR_Swap/GotoMin
+        c += ['sysbus.dma1 StageResponse "%s"' % _hexmsg(m)] + _fire_contract("0.15")
     return c
 
 
@@ -200,8 +215,9 @@ def scenarios(boot):
     # Flash FAULT injection -> EC_ERROR_* / WRPRTERR / PGERR / stuck-busy error paths.
     out.append(("flash_fault", [], [], boot, _fault_post()))
     out.append(("flash_fault_rw", [], ["sysjump rw"], boot, _fault_post()))
-    # LIVE explicit PD contract (Source_Caps -> GoodCRC -> Accept -> PS_RDY via the response queue).
+    # LIVE explicit PD contract to SNK_READY + ready-state ops (RO and RW).
     out.append(("pd_contract", pd_pre, [], "2.0", _contract_post()))
+    out.append(("pd_contract_rw", pd_pre, ["sysjump rw"], "2.0", _contract_post()))
     return out
 
 
