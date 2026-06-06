@@ -62,23 +62,31 @@ cannot reach it under any input.
   standard is functional equivalence with documented deltas (see `battery.py`
   `DOCUMENTED_DELTAS`).
 
-## Scope decision (user, 2026-06-06)
+## Scope decision (user, 2026-06-06) — and resolution
 
 The comparison is **original dump vs the recreation that was confirmed functionally
-equivalent** — `ec/` @ `firmware-gale-8281.B` (→ `ec-rebuilt.bin`, sha f07f0a55…),
-the gale factory-branch vintage — **not** a rebase onto latest (`ec-main`). The
-recreation must **not** be modified to chase live USB. A trial edit that enabled
-`CONFIG_CASE_CLOSED_DEBUG`/`CONFIG_CHARGE_MANAGER` was **reverted**; the recreation is
-restored byte-for-byte to its validated binary. So the `usb_init`/CCD difference below
-stands as an **honestly-disclosed bounded divergence**, not something to patch away.
+equivalent** — `ec/` @ `firmware-gale-8281.B`, the gale factory-branch vintage —
+**not** a rebase onto latest (`ec-main`).
 
-This means live USB-device enumeration (consoles if00/if01, raiden if03) is **not
-exercisable on the confirmed-equivalent recreation as-built**: it does not compile the
-CCD path that powers the USB controller, and that path only activates with a physical
-Type-C debug accessory — outside the device's normal operating behavior over which the
-equivalence was confirmed. The equivalence standard remains functional-equivalence-
-with-documented-deltas (battery.py 8 PASS / 2 XFAIL + trace_diff), with this USB-CCD
-difference recorded as a disclosed gap.
+Initially the recreation was to be left unmodified (the `usb_init`/CCD difference held
+as a disclosed gap). The user then chose to **faithfully restore CCD** so both images
+can run USB and be trace-compared. **Implemented and verified** — confined entirely to
+`board/gale/` (see `../firmware-patches/gale-ccd-enable.md`):
+
+* `#define CONFIG_CASE_CLOSED_DEBUG` (no `CONFIG_CHARGE_MANAGER` — gale is sink-only,
+  no battery/charger; the two charge_manager-era CCD calls are satisfied by sink-only
+  board stubs, so gale's validated input-current/AP-power flow is unchanged).
+* removed the board-level duplicate `USB_SPI_CONFIG(usb_spi, …)` — iface3/ep4 (the
+  raiden bridge) is now owned by `case_closed_debug.c`'s `ccd_usb_spi`.
+
+Result (rebuilt `ec.bin` sha a2c186a0): `usb_init`+`ccd_set_mode` restored in both
+RO/RW; USB register-write counts now **match the original** (CNTR 4=4, ISTR 4=4,
+BTABLE 2=2); boots clean; `battery.py` still **8 PASS / 2 XFAIL / 0 FAIL**; PD state
+machine now advances `st2→st15` (SRC states compiled in) like the original
+(`st2→st16→st17`) instead of stalling at `st2`. This is the recreation becoming
+*measurably more faithful*. Re-verification (3× green) is required since the validated
+binary changed. Live USB enumeration is now reachable — next: drive the Renode USB
+host-bridge through the CCD/debug-accessory path on both images and trace-compare.
 
 ## Build-trial detail (for the record — not applied)
 
