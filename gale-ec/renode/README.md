@@ -74,8 +74,13 @@ bug (`CONFIG_TASK_PROFILING`), **fixed in the firmware**, not normalized away.
   independent per-channel transfers, so SPI TX/RX don't interleave (and the stock
   STM32SPI has no RX FIFO). No battery command yet exercises `spixfer`/`gale`.
 - **USB enumeration — not modeled** (no STM32 USB-FS device model).
-- **USB-PD negotiation — not modeled** (no COMP / bit-banged PD-PHY; PD async state
-  is time-evolving and currently filtered out of the diff).
+- **USB-PD negotiation — not modeled.** The PD-PHY *register programming* IS covered
+  by the execution-trace diff (SPI1/TIM16/EXTI/ADC are traced). But a live `pd 0 state`
+  snapshot is non-deterministic across the two builds: the DRP toggle has a boot-timing
+  phase offset, AND the state machine cannot complete `SRC_DISCONNECTED_DEBOUNCE`
+  without CC-line voltage sensing (COMP + ADC) — which is unmodeled, so `pd dualrole
+  sink` does not unstick it. The negotiation test genuinely needs a COMP + bit-banged
+  PD-PHY model + a modeled CC partner (charger). Console-settling tricks do not suffice.
 - **Power-sequencing, soak/stability, `gale` subcommands — not yet in the battery.**
 
 **Independent verification (run on the command-driven portion):** tracing-
