@@ -49,6 +49,26 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // waveform), so dma_bytes_done() returns this count. 0 disables the special case.
         public uint TimRxSampleCount { get; set; }
 
+        // USB-PD CC-partner RESPONSE QUEUE (for a live explicit contract). Each StageResponse
+        // enqueues one encoded PD message (hex sample bytes). Every time the firmware arms the
+        // TIM1-CCR1 RX DMA (pd_rx_start) — whether the synchronous GoodCRC wait after its own TX
+        // or after a COMP-IRQ wake — this model dequeues the next response, writes it into the
+        // capture buffer (raw_samples) and sets CNDTR so dma_bytes_done() reports it. This lets a
+        // full SNK contract run (Source_Caps -> GoodCRC -> Accept -> PS_RDY) with no monitor
+        // timing: the queue auto-advances on each arm, the harness only FireComps to wake the
+        // task at its async waits. Empty queue -> falls back to the TimRxSampleCount behaviour.
+        public void StageResponse(string hex)
+        {
+            var b = new byte[hex.Length / 2];
+            for(var i = 0; i < b.Length; i++)
+            {
+                b[i] = System.Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            }
+            pdQueue.Enqueue(b);
+        }
+
+        public void ClearResponses() { pdQueue.Clear(); }
+
         public void Reset()
         {
             isr = 0;
@@ -114,10 +134,21 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             // the encoded sample bytes into the destination buffer (raw_samples). Report
             // TimRxSampleCount bytes as captured by leaving CNDTR = n - count (so
             // dma_bytes_done() = count) and DO NOT overwrite the buffer.
-            if(!mem2mem && !dirMemToPeriph && pa == TIM1_CCR1 && TimRxSampleCount != 0)
+            if(!mem2mem && !dirMemToPeriph && pa == TIM1_CCR1)
             {
-                cndtr[c] = n > TimRxSampleCount ? n - TimRxSampleCount : 0;
-                return; // leave staged samples intact; no TCIF (firmware polls CNDTR)
+                if(pdQueue.Count > 0)
+                {
+                    // CC-partner: deliver the next queued PD response into the capture buffer.
+                    var resp = pdQueue.Dequeue();
+                    for(var i = 0; i < resp.Length; i++) { sysbus.WriteByte(ma + (uint)i, resp[i]); }
+                    cndtr[c] = (uint)(n > resp.Length ? n - resp.Length : 0);
+                    return;
+                }
+                if(TimRxSampleCount != 0)
+                {
+                    cndtr[c] = n > TimRxSampleCount ? n - TimRxSampleCount : 0;
+                    return; // leave staged samples intact; no TCIF (firmware polls CNDTR)
+                }
             }
 
             // --- Full-duplex SPI DMA special case ---------------------------------
@@ -246,6 +277,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly uint[] cmar = new uint[NumChannels + 1];
         private readonly System.Collections.Generic.Dictionary<uint, RxPend> pendingRx =
             new System.Collections.Generic.Dictionary<uint, RxPend>();
+        private readonly System.Collections.Generic.Queue<byte[]> pdQueue =
+            new System.Collections.Generic.Queue<byte[]>();
         private readonly IBusController sysbus;
         private readonly long size;
 

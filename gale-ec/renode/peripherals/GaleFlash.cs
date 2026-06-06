@@ -37,6 +37,17 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public long Size => size;
 
+        // Scenario-controlled FAULT INJECTION (default off -> equivalence tests unaffected).
+        // Real flash CAN fail (write-protect violation, program error, stuck-busy); a complete
+        // emulator models those so the firmware's EC_ERROR_* / WRPRTERR / PGERR / timeout paths
+        // execute. A coverage scenario sets these, then drives a flash op (e.g. `flashwp now`
+        // -> flash_physical_write); the equivalence battery never sets them, so behaviour there
+        // is unchanged. `InjectWriteProtErr`/`InjectProgErr` latch the error on the next STRT and
+        // self-clear; `StuckBusy` holds SR.BSY set so wait_busy() times out.
+        public bool InjectWriteProtErr { get; set; }
+        public bool InjectProgErr { get; set; }
+        public bool StuckBusy { get; set; }
+
         public void Reset()
         {
             acr = 0x00000000;
@@ -52,7 +63,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             switch(offset)
             {
                 case ACR:  return acr;
-                case SR:   return sr;            // BSY=0, no errors -> wait_busy() returns at once
+                case SR:   return sr | (StuckBusy ? SR_BSY : 0u); // BSY=0 normally (instant op)
                 case CR:   return cr;
                 case OBR:  return OBR_LEVEL0;    // RDP level 0, not protected
                 case WRPR: return 0xFFFFFFFF;    // no sector write-protected
@@ -81,7 +92,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     sr &= ~(value & SR_W1C); // EOP/PGERR/WRPRTERR are write-1-to-clear
                     break;
                 case CR:
-                    cr = value; // STRT bit would launch an op; BSY stays 0 (instant, deterministic)
+                    cr = value; // STRT launches a program/erase op; BSY stays 0 (instant) unless faulted
+                    if((value & CR_STRT) != 0)
+                    {
+                        // Op result: set EOP (success), or a latched injected error (W1C by fw).
+                        if(InjectWriteProtErr) { sr |= SR_WRPRTERR; InjectWriteProtErr = false; }
+                        else if(InjectProgErr) { sr |= SR_PGERR; InjectProgErr = false; }
+                        else { sr |= SR_EOP; }
+                    }
                     break;
                 case AR:
                     ar = value;
@@ -107,6 +125,11 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const uint KEY2 = 0xCDEF89AB;
         private const uint CR_LOCK   = 1u << 7;
         private const uint CR_OPTWRE = 1u << 9;
+        private const uint CR_STRT   = 1u << 6;   // start program/erase
+        private const uint SR_BSY      = 1u << 0;
+        private const uint SR_PGERR    = 1u << 2;
+        private const uint SR_WRPRTERR = 1u << 4;
+        private const uint SR_EOP      = 1u << 5;
         private const uint SR_W1C    = (1u << 5) | (1u << 4) | (1u << 2); // EOP|WRPRTERR|PGERR
         private const uint OBR_LEVEL0 = 0x03FFFC00; // OPTERR=0, RDPRT=00 (level 0), USER/DATA = 0xFF
     }

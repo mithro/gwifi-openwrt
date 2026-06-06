@@ -25,6 +25,7 @@ import subprocess
 
 import pd_encode
 import pd_inject
+import usb_host
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
@@ -44,6 +45,77 @@ RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", 
            "gpioget LID_OPEN", "md 0x20000000", "waitms 1"]
 # Deliberate fault / state-changing commands (drive defensive + handler branches).
 CRASH_CMDS = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
+
+
+def _edit_bytes():
+    """Monitor WriteChar commands exercising console line-editing in console_handle_char:
+    populate history, then arrows (history/cursor), home/end, left/right, backspace, DEL,
+    kill-to-end, mid-line insert, bad escape sequences, and an over-long line."""
+    ESC = 27
+    UP, DOWN, RIGHT, LEFT = [ESC, 91, 65], [ESC, 91, 66], [ESC, 91, 67], [ESC, 91, 68]
+    HOME, DEL = [ESC, 91, 49, 126], [ESC, 91, 51, 126]
+    seq = []
+    seq += list(b"gpioget\r")                 # a real command -> saved to history
+    seq += list(b"version\r")                 # another history entry
+    seq += UP + UP + DOWN                      # history prev/prev/next
+    seq += list(b"abcdef")                     # type
+    seq += [1] + [5]                           # CTRL-A (home) / CTRL-E (end)
+    seq += LEFT + LEFT + RIGHT                 # cursor moves
+    seq += [2] + [6]                           # CTRL-B (left) / CTRL-F (right)
+    seq += list(b"XY")                         # insert mid-line
+    seq += [8] + [0x7f]                        # backspace x2 (two encodings)
+    seq += HOME + DEL                          # home then delete-forward
+    seq += [11]                                # CTRL-K kill-to-end
+    seq += [ESC, 79, 88]                       # ESC O X (alt escape path)
+    seq += [ESC, 90]                           # ESC Z (bad escape)
+    seq += list(b"x" * 90)                     # over-long line (> input buffer)
+    seq += [9]                                 # tab
+    seq += [3]                                 # CTRL-C
+    seq += [0x0d]                              # enter
+    cmds = []
+    for i, b in enumerate(seq):
+        cmds.append('sysbus.usart1 WriteChar %d' % b)
+        if i % 12 == 11:
+            cmds.append('emulation RunFor "0.01"')
+    cmds.append('emulation RunFor "0.05"')
+    return cmds
+
+
+def _hexmsg(msg):
+    s = pd_encode.encode_message(*msg)
+    pad = bytes([(s[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])
+    return (s + pad).hex()
+
+
+def _firecomp(settle):
+    c = []
+    for _ in range(3):
+        c += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+    c += ['emulation RunFor "%s"' % settle]
+    return c
+
+
+def _contract_post():
+    """Live explicit PD contract: stage Source_Caps/GoodCRC/Accept/PS_RDY in the GaleDma
+    response queue (auto-delivered on each pd_rx_start), then FireComp to wake gale at each
+    async wait. Drives the Request build/TX + GoodCRC handshake + contract-state branches."""
+    c = ['sysbus.dma1 ClearResponses']
+    for m in (pd_encode.SRC_CAP, pd_encode.ctrl(1, 0), pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
+        c += ['sysbus.dma1 StageResponse "%s"' % _hexmsg(m)]
+    c += _firecomp("0.15") + _firecomp("0.15") + _firecomp("0.4")
+    return c
+
+
+def _fault_post():
+    """Flash fault injection -> EC_ERROR_* / WRPRTERR / PGERR / stuck-busy paths. Set a model
+    error knob, then drive a flash op (flashwp protect = a pstate flash_physical_write)."""
+    def cw(cmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")] + ['emulation RunFor "0.05"']
+    c = ['sysbus.flashif InjectWriteProtErr true'] + cw("flashwp now")
+    c += ['sysbus.flashif InjectProgErr true'] + cw("flashwp enable")
+    c += ['sysbus.flashif StuckBusy true'] + cw("flashwp now") + ['sysbus.flashif StuckBusy false']
+    c += cw("flashinfo")
+    return c
 
 
 def scenarios(boot):
@@ -79,7 +151,38 @@ def scenarios(boot):
     s.append(("reboot", [], ["reboot hard", "version"]))
     s.append(("hibernate", [], ["hibernate 1", "version"]))
     s.append(("gale", [], ["gale", "gale power on ap", "gale power off ap"]))
+    # Many console commands with VALID + ERROR args -> command_* arg parsing + vfnprintf
+    cmd_args_list = [
+        "help", "help pd", "help gpioget", "help xyzzy", "version", "version foo",
+        "gpioget", "gpioget EC_INT_L", "gpioget NOPE", "gpioset EC_INT_L 1", "gpioset BADPIN 1",
+        "md", "md 0x20000000", "md 0x20000000 4", "md .b 0x08000000", "md badaddr",
+        "rw 0x20000000", "rw", "rw badaddr", "rw 0x20000000 0x1234",
+        "spixfer", "spixfer rlen 0 0x9f 3", "spixfer 0", "spixfer badarg",
+        "pd", "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump", "pd 0 dump 9", "pd 0 trysrc 1",
+        "tcpc", "tcpc 0", "typec", "typec 0", "flashinfo", "flashwp", "flashwp bogus",
+        "gettime", "timerinfo", "taskinfo", "sysinfo", "panicinfo", "chan", "chan 0",
+        "chan save", "chan restore", "shmem", "hcdebug", "hcdebug params", "hostevent",
+        "sysjump ro", "waitms 0", "adc", "syslock"]
+    s.append(("cmd_args", [], cmd_args_list))
+    s.append(("cmd_args_rw", [], ["sysjump rw"] + cmd_args_list))   # same battery, in RW
+    # flash protect / option-byte paths
+    s.append(("flash_ops", [], ["flashwp", "flashwp enable", "flashwp disable", "flashwp now",
+                                 "flashwp noprotect", "syslock", "flashinfo", "reboot ro"]))
     out = [(n, m, cc, boot, []) for (n, m, cc) in s]
+    # Console line editing: raw control chars + escape sequences (post-boot monitor WriteChars)
+    # -> console_handle_char branches (history/arrows/home/end/kill/backspace/DEL/bad-escape).
+    out.append(("console_edit", [], [], boot, _edit_bytes()))
+    # LIVE USB host-bridge in the trace: forced debug accessory brings up usb_init, then EP0
+    # enumeration + SET_CONFIG + USB_SPI enable + raiden RDID -> ep_0_rx / usb_spi_* / usb_stream
+    # branches. Short boot stays in the rebuilt's pre-panic / early usb_spi window.
+    ep0_rx = 0x40006088                     # rebuilt EP0 rx buffer
+    usbq = ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
+    usbq += usb_host.setup_ep0(ep0_rx, usb_host.GET_DEV)
+    usbq += usb_host.setup_ep0(ep0_rx, usb_host.GET_CFG)
+    usbq += usb_host.setup_ep0(ep0_rx, usb_host.SET_CFG)
+    usbq += usb_host.setup_ep0(ep0_rx, usb_host.SPI_EN)
+    usbq += usb_host.raiden_cmds(4, 0x40006188, 0x40006148, usb_host.BT + 0x26)
+    out.append(("usb_live", ['sysbus.adc CcPullAddress 0x20001107'], [], "0.5", usbq))
     # LIVE USB-PD: attach as sink, then inject a battery of PD messages over the modeled
     # CC-partner PD-PHY (GaleExti COMP-IRQ wake + GaleDma RX-sample feed). Each message is
     # decoded by the real pd_analyze_rx and dispatched by handle_request -> covers the
@@ -89,6 +192,16 @@ def scenarios(boot):
     for _name, msg in pd_encode.battery():
         pd_post += pd_inject.stage(msg)
     out.append(("pd_live", pd_pre, [], boot, pd_post))
+    # RW variants of the heavy post-driven scenarios (sysjump rw first) -> RW coverage, which
+    # otherwise lags badly (most scenarios run in RO). Addresses are identical in RO/RW.
+    out.append(("console_edit_rw", [], ["sysjump rw"], boot, _edit_bytes()))
+    out.append(("usb_live_rw", ['sysbus.adc CcPullAddress 0x20001107'], ["sysjump rw"], "0.6", usbq))
+    out.append(("pd_live_rw", pd_pre, ["sysjump rw"], boot, pd_post))
+    # Flash FAULT injection -> EC_ERROR_* / WRPRTERR / PGERR / stuck-busy error paths.
+    out.append(("flash_fault", [], [], boot, _fault_post()))
+    out.append(("flash_fault_rw", [], ["sysjump rw"], boot, _fault_post()))
+    # LIVE explicit PD contract (Source_Caps -> GoodCRC -> Accept -> PS_RDY via the response queue).
+    out.append(("pd_contract", pd_pre, [], "2.0", _contract_post()))
     return out
 
 

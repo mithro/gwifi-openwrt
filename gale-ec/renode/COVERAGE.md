@@ -32,11 +32,13 @@ coverage is cumulative: a branch is "both-directions" if its taken side is seen 
 scenario and its not-taken side in *some* scenario.) Measured union:
 
 ```
-RO image:  instructions 9663/20089 = 48.1%;  cond branches 1583 total, 856 reached, 283 both-dirs
-RW image:  instructions 5608/20085 = 27.9%;  cond branches 1583 total, 542 reached, 163 both-dirs
+RO image:  instructions 10989/20089 = 54.7%;  cond branches 1583 total, 1002 reached, 380 both-dirs
+RW image:  instructions  7707/20085 = 38.4%;  cond branches 1583 total,  758 reached, 277 both-dirs
 ```
+(33 scenarios: + per-image cmd_args/console-edit/usb-live/pd-live RW variants via `sysjump rw`,
+flash fault-injection, and a live PD contract attempt. Combined 1760/3166 reached, 657 both-dirs.)
 
-This is a large improvement over a single boot (RO 28%→48.1% instr; RW 0%→27.9%). The
+This is a large improvement over a single boot (RO 28%→54.7% instr; RW 0%→38.4%). The
 **`pd_live`** scenario alone — injecting a 14-message battery over the modeled CC-partner
 PD-PHY (`GaleExti` COMP-IRQ wake + `GaleDma` RX-sample feed; see `STATUS-PD-PHY.md`) so the
 real `pd_analyze_rx` decodes and `handle_request` dispatches each — added **+130 reached
