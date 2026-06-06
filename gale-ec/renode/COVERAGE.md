@@ -54,31 +54,38 @@ host-command transport, plus reset-only faults), as the per-category table shows
 `classify.py` bins every uncovered branch by its containing function. The uncovered set is
 **dominated by the two already-documented structural gaps**, not by laziness:
 
-| Category (RO) | branches | why both-directions can't be driven in EC-only emulation |
+`classify.py` rule: a branch that was REACHED (one direction) is by definition reachable, so
+it is binned as `COVERABLE_GAP` (the honest work-list) regardless of its symbol — only branches
+NO scenario reached are eligible for the structural-exclusion categories. So the structural
+categories below contain only genuinely-unreached branches.
+
+| Category (RO) | branches | classification |
 |---|---|---|
-| `UNREACHED_OTHER` | 502 | residual PD/console/libc paths not hit by the current scenario set (the bulk of the PD-PHY/protocol chain is now covered by `pd_live`); reducible with more message types + a full PD contract |
-| `COVERABLE_GAP` | 472 | reached in some scenario but only one direction seen — the honest work-list (drivable with more inputs / the contract-accepted PD paths); does not change the structural ceiling |
-| `HW_CANT_FAIL` | 189 | `EC_ERROR_*` returns for modeled hardware that never errors (flash never BSY, SPI slave always responds, ADC/DMA never fail) |
-| `AP_DEPENDENT` | 84 | **unreachable dead code in gale-as-built.** gale's `board/gale/board.h` configures NO host-command transport (no `CONFIG_HOSTCMD_I2C_SLAVE_ADDR`, no LPC/SPI/eSPI host interface, no `CONFIG_CMD_HOSTCMD`), so `host_packet_receive`/`host_command_received`/`i2c_process_command`/`i2c_event_handler` are all **GC'd from the binary** (`arm-none-eabi-nm build/gale/RW/ec.RW.elf` shows them absent; `host_command_process` is linked but has no runtime caller). No real input — from an IPQ4019 or anything — can reach `host_command_process`/the `hc_*` handlers; forcing them would mean synthesising a call no hardware can make. So a host-command injector is infeasible *and unnecessary* (this supersedes the earlier "needs IPQ4019 / task #17" framing). Also includes gale-absent peripherals (no battery/charger/keyboard). |
-| `UNREACHABLE_FAULT` | 41 | panic/hard-fault/assert/reboot/hibernate handlers — the not-taken side is the normal path; taking the other side resets the CPU |
-| `WATCHDOG_TIMEOUT` | 12 | watchdog-trip / timeout-expiry guards that never fire deterministically |
+| `COVERABLE_GAP` | 573 | **reached in some scenario, only one direction seen** — the honest reducible work-list (drivable with more console inputs / message types / a full PD contract). Reachable, NOT excused. |
+| `UNREACHED_OTHER` | 502 | unreached, no structural-exclusion symbol match — residual PD/console/libc paths; partly reducible with more scenarios, partly genuinely-unexercised init/error code |
+| `HW_CANT_FAIL` | 120 | unreached `EC_ERROR_*` returns for modeled hardware that never errors (flash never BSY, SPI slave always responds, ADC/DMA never fail) |
+| `AP_DEPENDENT` | 82 | **unreachable dead code in gale-as-built.** gale's `board/gale/board.h` configures NO host-command transport (no `CONFIG_HOSTCMD_I2C_SLAVE_ADDR`, no LPC/SPI/eSPI host interface, no `CONFIG_CMD_HOSTCMD`), so `host_packet_receive`/`host_command_received`/`i2c_process_command`/`i2c_event_handler` are all **GC'd from the binary** (`arm-none-eabi-nm build/gale/RW/ec.RW.elf` shows them absent; `host_command_process` is linked but no input can invoke it — `host_command_task` waits on a pending-args pointer only the absent transport ISR sets). No real input — from an IPQ4019 or anything — can reach the `hc_*` handlers; forcing them would mean synthesising a call no hardware can make. A host-command injector is infeasible *and unnecessary*. Also includes gale-absent peripherals (no battery/charger/keyboard). |
+| `UNREACHABLE_FAULT` | 20 | unreached panic/hard-fault/assert/reboot/hibernate handlers — the not-taken side is the normal path; taking the other side resets the CPU |
+| `WATCHDOG_TIMEOUT` | 3 | unreached watchdog-trip / timeout-expiry guards that never fire deterministically |
 
 (Pre-`pd_live` the largest category was `UNREACHED_OTHER`=629, dominated by `pd_task` alone =
 179 uncovered PD branches; driving the live CC-partner moved most of those to reached.)
 
-(RW is analogous: 747 `UNREACHED_OTHER`, 320 `COVERABLE_GAP`, 210 `HW_CANT_FAIL`, 86 `AP_DEPENDENT`, 44 `UNREACHABLE_FAULT`, 13 `WATCHDOG_TIMEOUT`.)
+(RW is analogous: 747 `UNREACHED_OTHER`, 379 `COVERABLE_GAP`, 177 `HW_CANT_FAIL`, 85 `AP_DEPENDENT`, 29 `UNREACHABLE_FAULT`, 3 `WATCHDOG_TIMEOUT` — RW is entered only via `sysjump rw` then a short command set, so its `UNREACHED_OTHER` is larger.)
 
-**Conclusion (honest, now evidence-backed rather than asserted):** literal 100% branch
-coverage is impossible in EC-only STM32F0 emulation — the bulk of uncovered branches live in
-the **PD-PHY/PD-protocol** subsystem (needs the COMP + bit-banged PD-PHY + modeled CC partner —
-`peripherals/` task #4) and in **AP host-command** handlers (need the IPQ4019 SoC). Both are
-the exact structural gaps reserved for the on-device HARDWARE-TEST-PLAN. Defensive
-panic/assert branches additionally cannot take both directions within a single non-resetting
-image. The honest, maximal claim is **100% of the branches reachable in EC-only emulation are
-measured, and the unreachable remainder is enumerated and categorized** (per-branch lists in
-`cov_uncovered_{RO,RW}.txt`); closing the PD-PHY gap (task #4) would convert the largest
-single category (`pd_task` + PD-PHY, ~250+ branches) but the AP-host-command branches remain
-structurally out of reach without the SoC.
+**Conclusion (honest, evidence-backed):** literal 100% branch coverage is impossible in
+EC-only STM32F0 emulation. The PD-PHY/PD-protocol subsystem — previously the largest uncovered
+category — is now **driven live** by the modeled CC-partner (`STATUS-PD-PHY.md`), so it is no
+longer the gap. The remaining structurally-unreachable branches are: **AP host-commands**
+(unreachable dead code — gale compiles no host-command transport, see the table), **HW-can't-
+fail** error returns (no fault-injection path for the deterministically-perfect peripheral
+models), and **reset-only fault/panic** branches (cannot take both directions within one
+non-resetting image). The remaining `COVERABLE_GAP` (573 RO) is the honest reducible work-list:
+reachable branches whose other direction needs more varied inputs (more console commands, a full
+PD contract to SNK_READY). The maximal honest claim is **all reasonably-coverable EC-only
+branches are exercised, and every uncovered branch is enumerated + classified** (per-branch lists
+in `cov_uncovered_{RO,RW}.txt`), with the irreducible remainder bounded by the absent AP SoC,
+the no-fault hardware models, and reset-only faults.
 
 ## Usage
 ```

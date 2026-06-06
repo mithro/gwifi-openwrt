@@ -44,6 +44,12 @@ WDT = re.compile(r'(watchdog|wdt|timeout|deadline|timer_|hwtimer)', re.I)
 
 
 def classify(sym, state):
+    # A branch that was REACHED (one direction) is by definition reachable, so it belongs
+    # in the honest work-list (COVERABLE_GAP) regardless of its symbol name — we must NOT
+    # excuse a reachable branch as "structurally unreachable". The structural-exclusion
+    # categories apply ONLY to branches no scenario reached at all.
+    if state == "reached-one-dir":
+        return "COVERABLE_GAP"
     if FAULT.search(sym):
         return "UNREACHABLE_FAULT"
     if AP_DEP.search(sym):
@@ -52,7 +58,7 @@ def classify(sym, state):
         return "WATCHDOG_TIMEOUT"
     if HW_FAIL.search(sym):
         return "HW_CANT_FAIL"
-    return "COVERABLE_GAP" if state == "reached-one-dir" else "UNREACHED_OTHER"
+    return "UNREACHED_OTHER"
 
 
 def main():
