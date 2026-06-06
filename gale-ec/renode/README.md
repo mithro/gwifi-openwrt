@@ -93,20 +93,25 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
 - **USB enumeration** is covered by *static descriptor* equivalence above; a *live*
   `lsusb` enumeration would additionally need an STM32 USB-FS device-controller model.
 
-> **STATUS UPDATE — the 3×-green rounds below are STALE (binary changed).** Those
-> rounds (2/3/4) were run on the **pre-CCD binary `f07f0a55`**. The validated binary
-> has since changed to **`a2c186a0`** (CCD/`usb_init` restored to match the original,
-> TIM2 clock fixed) — see `FINDINGS-usb-ccd.md`. A fresh independent-verification round
-> on `a2c186a0` returned **RED** on all three dimensions: (1) tracing is NOT
-> comprehensive — the USB device controller is never driven live (no host-bridge;
-> `GaleUsb.SignalTransfer/SignalReset` have zero call sites), USB coverage is
-> static-descriptor-only, and there is no branch-coverage measurement; (2) traces are
-> equivalent-with-documented-deltas (battery 8 PASS/2 XFAIL/0 FAIL) but NOT byte-
-> identical (different source versions), and there are NO live-USB traces; (3) the
-> reconstruction is **not functionally equivalent** to the original on USB bring-up —
-> the original brings up `usb_init` cleanly in this harness while the rebuilt
-> stalls/panics (a real source-version divergence, see FINDINGS). **Re-verification to
-> 3× green is owed and not yet re-achieved on the current binary.**
+> **STATUS UPDATE (2026-06-06) — current binary `a2c186a0`, live-USB gaps now closed.**
+> The 3×-green rounds listed below were run on the **pre-CCD binary `f07f0a55`** and are
+> STALE. The validated binary changed to **`a2c186a0`** (CCD/`usb_init` restored to match
+> the original, TIM2 clock fixed). The fresh round on `a2c186a0` had returned **RED** on
+> comprehensiveness because the USB device controller was never driven live, there was no
+> branch-coverage measurement, and the rebuilt's USB bring-up looked non-equivalent. Those
+> concrete gaps are **now addressed** (re-verification to 3× green still owed on this state):
+> - **Live USB now exercised on BOTH images** — `usb_host.py` plays the USB host over
+>   `GaleUsb` (`SignalReset` + EP0 SETUP via PMA + `SignalTransfer` now have real call
+>   sites): live device + config enumeration, USB UART console (EP1), and the raiden SPI
+>   bridge returning JEDEC `ef4017` — on the original (EP3) and the rebuilt (EP4).
+> - **Branch coverage measured** — `coverage.py` + `COVERAGE.md` (PC-trace vs objdump);
+>   ~10.5% RO branch coverage with the structurally-unreachable classes enumerated (literal
+>   100% is not attainable in EC-only emulation — honest accounting, not a shortcut).
+> - **USB equivalence scoped honestly** — device descriptor byte-identical, config
+>   header+topology identical, USB console byte-identical, raiden `ef4017` on both; the
+>   documented divergences are raiden endpoint EP3-vs-EP4, usb_spi readiness/stability
+>   timing (late vs early window), and autonomous PD/CCD bring-up (rebuilt needs a forced
+>   debug accessory). See the reconciled STATUS SUMMARY in `FINDINGS-usb-ccd.md`.
 
 **Independent verification (historical, pre-CCD binary `f07f0a55`) — 3 consecutive all-green rounds.**
 Each round = 3 separate adversarial agents (tracing-comprehensive / traces-identical /
