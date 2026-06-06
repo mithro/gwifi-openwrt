@@ -1,0 +1,11 @@
+# Faithful USB debug-accessory CC model (for the USB-enumeration scenario).
+# A real SuzyQ/DTS debug accessory presents 2x Rd with no pull-up, so the CC the EC
+# senses follows the EC's own (role-switched) termination: when gale drives Rp
+# (sourcing, cc_pull=TYPEC_CC_RP=1) the accessory's Rd divides CC into the Rd band
+# (~800 mV); when gale drives Rd (sinking, cc_pull=2) there is no pull-up so CC reads
+# ~open (0 mV). The EC's TCPC cc_pull lives at pd_port_controller+3; for the rebuilt
+# image the TCPC pd[] is at 0x20001104 -> cc_pull byte at 0x20001107.
+# This before-read hook on the ADC data register keeps the CC1 (ch1) / CC2 (ch3)
+# samples in sync with that termination — the faithful dynamic CC a single static
+# voltage cannot provide. ($ccaddr can be overridden per image.)
+sysbus.adc AddBeforeReadDoubleWordHook 0x40 "cc = self.GetMachine().SystemBus.ReadByte(0x20001107); v = 800 if cc == 1 else 0; self.SetDefaultValue(v, 1); self.SetDefaultValue(v, 3)"
