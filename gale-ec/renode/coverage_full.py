@@ -53,6 +53,10 @@ def scenarios(boot):
               ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec"]))
     s.append(("ccd_usb_rw", ['sysbus.adc CcPullAddress 0x20001107'],
               ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"]))
+    # SINK attach to a SOURCE partner (GaleAdc PartnerSource): drives SNK_DISCONNECTED ->
+    # DEBOUNCE -> SNK_DISCOVERY and the SinkWaitCap/soft-reset/hard-reset cycling branches.
+    s.append(("pd_sink", ['sysbus.adc CcPullAddress 0x20001107', 'sysbus.adc PartnerSource true'],
+              ["pd 0 state", "pd dump 3", "pd 0 state", "typec", "tcpc"]))
     # SPI flash exercise (raiden target) — multiple lengths/offsets
     s.append(("spi", [], ["spixfer rlen 0 0x9f 3", "spixfer rlen 0 0x03000000 8",
                           "spixfer 2000 0x9f", "flashinfo"]))

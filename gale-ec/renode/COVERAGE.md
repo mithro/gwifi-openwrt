@@ -22,8 +22,9 @@ RW image: 0% — never executed (RO does not sysjump to RW in this emulation)
 
 ## CUMULATIVE campaign (coverage_full.py) — coverage driven to the EC-only ceiling
 
-`coverage_full.py` unions a battery of 20 scenarios — RO commands, **RW via `sysjump rw`**,
-the CCD/USB bring-up (`--mon CcPullAddress`), the raiden SPI bridge, the PD/TCPC/typec
+`coverage_full.py` unions a battery of 21 scenarios — RO commands, **RW via `sysjump rw`**,
+the CCD/USB bring-up (`--mon CcPullAddress`), the raiden SPI bridge, **PD sink-attach to a
+modeled source** (`GaleAdc.PartnerSource` → SNK_DISCOVERY; see `STATUS-PD-PHY.md`), the PD/TCPC/typec
 subcommands, write-protect/lock, **deliberate faults** (`crash unaligned/divzero/udf/assert/
 watchdog`, `reboot`, `hibernate`), and the AP-rail `gale` commands — capturing a PC trace per
 scenario and unioning executed instructions + per-branch taken/not-taken directions. (Branch
@@ -31,12 +32,17 @@ coverage is cumulative: a branch is "both-directions" if its taken side is seen 
 scenario and its not-taken side in *some* scenario.) Measured union:
 
 ```
-RO image:  instructions 7798/20089 = 38.8%;  cond branches 1583 total, 717 reached, 231 both-dirs
+RO image:  instructions 7928/20089 = 39.5%;  cond branches 1583 total, 726 reached, 244 both-dirs
 RW image:  instructions 5608/20085 = 27.9%;  cond branches 1583 total, 542 reached, 163 both-dirs
 ```
 
-This is a real, large improvement over a single boot (RO 28%→38.8% instr; RW 0%→27.9%), and
-it **quantifies the ceiling**: 866/1583 RO branches are not reached by ANY of the 20 scenarios.
+This is a real, large improvement over a single boot (RO 28%→39.5% instr; RW 0%→27.9%), and
+it **quantifies the ceiling**: 857/1583 RO branches are not reached by ANY of the 21 scenarios.
+The dominant uncovered category is the PD physical-layer / protocol state machine; closing it
+needs a live PD contract via the integrated CC-partner peripheral (COMP-IRQ wake + RX-DMA
+sample feed) specified in `STATUS-PD-PHY.md`. The AP host-command branches need the
+host-command injector (task #17). Neither reaches literal 100% (reset-only fault branches and
+the absent AP SoC remain) — see the per-category table below.
 
 ## Why literal 100% branch coverage is NOT achievable here — quantified at branch granularity
 

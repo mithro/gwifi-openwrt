@@ -47,6 +47,15 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // (pd[0].cc_pull). Set from the harness per image; 0 disables dynamic CC.
         public uint CcPullAddress { get; set; }
 
+        // PD CC-partner mode. The default (false) presents the debug-ACCESSORY: CC reads
+        // the Rd band only while the EC SOURCES (cc_pull==RP), matching a 2xRd accessory.
+        // When PartnerSource is true, the model presents a SOURCE attached to the sink:
+        // CC1 reads the Rp-divider band (~800 mV, SNK_1_5) while the EC SINKS (cc_pull==RD),
+        // so gale (force-sink DRP) attaches as a sink and advances to SNK_DISCOVERY — the
+        // state in which it waits for the partner's Source_Capabilities (PD-PHY injection).
+        // VBUS need not be modeled: gale's pd_snk_is_vbus_provided() is hardwired to 1.
+        public bool PartnerSource { get; set; }
+
         public void Reset()
         {
             isr = 0; ier = 0; cr = 0; cfgr1 = 0; cfgr2 = 0;
@@ -129,10 +138,19 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             if(chselr == (1u << AIN_CC1) || chselr == (1u << AIN_CC2))
             {
-                if(CcPullAddress != 0 && sysbus.ReadByte(CcPullAddress) == TYPEC_CC_RP)
+                byte ccPull = CcPullAddress != 0 ? sysbus.ReadByte(CcPullAddress) : (byte)0;
+                if(PartnerSource)
                 {
-                    return CC_RD_BAND_RAW;   // sourcing: accessory Rd -> Rd band
+                    // SOURCE attached to our sink: the source holds Rp, so while we SINK
+                    // (cc_pull==RD) the active CC line (CC1) sits in the SNK_1_5 band; CC2
+                    // stays open. When we momentarily source, both Rp's read ~open.
+                    if(chselr == (1u << AIN_CC1) && ccPull == TYPEC_CC_RD)
+                        return CC_RD_BAND_RAW;
+                    return 0;
                 }
+                // Debug ACCESSORY (default): Rd band only while we SOURCE (cc_pull==RP).
+                if(CcPullAddress != 0 && ccPull == TYPEC_CC_RP)
+                    return CC_RD_BAND_RAW;
                 return 0;                    // sinking / open: no pull-up
             }
             return 0;
@@ -173,6 +191,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         // TCPC cc_pull enum (common/usb_pd_tcpc.c): RA=0, RP=1, RD=2, OPEN=3
         private const byte TYPEC_CC_RP = 1;
+        private const byte TYPEC_CC_RD = 2;
 
         // ~800 mV in the CC channels' 3300/4096 scale: 800*4096/3300 = 993.
         private const uint CC_RD_BAND_RAW = 993;
