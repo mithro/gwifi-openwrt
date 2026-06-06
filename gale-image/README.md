@@ -21,6 +21,7 @@ time and are never committed to this repository.
 
    ```sh
    cp gale-image/gale-secrets.conf.example gale-image/gale-secrets.conf
+   chmod 600 gale-image/gale-secrets.conf
    $EDITOR gale-image/gale-secrets.conf
    ```
 

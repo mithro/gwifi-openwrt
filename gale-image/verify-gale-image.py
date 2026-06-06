@@ -4,8 +4,8 @@
 Usage:
     python3 verify-gale-image.py [sysupgrade.bin]
 
-Reads secret values from <script_dir>/gale-secrets.conf to verify the overlay
-was rendered correctly. Never prints secret values.
+Reads expected values from <script_dir>/gale-secrets.conf and asserts the
+rendered overlay + package manifest match. Never prints secret values.
 """
 
 import os
@@ -18,19 +18,24 @@ import tarfile
 import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_IMAGE_DIR = "/home/tim/local/gwifi/openwrt/bin/targets/ipq40xx/chromium"
+# Mirror build-gale-image.sh: derive the image dir from $OWRT (default below).
+DEFAULT_IMAGE_DIR = os.path.join(
+    os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt"),
+    "bin/targets/ipq40xx/chromium",
+)
 
 REQUIRED_PACKAGES = [
     "openwisp-config",
+    "openwisp-monitoring",
     "kmod-batman-adv",
     "wpad-mesh-mbedtls",
     "usteer",
-    "batctl",   # matched as substring to tolerate -default suffix
+    "batctl",   # matched as substring to tolerate the -default suffix
 ]
 
 
 def parse_secrets(path):
-    """Parse KEY="value" or KEY=value lines from a secrets file."""
+    """Parse KEY="value" / KEY=value lines from a secrets file."""
     secrets = {}
     with open(path) as f:
         for line in f:
@@ -40,68 +45,63 @@ def parse_secrets(path):
             m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
             if not m:
                 continue
-            key = m.group(1)
             val = m.group(2).strip()
-            # Strip surrounding quotes
-            if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+            if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
                 val = val[1:-1]
-            elif len(val) >= 2 and val[0] == "'" and val[-1] == "'":
-                val = val[1:-1]
-            secrets[key] = val
+            secrets[m.group(1)] = val
     return secrets
 
 
-def find_sysupgrade(image_dir):
-    """Find the sysupgrade .bin for google_wifi in image_dir."""
+def find_image(image_dir, kind):
+    """Find the google_wifi squashfs image of the given kind (sysupgrade/factory)."""
+    if not os.path.isdir(image_dir):
+        return None
     for name in os.listdir(image_dir):
-        if "google_wifi" in name and "squashfs-sysupgrade" in name and name.endswith(".bin"):
+        if ("google_wifi" in name and "squashfs-%s" % kind in name
+                and name.endswith(".bin")):
             return os.path.join(image_dir, name)
     return None
 
 
 def extract_rootfs_member(tar_path, dest_dir):
-    """Extract the root/rootfs member from a sysupgrade tar to dest_dir.
-    Returns the path to the extracted rootfs file, or None if not found.
-    """
+    """Extract the root/rootfs member from a sysupgrade tar. Returns its path."""
     with tarfile.open(tar_path, "r") as tf:
-        members = tf.getnames()
         rootfs_member = None
-        for m in members:
+        for m in tf.getnames():
             if m.endswith("root") or m.endswith("rootfs"):
                 rootfs_member = m
                 break
         if rootfs_member is None:
             return None
-        tf.extract(rootfs_member, dest_dir, set_attrs=False)
+        try:
+            tf.extract(rootfs_member, dest_dir, set_attrs=False, filter="data")
+        except TypeError:  # filter= added in Python 3.12
+            tf.extract(rootfs_member, dest_dir, set_attrs=False)
         return os.path.join(dest_dir, rootfs_member)
 
 
 def unsquash(squashfs_file, dest_dir):
-    """Run unsquashfs to extract squashfs_file into dest_dir/squashfs-root."""
-    result = subprocess.run(
-        ["unsquashfs", "-d", os.path.join(dest_dir, "squashfs-root"), squashfs_file],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"unsquashfs failed:\n{result.stderr}")
-    return os.path.join(dest_dir, "squashfs-root")
+    out = os.path.join(dest_dir, "squashfs-root")
+    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("unsquashfs failed:\n%s" % r.stderr)
+    return out
 
 
 def find_manifest(image_dir, tar_path):
-    """Find a package manifest: first try control/manifest in the sysupgrade tar,
-    then fall back to *.manifest files in the image dir."""
-    # Try sysupgrade tar
+    """Return package-manifest text: prefer the sysupgrade tar's control manifest,
+    else a *.manifest in the image dir. Surfaces (not swallows) tar read errors."""
     try:
         with tarfile.open(tar_path, "r") as tf:
             for member in tf.getnames():
-                if "manifest" in member:
+                base = member.rsplit("/", 1)[-1]
+                if base == "manifest":
                     f = tf.extractfile(member)
                     if f:
                         return f.read().decode(errors="replace")
-    except Exception:
-        pass
-    # Fall back to *.manifest in image dir
+    except (tarfile.TarError, OSError) as e:
+        sys.stderr.write("warning: could not read manifest from tar: %s\n" % e)
     for name in os.listdir(image_dir):
         if name.endswith(".manifest"):
             with open(os.path.join(image_dir, name)) as f:
@@ -109,136 +109,111 @@ def find_manifest(image_dir, tar_path):
     return None
 
 
-def check_no_placeholders(text, label):
-    """Return True (ok) if no __TOKEN__ placeholders are found."""
+def check_no_placeholders(text, label, failures):
     found = re.findall(r'__[A-Z_]+__', text)
     if found:
-        return False, f"{label}: found unreplaced placeholders: {found}"
-    return True, None
+        failures.append("FAIL %s: unreplaced placeholders: %s" % (label, found))
+    else:
+        print("  PASS %s: no placeholders" % label)
+
+
+def check_value(content, secrets, key, label, failures):
+    """Assert secrets[key]'s value appears in content. Fails (not skips) if the
+    key is missing/empty from gale-secrets.conf. Never prints the value."""
+    val = secrets.get(key)
+    if not val:
+        failures.append("FAIL %s: expected key %s missing/empty in gale-secrets.conf"
+                        % (label, key))
+    elif val not in content:
+        failures.append("FAIL %s: %s value not present in rendered config"
+                        % (label, key))
+    else:
+        print("  PASS %s: %s rendered" % (label, key))
 
 
 def run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path):
-    """Run all assertions. Returns list of failure strings."""
     failures = []
 
-    # 1) /etc/config/openwisp
+    # 1) /etc/config/openwisp — URL + the real shared_secret, no placeholders.
     openwisp_path = os.path.join(rootfs_dir, "etc", "config", "openwisp")
     if not os.path.isfile(openwisp_path):
-        failures.append("FAIL openwisp config: /etc/config/openwisp not found in rootfs")
+        failures.append("FAIL openwisp: /etc/config/openwisp not found")
     else:
         content = open(openwisp_path).read()
-        openwisp_url = secrets.get("OPENWISP_URL", "")
-        if openwisp_url and openwisp_url not in content:
-            failures.append("FAIL openwisp config: OPENWISP_URL value not found")
-        else:
-            print("  PASS openwisp config: OPENWISP_URL present")
-        ok, msg = check_no_placeholders(content, "openwisp config")
-        if not ok:
-            failures.append(f"FAIL {msg}")
-        else:
-            print("  PASS openwisp config: no placeholders")
+        check_value(content, secrets, "OPENWISP_URL", "openwisp", failures)
+        check_value(content, secrets, "OPENWISP_SHARED_SECRET", "openwisp", failures)
+        check_no_placeholders(content, "openwisp", failures)
 
-    # 2) /etc/config/wireless
+    # 2) /etc/config/wireless — mesh mode + real MESH_ID + SAE key, no placeholders.
     wireless_path = os.path.join(rootfs_dir, "etc", "config", "wireless")
     if not os.path.isfile(wireless_path):
-        failures.append("FAIL wireless config: /etc/config/wireless not found in rootfs")
+        failures.append("FAIL wireless: /etc/config/wireless not found")
     else:
         content = open(wireless_path).read()
-        if "mode 'mesh'" not in content:
-            failures.append("FAIL wireless config: 'mode mesh' stanza not found")
+        if "mode 'mesh'" in content:
+            print("  PASS wireless: mesh mode present")
         else:
-            print("  PASS wireless config: mesh mode present")
-        mesh_id = secrets.get("MESH_ID", "")
-        if mesh_id and mesh_id not in content:
-            failures.append("FAIL wireless config: MESH_ID value not found")
-        else:
-            print("  PASS wireless config: MESH_ID present")
-        ok, msg = check_no_placeholders(content, "wireless config")
-        if not ok:
-            failures.append(f"FAIL {msg}")
-        else:
-            print("  PASS wireless config: no placeholders")
+            failures.append("FAIL wireless: \"mode 'mesh'\" not found")
+        check_value(content, secrets, "MESH_ID", "wireless", failures)
+        check_value(content, secrets, "MESH_SAE_KEY", "wireless", failures)
+        check_no_placeholders(content, "wireless", failures)
 
-    # 3) /etc/uci-defaults/99-gale-bootstrap exists and is executable
-    bootstrap_path = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")
-    if not os.path.isfile(bootstrap_path):
-        failures.append("FAIL bootstrap: /etc/uci-defaults/99-gale-bootstrap not found in rootfs")
+    # 3) /etc/uci-defaults/99-gale-bootstrap exists and is executable.
+    bootstrap = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")
+    if not os.path.isfile(bootstrap):
+        failures.append("FAIL bootstrap: 99-gale-bootstrap not found")
+    elif os.stat(bootstrap).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+        print("  PASS bootstrap: present and executable")
     else:
-        mode = os.stat(bootstrap_path).st_mode
-        if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-            print("  PASS bootstrap: exists and is executable")
-        else:
-            failures.append(f"FAIL bootstrap: exists but is NOT executable (mode={oct(mode)})")
+        failures.append("FAIL bootstrap: present but not executable")
 
-    # 4) Package manifest
-    manifest_text = find_manifest(image_dir, sysupgrade_path)
-    if manifest_text is None:
-        failures.append("FAIL manifest: could not find package manifest")
+    # 4) Package manifest lists the required packages.
+    manifest = find_manifest(image_dir, sysupgrade_path)
+    if manifest is None:
+        failures.append("FAIL manifest: no package manifest found")
     else:
         for pkg in REQUIRED_PACKAGES:
-            if pkg in manifest_text:
-                print(f"  PASS manifest: '{pkg}' found")
+            if pkg in manifest:
+                print("  PASS manifest: '%s' present" % pkg)
             else:
-                failures.append(f"FAIL manifest: package '{pkg}' not found")
+                failures.append("FAIL manifest: package '%s' not found" % pkg)
 
     return failures
 
 
 def main():
-    # Resolve sysupgrade image path
     if len(sys.argv) > 1:
         sysupgrade_path = sys.argv[1]
-        image_dir = os.path.dirname(sysupgrade_path)
+        image_dir = os.path.dirname(os.path.abspath(sysupgrade_path))
     else:
         image_dir = DEFAULT_IMAGE_DIR
-        sysupgrade_path = find_sysupgrade(image_dir)
+        sysupgrade_path = find_image(image_dir, "sysupgrade")
         if sysupgrade_path is None:
-            print(f"ERROR: no *-google_wifi-squashfs-sysupgrade.bin found in {image_dir}")
-            sys.exit(1)
+            sys.exit("ERROR: no *-google_wifi-squashfs-sysupgrade.bin in %s" % image_dir)
 
-    print(f"Image:   {sysupgrade_path}")
-    print(f"Dir:     {image_dir}")
+    print("Image:   %s" % sysupgrade_path)
 
-    # Load secrets
     secrets_path = os.path.join(SCRIPT_DIR, "gale-secrets.conf")
     if not os.path.isfile(secrets_path):
-        print(f"ERROR: secrets file not found: {secrets_path}")
-        print("       Copy gale-secrets.conf.example to gale-secrets.conf and fill it in.")
-        sys.exit(1)
+        sys.exit("ERROR: secrets file not found: %s (copy from .example)" % secrets_path)
     secrets = parse_secrets(secrets_path)
-    print(f"Secrets: loaded ({len(secrets)} keys)")
+    print("Secrets: loaded (%d keys)" % len(secrets))
 
-    # Check unsquashfs
     if shutil.which("unsquashfs") is None:
-        print("ERROR: 'unsquashfs' not found in PATH (install squashfs-tools)")
-        sys.exit(1)
+        sys.exit("ERROR: 'unsquashfs' not in PATH (install squashfs-tools)")
 
     tmpdir = tempfile.mkdtemp(prefix="verify-gale-")
     try:
-        # Extract rootfs from sysupgrade tar
-        rootfs_squashfs = extract_rootfs_member(sysupgrade_path, tmpdir)
-        if rootfs_squashfs is None:
-            # Fallback: look for factory image rootfs in same dir
-            factory_rootfs = None
-            for name in os.listdir(image_dir):
-                if "google_wifi" in name and "squashfs-factory" in name and name.endswith(".bin"):
-                    candidate = os.path.join(image_dir, name)
-                    extracted = extract_rootfs_member(candidate, tmpdir)
-                    if extracted:
-                        factory_rootfs = extracted
-                        break
-            if factory_rootfs is None:
-                print("ERROR: could not extract rootfs member from sysupgrade (or factory) tar")
-                sys.exit(1)
-            rootfs_squashfs = factory_rootfs
-
-        print(f"Rootfs squashfs: {rootfs_squashfs}")
-        rootfs_dir = unsquash(rootfs_squashfs, tmpdir)
-        print(f"Unsquashed to: {rootfs_dir}")
-        print()
-
+        rootfs = extract_rootfs_member(sysupgrade_path, tmpdir)
+        if rootfs is None:
+            factory = find_image(image_dir, "factory")
+            if factory:
+                rootfs = extract_rootfs_member(factory, tmpdir)
+        if rootfs is None:
+            sys.exit("ERROR: could not extract a rootfs member from the image tar")
+        rootfs_dir = unsquash(rootfs, tmpdir)
+        print("Rootfs:  unsquashed\n")
         failures = run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path)
-
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -246,13 +221,10 @@ def main():
     if failures:
         print("Failures:")
         for f in failures:
-            print(f"  {f}")
-        print()
-        print("RESULT: FAIL")
+            print("  %s" % f)
+        print("\nRESULT: FAIL")
         sys.exit(1)
-    else:
-        print("RESULT: PASS")
-        sys.exit(0)
+    print("RESULT: PASS")
 
 
 if __name__ == "__main__":
