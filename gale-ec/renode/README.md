@@ -59,13 +59,17 @@ The bidirectional USART1 console + `battery.py` diff the two images command-by-c
   gettime, **raiden SPI-flash RDID = ef4017**), **2 XFAIL** documented deltas (chan,
   flashinfo), 0 unexpected FAIL, no crashes.
 - `trace_diff.py` — **execution-trace** (MMIO register-access) equivalence: 201
-  identical accesses in order + 992 common access-events. Every behaviorally-meaningful
-  peripheral has ZERO divergence (RCC, flashif, spi1, exti, gpioPortB/C/F). The only
-  diverging accesses are: usart1/dma1 **console-TX traffic** (different banner text +
-  a UART-TX-DMA-write-width difference — both emit identical console output), timer2
-  **scheduler ticks**, and one **adc** live-value read. All immaterial, all visible in
-  the tool's raw output (it normalizes nothing). This is real execution-trace, not
-  console text.
+  identical accesses in order + 992 common access-events. Truly ZERO divergence on
+  `spi1`, `spi2`, `exti`, `gpioPortC`, `gpioPortF`. `rcc`, `flashif`, `gpioPortB` diverge
+  ONLY in access COUNT / init-timing, with identical-or-benign values (e.g. the same
+  `WRPR=0xFFFFFFFF` read a different number of times; an `RCC_*ENR`/clock-ready bit
+  sampled at slightly different init points — `0x18200001` vs `0x18220001`, a value that
+  appears in BOTH traces; an `adc` value re-read a different number of times). The bulk
+  of divergence is `usart1`/`dma1` **console-TX traffic** (different banner text + a
+  UART-TX-DMA write-width difference — both emit identical console output) and `timer2`
+  **scheduler ticks**. All immaterial; the tool **normalizes nothing** and prints the
+  raw divergences for audit. This is real execution-trace, not console text. It is a
+  **diagnostic** (prints metrics + raw divergences), not an automated pass/fail gate.
 - `power_seq.py` — **PASS**: `gale power on/off ap` drives all 6 AP rails
   identically (high then low) on both images.
 - `soak.py` — **PASS**: both run 2 s virtual, alive + panic-free + no crash/halt.

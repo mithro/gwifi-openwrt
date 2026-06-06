@@ -106,11 +106,31 @@ def main():
     print("common access-events (in both): %d" % n_common)
     print("only in orig: %d distinct  / only in rebuilt: %d distinct"
           % (len(only_o), len(only_r)))
+
+    # Per-peripheral divergence breakdown (which peripherals diverge, and by how
+    # much). A peripheral with 0 only-in events is byte-and-order identical; a
+    # peripheral that only diverges in access COUNT (same event multiset, different
+    # multiplicities) is benign timing. This is what lets a reviewer see at a glance
+    # that the behaviorally-meaningful peripherals match.
+    def periph_of(ev):
+        return ev.split(":", 1)[0]
+    diverge = collections.Counter()
+    for ev, n in (only_o + only_r).items():
+        diverge[periph_of(ev)] += n
+    print("--- per-peripheral only-in event counts (0 = identical) ---")
+    for p in PERIPHS:
+        print("    %-12s %d" % (p, diverge.get(p, 0)))
+
     for label, c in (("orig-only", only_o), ("rebuilt-only", only_r)):
         if c:
             print("  top %s events:" % label)
             for ev, n in c.most_common(8):
                 print("    x%d  %s" % (n, ev))
+
+    # NOTE: this tool is a DIAGNOSTIC, not an automated pass/fail gate. It normalizes
+    # nothing and prints the raw divergences above for human/independent-agent audit.
+    # The gating equivalence tests are battery.py / power_seq.py / soak.py /
+    # usb_descriptors.py (each exits non-zero on failure).
 
 
 if __name__ == "__main__":
