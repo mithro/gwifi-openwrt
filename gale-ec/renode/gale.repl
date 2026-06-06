@@ -20,6 +20,14 @@ flashif: Miscellaneous.GaleFlash @ sysbus 0x40022000
 dma1: Miscellaneous.GaleDma @ sysbus 0x40020000
     size: 0x400
 
+// W25Q64FV (8 MiB) on the AP-flash bridge — SPI2, chip-select = PB12 (active low,
+// bit-banged by the firmware). Answers JEDEC RDID (EF 40 17) etc. so the EC's
+// spixfer / raiden SPI-flash-read path can be exercised and trace-compared.
+spiflash: Miscellaneous.GaleSpiFlash @ spi2
+
+gpioPortB:
+    12 -> spiflash@0
+
 // Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
 // (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
 optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800
