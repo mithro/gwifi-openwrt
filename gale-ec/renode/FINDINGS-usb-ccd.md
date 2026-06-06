@@ -9,6 +9,15 @@ genuine **functional** divergence between the original dump and the reconstructi
 
 ## STATUS SUMMARY (read first)
 
+* **NEW: LIVE USB enumeration WORKS (host-bridge built).** `usb_host.py` plays the USB
+  host over GaleUsb (SignalReset + EP0 SETUP via PMA + SignalTransfer). On the ORIGINAL
+  firmware it returns the real **device descriptor LIVE** (idVendor 0x18d1 / idProduct
+  0x500f, 18 bytes) AND the **config descriptor** (wTotalLength=78, **bNumInterfaces=4**
+  = console if00 / AP if01 / unused / raiden-SPI if03). RESULT: PASS. This supersedes the
+  earlier "USB is static-descriptor-only / SignalTransfer uncalled" gap — live EP0 control
+  enumeration is now exercised end-to-end. (The rebuilt does NOT enumerate: its USB
+  bring-up diverges — see below.)
+
 * **FIXED + verified:** the reconstruction was missing `CONFIG_CASE_CLOSED_DEBUG`;
   restored (board/gale only) so `usb_init`/CCD is present and the USB register
   footprint matches the original (CNTR/ISTR ×4, BTABLE ×2). Also fixed the Renode

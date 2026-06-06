@@ -79,6 +79,19 @@ def main():
     ]
     for i in range(9):  # 18-byte device descriptor = 9 halfwords
         cmds.append('sysbus ReadWord 0x%X' % (tx + 2 * i))
+    # Second control-IN: GET_DESCRIPTOR(CONFIG, len 64) — first packet of the config
+    # descriptor (header + interface/endpoint descriptors: console/AP/unused/raiden).
+    for i, hw in enumerate([0x0680, 0x0200, 0x0000, 0x0040]):
+        cmds.append('sysbus WriteWord 0x%X 0x%04X' % (rx + 2 * i, hw))
+    cmds += [
+        'sysbus WriteWord 0x%X 0x8408' % (BTABLE0 + 6),
+        'sysbus.usb SignalTransfer 0 true true',
+        'emulation RunFor "0.1"',
+        'sysbus ReadWord 0x%X' % (BTABLE0 + 2),           # config tx_count
+        'sysbus ReadWord 0x%X' % (tx + 0),                # cfg bLength/bType
+        'sysbus ReadWord 0x%X' % (tx + 2),                # wTotalLength
+        'sysbus ReadWord 0x%X' % (tx + 4),                # bNumInterfaces/bConfigValue
+    ]
     cmds.append('quit')
 
     out = renode(cmds)
@@ -111,9 +124,23 @@ def main():
         idProduct = desc[10] | (desc[11] << 8)
         print("  bLength=%d bDescriptorType=%d idVendor=0x%04x idProduct=0x%04x"
               % (bLength, bType, idVendor, idProduct))
-        ok = (txcount == 18 and bLength == 18 and bType == 1 and idVendor == 0x18d1)
-        print("RESULT:", "PASS (live device descriptor, Google 0x18d1)" if ok
-              else "CHECK (unexpected descriptor)")
+        dev_ok = (txcount == 18 and bLength == 18 and bType == 1 and idVendor == 0x18d1)
+        print("DEVICE DESC:", "PASS (Google 0x18d1)" if dev_ok else "CHECK")
+
+    # Config descriptor (reads[13..16]: cfg tx_count, [bLen|bType], wTotalLength, [nIf|cfgVal])
+    cfg_ok = False
+    if len(reads) >= 17:
+        cfg_txc = int(reads[13], 16)
+        h0 = int(reads[14], 16); wtotal = int(reads[15], 16); h2 = int(reads[16], 16)
+        cfg_bLength = h0 & 0xFF; cfg_bType = (h0 >> 8) & 0xFF
+        num_ifaces = h2 & 0xFF
+        print("CONFIG DESC: first-packet=%d bytes, bLength=%d bType=%d wTotalLength=%d bNumInterfaces=%d"
+              % (cfg_txc, cfg_bLength, cfg_bType, wtotal, num_ifaces))
+        cfg_ok = (cfg_bLength == 9 and cfg_bType == 2 and num_ifaces == 4)
+        print("CONFIG DESC:", "PASS (4 interfaces: console if00/AP if01/unused/raiden if03)"
+              if cfg_ok else "CHECK")
+    print("RESULT:", "PASS — live USB enumeration (device + config)" if (dev_ok and cfg_ok)
+          else "PARTIAL/CHECK")
 
 
 if __name__ == "__main__":
