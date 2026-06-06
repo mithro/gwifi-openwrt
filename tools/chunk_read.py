@@ -100,8 +100,13 @@ def main():
     if os.path.exists(STOCK):
         stock = open(STOCK, "rb").read()
         if len(stock) != SIZE:
-            print(f"# reference {STOCK} is {len(stock)} B (!= {SIZE}); ignoring it")
-            stock = None
+            # A *wrong-size* reference is almost always a mistake (truncated file,
+            # or GALE_STOCK pointing at the wrong thing). Silently skipping the
+            # comparison would make a miscompare look identical to "no reference",
+            # so fail loud. A deliberately-absent reference (else branch) is the
+            # only tolerated no-comparison case.
+            sys.exit(f"FATAL: reference {STOCK} is {len(stock)} B (!= {SIZE}); "
+                     f"fix it or unset GALE_STOCK to run without a comparison")
     else:
         stock = None
         print(f"# no reference at {STOCK} (set GALE_STOCK); skipping vs-stock comparison")
