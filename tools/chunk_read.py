@@ -67,7 +67,13 @@ def build_layout(off, size):
 
 
 def read_chunk(off, size, outpath, retries=1):
-    """Park, then flashrom-read ONLY [off,off+size) via -i chunk:outpath. Return bytes."""
+    """Park, then flashrom-read ONLY [off,off+size) via -i chunk:outpath.
+
+    A read counts as success only if the file is full-size AND flashrom exited 0.
+    A full-size file with nonzero rc is retried (up to `retries` times) and, if it
+    never returns rc==0, handed back WITH that nonzero rc so callers fail loud --
+    so a persistent flashrom error costs `retries`+1 park+read device sessions.
+    """
     for attempt in range(retries + 1):
         build_layout(off, size)
         for p in (outpath, THROW):
