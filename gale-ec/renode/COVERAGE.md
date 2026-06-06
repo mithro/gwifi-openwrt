@@ -45,9 +45,9 @@ branches** (726→856) by executing the `pd_task`/`pd_find_preamble`/`pd_dequeue
 largest uncovered category. 727/1583 RO branches remain unreached by ANY of the 22 scenarios.
 With the PD-PHY now driven live, the remaining uncovered set is dominated by `COVERABLE_GAP`
 (reached-one-direction — drivable with more inputs / full PD contract) and the structural
-classes (HW-can't-fail error returns, AP host-commands — task #17, reset-only fault handlers).
-Literal 100% is still not reachable (the absent AP SoC + reset-only faults), as the
-per-category table shows.
+classes (HW-can't-fail error returns, AP host-commands that are unreachable dead code in
+gale, reset-only fault handlers). Literal 100% is not reachable (gale compiles no
+host-command transport, plus reset-only faults), as the per-category table shows.
 
 ## Why literal 100% branch coverage is NOT achievable here — quantified at branch granularity
 
@@ -59,7 +59,7 @@ per-category table shows.
 | `UNREACHED_OTHER` | 502 | residual PD/console/libc paths not hit by the current scenario set (the bulk of the PD-PHY/protocol chain is now covered by `pd_live`); reducible with more message types + a full PD contract |
 | `COVERABLE_GAP` | 472 | reached in some scenario but only one direction seen — the honest work-list (drivable with more inputs / the contract-accepted PD paths); does not change the structural ceiling |
 | `HW_CANT_FAIL` | 189 | `EC_ERROR_*` returns for modeled hardware that never errors (flash never BSY, SPI slave always responds, ADC/DMA never fail) |
-| `AP_DEPENDENT` | 84 | `host_command_process`, `hc_remote_flash`, `hc_usb_pd_control`, LPC/keyboard/charger — need the **IPQ4019 AP** (host-command injector = task #17) |
+| `AP_DEPENDENT` | 84 | **unreachable dead code in gale-as-built.** gale's `board/gale/board.h` configures NO host-command transport (no `CONFIG_HOSTCMD_I2C_SLAVE_ADDR`, no LPC/SPI/eSPI host interface, no `CONFIG_CMD_HOSTCMD`), so `host_packet_receive`/`host_command_received`/`i2c_process_command`/`i2c_event_handler` are all **GC'd from the binary** (`arm-none-eabi-nm build/gale/RW/ec.RW.elf` shows them absent; `host_command_process` is linked but has no runtime caller). No real input — from an IPQ4019 or anything — can reach `host_command_process`/the `hc_*` handlers; forcing them would mean synthesising a call no hardware can make. So a host-command injector is infeasible *and unnecessary* (this supersedes the earlier "needs IPQ4019 / task #17" framing). Also includes gale-absent peripherals (no battery/charger/keyboard). |
 | `UNREACHABLE_FAULT` | 41 | panic/hard-fault/assert/reboot/hibernate handlers — the not-taken side is the normal path; taking the other side resets the CPU |
 | `WATCHDOG_TIMEOUT` | 12 | watchdog-trip / timeout-expiry guards that never fire deterministically |
 

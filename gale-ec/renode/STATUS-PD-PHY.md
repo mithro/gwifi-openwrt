@@ -71,6 +71,8 @@ decode+dispatch coverage the message battery already provides.
 
 Even a complete CC-partner converts the PD-PHY/PD-protocol category but does NOT yield
 literal 100% branch coverage: the AP host-command branches (`host_command_process`,
-`hc_*`) need the IPQ4019 and are addressed separately by the host-command injector
-(task #17); and reset-only fault/panic branches cannot take both directions within one
-non-resetting image. See `COVERAGE.md` for the full per-category accounting.
+`hc_*`) are **unreachable dead code in gale** — `board/gale` compiles no host-command
+transport, so `host_packet_receive`/`host_command_received`/`i2c_event_handler` are GC'd
+and nothing can invoke them (an injector is infeasible, not a TODO — see `COVERAGE.md`);
+and reset-only fault/panic branches cannot take both directions within one non-resetting
+image. See `COVERAGE.md` for the full per-category accounting.

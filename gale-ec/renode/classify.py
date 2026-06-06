@@ -7,8 +7,13 @@ Each uncovered branch is binned by its containing function symbol into one of:
   UNREACHABLE_FAULT   panic / exception / hard-fault / assert handlers — taking both
                       directions needs a fault that resets the CPU; the not-taken side
                       is the normal path, so both-in-one-image is structurally excluded.
-  AP_DEPENDENT        host-command / LPC / AP-stream / keyboard / charger paths that
-                      need the IPQ4019 AP (absent in EC-only emulation).
+  AP_DEPENDENT        host-command / LPC / AP-stream / keyboard / charger paths. In
+                      gale-as-built these are UNREACHABLE DEAD CODE: board/gale defines
+                      no host-command transport (no CONFIG_HOSTCMD_I2C_SLAVE_ADDR, no
+                      LPC/SPI host iface, no CONFIG_CMD_HOSTCMD), so host_packet_receive /
+                      host_command_received / i2c_event_handler are GC'd — nothing can
+                      invoke host_command_process at runtime. (Plus gale-absent
+                      peripherals: no battery/charger/keyboard.) See COVERAGE.md.
   HW_CANT_FAIL        EC_ERROR_* returns for modeled hardware that never errors
                       (flash never BSY, SPI slave always responds, I2C ack).
   WATCHDOG_TIMEOUT    watchdog-trip / timeout-expiry guards that never fire deterministically.
