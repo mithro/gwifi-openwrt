@@ -54,11 +54,13 @@ memory) + the correct WP_L pin boot BOTH the original dump and the rebuilt `ec.b
 to the interactive `>` prompt (reset vector matches: `SP=0x200004C0 PC=0x080000ED`).
 The bidirectional USART1 console + `battery.py` diff the two images command-by-command.
 
-**Equivalence result — command-driven tests only:**
-`7 PASS` (version, sysinfo, taskinfo, gpioget, panicinfo, adc, gettime),
-`2 XFAIL` documented deltas (chan, flashinfo), `0 unexpected FAIL`, no crashes.
-This portion also caught a real reconstruction bug (`CONFIG_TASK_PROFILING`), which
-was **fixed in the firmware**, not normalized away.
+**Equivalence result — console/command-driven tests:**
+`8 PASS` (version, sysinfo, taskinfo, gpioget, panicinfo, adc, gettime, **raiden
+SPI-flash RDID = ef4017**), `2 XFAIL` documented deltas (chan, flashinfo),
+`0 unexpected FAIL`, no crashes. Plus the **execution-trace** (MMIO) diff
+(`trace_diff.py`): 201 identical register accesses in order, differences traced to
+the documented console/timing deltas. This portion also caught a real reconstruction
+bug (`CONFIG_TASK_PROFILING`), **fixed in the firmware**, not normalized away.
 
 **NOT yet done — this is what the comparison does NOT cover (do not overread the
 7 PASS):**

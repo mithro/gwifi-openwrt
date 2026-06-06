@@ -15,11 +15,11 @@
 // the firmware's expectations for the UART console TX path (mem->periph, one-
 // directional) and makes console output observable for trace comparison.
 //
-// LIMITATION: each channel's transfer runs instantly and independently on the
-// CCR.EN edge. Correct for one-directional DMA (UART TX), but it does NOT model
-// full-duplex SPI, where the SPI2 TX and RX DMA channels must interleave byte-by-
-// byte (RX captures the slave response to each TX byte). So the SPI-flash readback
-// (raiden bridge) does not work yet — see peripherals/GaleSpiFlash.cs.
+// One-directional DMA (UART TX) runs as an instant block transfer on the CCR.EN
+// edge. Full-duplex SPI is handled specially (see Transfer): an RX channel that
+// targets an SPI DR is deferred, and the paired TX channel clocks each byte out and
+// captures the simultaneous slave response into the RX buffer — so the raiden
+// SPI-flash readback works end-to-end (ef4017).
 //
 // Registers (DMA1 base 0x40020000):
 //   ISR  0x00 (RO flags), IFCR 0x04 (W1C), then per channel c=1..7:
@@ -49,6 +49,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             {
                 ccr[c] = cndtr[c] = cpar[c] = cmar[c] = 0;
             }
+            pendingRx.Clear();
         }
 
         public uint ReadDoubleWord(long offset)
@@ -100,6 +101,42 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             var ma = cmar[c];
             var pa = cpar[c];
 
+            // --- Full-duplex SPI DMA special case ---------------------------------
+            // gale's SPI master pairs a TX channel (mem->SPI_DR) with an RX channel
+            // (SPI_DR->mem); each clocked byte produces one response byte. The generic
+            // instant per-channel model would drain RX before TX ever clocks the bus.
+            // Defer an RX channel that targets an SPI DR; when the paired TX channel
+            // runs, clock each TX byte out, read back the slave response, and deposit it
+            // into the deferred RX buffer — then complete BOTH channels together.
+            if(!mem2mem && !dirMemToPeriph && IsSpiDr(pa))
+            {
+                pendingRx[pa] = new RxPend { Ch = c, Ma = ma, N = n, Minc = minc, Msize = msize };
+                return; // completed by the paired TX transfer (do NOT latch TCIF yet)
+            }
+            if(dirMemToPeriph && IsSpiDr(pa))
+            {
+                RxPend rx = pendingRx.ContainsKey(pa) ? pendingRx[pa] : null;
+                for(uint i = 0; i < n; i++)
+                {
+                    sysbus.WriteDoubleWord(pa, ReadElem(ma, msize)); // clock out one TX byte
+                    var resp = sysbus.ReadDoubleWord(pa);            // simultaneous slave response
+                    if(minc) { ma += (uint)msize; }
+                    if(rx != null && i < rx.N)
+                    {
+                        WriteElem(rx.Ma, rx.Msize, resp);
+                        if(rx.Minc) { rx.Ma += (uint)rx.Msize; }
+                    }
+                }
+                Complete(c, ma, pa);
+                if(rx != null)
+                {
+                    cmar[rx.Ch] = rx.Ma;
+                    Complete(rx.Ch, rx.Ma, cpar[rx.Ch]);
+                    pendingRx.Remove(pa);
+                }
+                return;
+            }
+
             for(uint i = 0; i < n; i++)
             {
                 if(mem2mem)
@@ -122,12 +159,29 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     if(minc) { ma += (uint)msize; }
                 }
             }
+            Complete(c, ma, pa);
+        }
 
+        private void Complete(int c, uint ma, uint pa)
+        {
             cmar[c] = ma;
             cpar[c] = pa;
-            cndtr[c] = 0;                  // transfer complete
-            var shift = (c - 1) * 4;       // per-channel ISR field
-            isr |= (TCIF | GIF) << shift;  // latch Transfer-Complete + Global flags
+            cndtr[c] = 0;                       // transfer complete
+            isr |= (TCIF | GIF) << ((c - 1) * 4); // latch Transfer-Complete + Global flags
+        }
+
+        private static bool IsSpiDr(uint addr)
+        {
+            return addr == SPI1_DR || addr == SPI2_DR;
+        }
+
+        private class RxPend
+        {
+            public int Ch;
+            public uint Ma;
+            public uint N;
+            public bool Minc;
+            public int Msize;
         }
 
         private uint ReadElem(uint addr, int sizeBytes)
@@ -171,10 +225,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly uint[] cndtr = new uint[NumChannels + 1];
         private readonly uint[] cpar = new uint[NumChannels + 1];
         private readonly uint[] cmar = new uint[NumChannels + 1];
+        private readonly System.Collections.Generic.Dictionary<uint, RxPend> pendingRx =
+            new System.Collections.Generic.Dictionary<uint, RxPend>();
         private readonly IBusController sysbus;
         private readonly long size;
 
         private const int NumChannels = 7;
+        private const uint SPI1_DR = 0x4001300C; // SPI1 base 0x40013000 + DR 0x0C
+        private const uint SPI2_DR = 0x4000380C; // SPI2 base 0x40003800 + DR 0x0C
         private const long ISR  = 0x00;
         private const long IFCR = 0x04;
 

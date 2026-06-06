@@ -5,17 +5,10 @@
 // SPI2 (PB12 NSS / PB13 SCK / PB14 MISO / PB15 MOSI); the EC drives chip-select as
 // a GPIO (SPI_FLASH_NSS = PB12, active low), bit-banged by the firmware around each
 // spi_transaction(). This minimal model answers the commands the EC's `spixfer`
-// console path and the raiden bridge use:
-//
-// !! KNOWN GAP — the readback is NOT yet end-to-end. The model returns the correct
-//    bytes to the SPI controller (verified by log: on `spixfer rlen 0 0x1f 3` it
-//    receives 0x9F and returns EF/40/17), BUT the EC reads back `ff0000`, not
-//    `ef4017`. gale's SPI master is full-duplex DMA-driven; GaleDma does instant,
-//    independent per-channel transfers, so the SPI2 RX channel drains DR before the
-//    TX channel clocks bytes through the flash, and the stock STM32SPI keeps no RX
-//    FIFO. Faithfully exercising the readback needs SPI TX/RX DMA interleaving or a
-//    FIFO-buffered SPI controller. Until then NO battery test claims the raiden /
-//    SPI-flash-read path is validated. The model itself is correct:
+// console path and the raiden bridge use, END-TO-END: `spixfer rlen 0 0x1f 3`
+// returns `ef4017` to the EC on both images (battery test passes). This works
+// because GaleDma now interleaves the full-duplex SPI2 TX/RX DMA channels (clocks
+// each TX byte, captures the slave response into the RX buffer). Commands:
 //   * 0x9F JEDEC RDID  -> 0xEF 0x40 0x17 (Winbond, 64 Mbit) — the value the
 //     HARDWARE-TEST-PLAN raiden test expects (flashrom RDID "ef4017").
 //   * 0x03 / 0x0B READ -> bytes from a 0xFF-filled backing image (deterministic).

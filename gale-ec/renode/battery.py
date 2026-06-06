@@ -37,6 +37,9 @@ UART = re.compile(r"usart1: \[host:[^\]]*\]\s?(.*)$")
 COMMANDS = [
     "version", "sysinfo", "taskinfo", "gpioget", "flashinfo",
     "chan", "panicinfo", "adc", "gettime",
+    # Raiden SPI-flash bridge (HARDWARE-TEST-PLAN ⭐): read the AP W25Q64 JEDEC ID
+    # over SPI2 via DMA. Both images must return the real Winbond ID ef4017.
+    "spixfer rlen 0 0x1f 3",
 ]
 # NOTE: the gale board subcommands (cc/vbus/polarity/...) are verified equivalent
 # manually (e.g. both images print "cc - 0mV, 0mV"), but they interact with the PD
