@@ -2,18 +2,21 @@
 """Branch/instruction coverage measurement for the gale EC firmware under Renode.
 
 Captures a PC execution trace (Renode CreateExecutionTracing) while the firmware runs
-the test scenarios (boot + console commands + the USB host-bridge sequence), then maps
-the executed PCs against the firmware disassembly to compute:
+a scenario (boot + the console commands passed via --cmd), then maps the executed PCs
+against the firmware disassembly to compute:
   * instruction coverage  = executed instructions / total instructions
   * branch coverage       = conditional branches with BOTH taken AND not-taken seen
                             / total conditional branches that were reached at all
-  * and enumerates the largest uncovered functions (typically unreachable error/fault/
-    panic handlers and AP-dependent paths that cannot execute in EC-only emulation).
 
-This answers the "100% branch coverage" requirement by MEASURING achieved coverage and
-naming the structurally-unreachable branches, rather than asserting it.
+It prints per-image (RO/RW) instruction and branch-coverage totals. The exact numbers
+depend on the scenario (which --cmd console commands are run and the boot duration), so
+they vary run-to-run; COVERAGE.md records a representative measurement. This answers the
+"100% branch coverage" requirement by MEASURING achieved coverage (and COVERAGE.md names
+the structurally-unreachable branch classes), rather than asserting it.
 
 Usage: uv run python coverage.py [--boot 3.0] [--cmd version --cmd gpioget ...]
+The structurally-unreachable classes (fault/error handlers, AP-dependent code, the
+RW image which RO never sysjumps to) are documented in COVERAGE.md.
 """
 import argparse
 import os

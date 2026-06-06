@@ -231,6 +231,13 @@ the bring-up stalls/faults after enabling the USB clock — a `GaleUsb` register
 interaction (USB IRQ = NVIC 31). Fixing `GaleUsb` so `usb_init` completes is the gate to
 enumeration → USB UART consoles (if00/if01) + raiden-over-USB (if03), then trace-compare.
 
+> **SUPERSEDED (2026-06-06):** this "Open issue" is RESOLVED. `GaleUsb` is fixed; `usb_init`
+> completes (CNTR=0xE400) and `usb_host.py` now drives live enumeration + USB console +
+> raiden `ef4017` on BOTH images. The rebuilt's residual ~1 s `usb_spi_deferred`
+> instability survives only as the "usb_spi stability timing" divergence in the reconciled
+> STATUS SUMMARY (worked around by firing the raiden RDID in the early window) — it no
+> longer blocks any USB test. Kept here as audit trail only.
+
 ## Build-trial detail (for the record — not applied)
 
 Added `#define CONFIG_CASE_CLOSED_DEBUG` to `board/gale/board.h` and rebuilt

@@ -5,7 +5,7 @@ execution trace while the firmware runs the test scenarios (boot + console comma
 USB), then mapping executed PCs against the firmware disassembly (counting conditional
 branches taken/not-taken).
 
-## Measured result (rebuilt ec.bin, comprehensive console+USB+power scenario)
+## Measured result (rebuilt ec.bin, representative console scenario)
 
 ```
 RO image (the ACTIVE image — see note): 
@@ -14,6 +14,11 @@ RO image (the ACTIVE image — see note):
   branch coverage: 29.7% of reached, 10.5% of total
 RW image: 0% — never executed (RO does not sysjump to RW in this emulation)
 ```
+
+> These figures are **scenario-dependent** — they move with the `--cmd` set and the boot
+> duration (e.g. the default 4-command set yields a lower ~24% instr / ~8% RO-branch, a
+> longer console+adc+taskinfo set the ~29.6%/10.5% above). The exact percentage is not the
+> point; what matters is the *structural* ceiling explained below, which no scenario crosses.
 
 ## Why literal 100% branch coverage is NOT achievable here (honest)
 
