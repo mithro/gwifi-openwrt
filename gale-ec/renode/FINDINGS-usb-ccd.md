@@ -37,13 +37,19 @@ genuine **functional** divergence between the original dump and the reconstructi
 * **WORKS:** CCD → SRC_ACCESSORY → `ccd_set_mode` → **`usb_init` completes**
   ("USB init done", CNTR=0xE400). The USB-console enable path (`usb_console_enable`,
   EP1/EP2) is also clean.
-* **RECONSTRUCTION DIVERGENCE (raiden EP4) — corrected:** enabling the raiden bridge
-  (`usb_spi_enable`, EP4) makes the rebuilt firmware stall/panic where the **original
-  runs clean in the SAME Renode harness** (proven by direct test — see the CORRECTION
-  section below). This is a **real source-version divergence in the reconstruction's
-  PD/CCD/USB-bring-up logic, NOT an emulation artifact** (my earlier "timing-race
-  emulation gap" conclusion is retracted). The reconstruction is therefore **not
-  functionally equivalent** to the original on USB bring-up.
+* **USB EQUIVALENCE PROVEN across BOTH images (latest):** with the host-bridge driving
+  both, the rebuilt **does** enumerate (forced via dynamic CC, pre-panic window) and is
+  **equivalent to the original**: byte-identical device descriptor (18d1:500f) + identical
+  config structure (78B / 4 interfaces), AND the **raiden SPI bridge returns ef4017 over
+  USB on BOTH** (original EP3, rebuilt EP4 — both with a real SPI2 transaction). So the
+  USB *function* (enumeration + raiden + console) is equivalent. The remaining USB
+  divergences are: the raiden bulk **endpoint number** (EP3 vs EP4 = `USB_EP_SPI`
+  source-version), the rebuilt not bringing up `usb_init` **autonomously** (needs the
+  forced debug-accessory), and a **separate ~1 s rebuilt context-corruption panic** in
+  prolonged `usb_spi_deferred` scheduling (does NOT block the raiden read itself, which
+  succeeds). My earlier "rebuilt doesn't enumerate / not functionally equivalent on USB"
+  framing is **superseded** — enumeration and raiden are equivalent; the divergences are
+  the endpoint number + autonomous-bring-up + the late panic.
 * **NOT YET DONE (multi-session):** USB host-bridge + live enumeration, exercising
   the consoles/raiden over USB end-to-end, 100% branch-coverage measurement, and the
   3× independent-verification rounds.
