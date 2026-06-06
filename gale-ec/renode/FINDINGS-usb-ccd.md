@@ -62,6 +62,31 @@ cannot reach it under any input.
   standard is functional equivalence with documented deltas (see `battery.py`
   `DOCUMENTED_DELTAS`).
 
+## Fix attempted — and what it revealed (version skew, not a one-liner)
+
+Added `#define CONFIG_CASE_CLOSED_DEBUG` to `board/gale/board.h` and rebuilt
+(`make BOARD=gale build/gale/ec.bin`). It does NOT link — two version-skew conflicts:
+
+1. **Duplicate USB iface3/ep4 (raiden SPI bridge).** `case_closed_debug.c` declares
+   `USB_SPI_CONFIG(ccd_usb_spi, USB_IFACE_SPI, USB_EP_SPI)`, which owns interface 3 /
+   endpoint 4. This reconstruction — built *without* CCD — added its own board-level
+   raiden `usb_spi` on the same iface3/ep4, so enabling CCD yields
+   `multiple definition of ep_4_tx / iface_3_request / usb_desc_iface3_*`.
+   In the 2016 original the raiden bridge simply *was* CCD's `ccd_usb_spi`.
+
+2. **Missing charge-manager deps.** This tree's `usb_pd_protocol.c:1658-1660` CCD
+   SRC_ACCESSORY block calls `typec_set_input_current_limit` and
+   `charge_manager_update_dualrole`, which are absent on gale (no
+   `CONFIG_CHARGE_MANAGER`). The 2016 gale was built from a `usb_pd_protocol.c`
+   version whose CCD block did not require them.
+
+Conclusion: the reconstruction's `common/` (and the board's raiden plumbing) are a
+**different source version** than the original v1.1.5337 was built from. Achieving
+genuine trace-/functional-equivalence — and live USB testing — requires *aligning the
+source version* (fold the board raiden bridge onto `ccd_usb_spi`; source-match the PD
+/charge layer), not patching one config. The change was reverted to keep the firmware
+buildable (commented-out marker + this pointer left in `board/gale/board.h`).
+
 ## Fix being attempted
 
 Restore `CONFIG_CASE_CLOSED_DEBUG` (+ its dependencies) to `board/gale/board.h` so
