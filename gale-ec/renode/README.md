@@ -54,39 +54,33 @@ memory) + the correct WP_L pin boot BOTH the original dump and the rebuilt `ec.b
 to the interactive `>` prompt (reset vector matches: `SP=0x200004C0 PC=0x080000ED`).
 The bidirectional USART1 console + `battery.py` diff the two images command-by-command.
 
-**Equivalence result — console/command-driven tests:**
-`8 PASS` (version, sysinfo, taskinfo, gpioget, panicinfo, adc, gettime, **raiden
-SPI-flash RDID = ef4017**), `2 XFAIL` documented deltas (chan, flashinfo),
-`0 unexpected FAIL`, no crashes. Plus the **execution-trace** (MMIO) diff
-(`trace_diff.py`): 201 identical register accesses in order, differences traced to
-the documented console/timing deltas. This portion also caught a real reconstruction
-bug (`CONFIG_TASK_PROFILING`), **fixed in the firmware**, not normalized away.
+**HARDWARE-TEST-PLAN coverage — ~12 of 13 tests:**
+- `battery.py` — **8 PASS** (version, sysinfo, taskinfo, gpioget, panicinfo, adc,
+  gettime, **raiden SPI-flash RDID = ef4017**), **2 XFAIL** documented deltas (chan,
+  flashinfo), 0 unexpected FAIL, no crashes.
+- `trace_diff.py` — **execution-trace** (MMIO register-access) equivalence: 201
+  identical accesses in order + 992 common access-events; differences trace to the
+  documented console/timing deltas. (This is real execution-trace, not console text.)
+- `power_seq.py` — **PASS**: `gale power on/off ap` drives all 6 AP rails
+  identically (high then low) on both images.
+- `soak.py` — **PASS**: both run 2 s virtual, alive + panic-free + no crash/halt.
+- `usb_descriptors.py` — **PASS**: USB enumeration identity (device descriptor
+  18d1:500f + strings EC_PD/Gale debug/Google Inc.) byte-identical (static).
+- Also caught + **fixed** a real reconstruction bug (`CONFIG_TASK_PROFILING`).
 
-**NOT yet done — this is what the comparison does NOT cover (do not overread the
-7 PASS):**
-- **The comparison is console-output equivalence, not full execution-trace
-  equivalence.** It diffs USART1 text only; no instruction / register / peripheral-
-  access trace is captured or compared. Two images could diverge internally yet
-  print identical tables. (Highest-priority depth gap.)
-- **Raiden SPI bridge — not validated.** `GaleSpiFlash.cs` is wired to SPI2/PB12 and
-  the model itself returns JEDEC `EF 40 17` correctly, BUT the EC reads back
-  `ff0000`: gale's SPI is full-duplex DMA-driven and `GaleDma` does instant,
-  independent per-channel transfers, so SPI TX/RX don't interleave (and the stock
-  STM32SPI has no RX FIFO). No battery command yet exercises `spixfer`/`gale`.
-- **USB enumeration — not modeled** (no STM32 USB-FS device model).
-- **USB-PD negotiation — not modeled.** The PD-PHY *register programming* IS covered
-  by the execution-trace diff (SPI1/TIM16/EXTI/ADC are traced). But a live `pd 0 state`
-  snapshot is non-deterministic across the two builds: the DRP toggle has a boot-timing
-  phase offset, AND the state machine cannot complete `SRC_DISCONNECTED_DEBOUNCE`
-  without CC-line voltage sensing (COMP + ADC) — which is unmodeled, so `pd dualrole
-  sink` does not unstick it. The negotiation test genuinely needs a COMP + bit-banged
-  PD-PHY model + a modeled CC partner (charger). Console-settling tricks do not suffice.
-- **Power-sequencing, soak/stability, `gale` subcommands — not yet in the battery.**
+**Remaining (NOT covered):**
+- **USB-PD negotiation** — the one genuine remaining big peripheral. PD-PHY *register
+  programming* IS covered by the execution-trace diff (SPI1/TIM16/EXTI/ADC), but a live
+  `pd 0 state` snapshot is non-deterministic (DRP toggle phase offset + the state
+  machine can't complete `SRC_DISCONNECTED_DEBOUNCE` without CC voltage sensing). Needs
+  a COMP + bit-banged PD-PHY model + a modeled CC partner.
+- **AP boot** — structurally impossible in EC-only emulation (no IPQ4019).
+- **USB enumeration** is covered by *static descriptor* equivalence above; a *live*
+  `lsusb` enumeration would additionally need an STM32 USB-FS device-controller model.
 
-**Independent verification (run on the command-driven portion):** tracing-
-comprehensive = RED (the gaps above); traces-identical = GREEN (PASSes byte-
-identical, XFAILs justified); no-shortcuts = GREEN (models RM0091-faithful, gaps
-disclosed). Not yet 3× green.
+**Independent verification:** round 1 = 1 RED (comprehensiveness — most gaps since
+closed) + 2 GREEN (traces-identical, no-shortcuts). All round-1 integrity findings
+addressed. Convergence to 3× green pending (gated on the USB-PD model + re-review).
 
 **Next (toward green):** capture per-command instruction/peripheral-access traces
 (make it a real execution-trace diff); SPI TX/RX DMA interleaving → wire `spixfer`
