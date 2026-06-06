@@ -58,14 +58,19 @@ Identity) to cover the decode + protocol-dispatch branches broadly.
 
 Decoding + dispatch work (above). Reaching an explicit contract (SNK_READY) additionally
 needs the partner to complete the GoodCRC handshake: after gale decodes Source_Caps it
-transmits a Request and waits `PD_T_RECEIVE` (~1 ms) for a GoodCRC, retrying then
-soft-resetting if none arrives. The partner must therefore (a) detect gale's TX (SPI1/TIM16
-TX-DMA activity), (b) inject a GoodCRC with the matching msg_id inside that ~1 ms window,
-then (c) inject Accept and PS_RDY (each itself GoodCRC-acknowledged by the EC). This is
-TX-reactive timing on top of the now-working RX injection — a refinement of `pd_inject.py`,
-not new peripheral modeling. The branch-coverage value of the contract-accepted paths
-(`handle_ctrl_request` ACCEPT/PS_RDY, SNK_TRANSITION, SNK_READY) is incremental over the
-decode+dispatch coverage the message battery already provides.
+transmits a Request and, in `send_validate_message`, immediately does a blocking
+`pd_analyze_rx` for a GoodCRC (attempt r=0), then retries up to `PD_RETRY_COUNT` (3) times —
+each retry yields on `task_wait_event(USB_PD_RX_TMOUT_US)` for only ~1 ms — and soft-resets
+to SNK_DISCOVERY if no GoodCRC arrives. **Empirically confirmed:** injecting a GoodCRC from
+`pd_inject.py` (FireComp at fixed monitor-script timing) cannot hit that ~1 ms window — by the
+time the staged GoodCRC fires (tens of ms later) gale has exhausted its retries and reset, so
+the state stays SNK_DISCOVERY. So a full contract needs a **model-side auto-responder**: the
+CC-partner peripheral itself detecting gale's PD TX (SPI1 TX-DMA completion / the `raw_samples`
+preamble write) and auto-injecting GoodCRC → Accept → PS_RDY with matching msg_ids, all in C#
+with no monitor-timing dependency — a further peripheral-logic build, not just a pd_inject
+refinement. The branch-coverage value of the contract-accepted paths (`handle_ctrl_request`
+ACCEPT/PS_RDY, SNK_TRANSITION, SNK_READY) is incremental over the decode+dispatch coverage the
+message battery already drives live.
 
 ## Honest bound
 
