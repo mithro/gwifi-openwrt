@@ -113,6 +113,14 @@ def _pd_contract_post():
             f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
         return f + ['emulation RunFor "%s"' % t]
     c += fire("0.2") + fire("0.2") + fire("0.4")
+    # GALE-INITIATED actions from a clean SNK_READY (BEFORE the disruptive battery), with the
+    # REACTIVE partner auto-Accepting each so the swap/soft-reset handshakes complete and pd_task's
+    # SNK_SWAP_*/SOFT_RESET/DR_SWAP states run. After each console action, fire the COMP IRQ so
+    # gale's pd_rx_start pops the auto-GoodCRC then the reactive reply.
+    def cc(scmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
+    for action in ("pd 0 swap data", "pd 0 swap power", "pd 0 vdm vers", "pd 0 soft"):
+        c += cc(action) + ['emulation RunFor "0.05"'] + fire("0.15") + fire("0.15")
     # SNK_READY: inject a broad set of message TYPES the EC dispatches -> handle_ctrl_request /
     # handle_data_request / pd_svdm branches. ctrl types: GOTO_MIN2 ACCEPT3 REJECT4 PING5 PS_RDY6
     # GET_SRC_CAP7 GET_SNK_CAP8 DR_SWAP9 PR_SWAP10 VCONN_SWAP11 WAIT12 SOFT_RESET13.
@@ -127,16 +135,7 @@ def _pd_contract_post():
     msgs.append(pd_encode.SRC_CAP)            # re-send Source_Caps in READY (re-request path)
     for m in msgs:
         c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.1")
-    # GALE-INITIATED actions from SNK_READY (console), with the partner accepting each so the
-    # swap / soft-reset / VDM STATE machines actually run (SNK_SWAP_*, SOFT_RESET, DR_SWAP, VDM):
-    # gale TX's the request (auto-GoodCRC'd), we deliver an Accept then a PS_RDY via FireComp.
-    def cc(scmd):
-        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
-    for action, mid0 in (("pd 0 swap power", 20), ("pd 0 swap data", 23),
-                         ("pd 0 vdm vers", 26), ("pd 0 soft", 28), ("pd 0 hard", 30)):
-        c += cc(action) + ['emulation RunFor "0.05"']
-        for off, mt in ((0, 3), (1, 6), (2, 3)):     # Accept, PS_RDY, Accept (covers swap+soft seq)
-            c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(pd_encode.ctrl(mt, mid0 + off))] + fire("0.1")
+    c += cc("pd 0 hard") + ['emulation RunFor "0.3"']   # hard reset last (tears down the contract)
     return c
 
 
