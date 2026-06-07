@@ -1,7 +1,7 @@
 # Open-Mesh OM2P auto-provisioning mesh-AP fleet image — Design Spec
 
 - **Date:** 2026-06-07
-- **Status:** Draft (pending spec-reviewer + user approval)
+- **Status:** Implemented, built, verified, and uploaded to OpenWISP (2026-06-08). 4 images fit at 7,144,347 B (~195 KB headroom). See §10 for the as-built package trim.
 - **Target devices:** Open-Mesh **OM2P** family — OpenWrt **25.12.x**, target `ath79/generic`, devices `openmesh_om2p-{lc,v1,v2,v4}`
 - **Controller:** OpenWISP (pull mode) at `https://wisp.welland.mithis.com`
 - **Build env:** `/home/tim/local/gwifi/openwrt` (OpenWrt v25.12.x; currently builds `ipq40xx` — this adds the `ath79` target alongside it)
@@ -115,8 +115,8 @@ CONFIG_PACKAGE_wpad-mesh-mbedtls=y
 CONFIG_PACKAGE_usteer=y
 ```
 - Deliberately **no** `luci`, `tcpdump-mini`, `ethtool`, `ip-full` — the budget can't take them. 802.1q is in-kernel; ath9k + `uboot-envtools` are device defaults.
-- **Fit risk (C1/C3):** `openwisp-monitoring` pulls collectd + plugins; the rootfs must stay under 7168k and run in 32 MB. This is validated **empirically** by the build (it errors on overflow) and a bench RAM check.
-- **Trim ladder if it overflows (in order):** (1) drop `usteer`; (2) `batctl-default` → `batctl-tiny`; (3) prune optional `collectd-mod-*` plugins to the monitoring essentials; (4) **last resort** — report that monitoring + gale-parity networking cannot co-reside in 7 MB and ask the user to choose (drop monitoring, or accept a reduced feature set). Measured fit (image size, free flash, idle RAM) is reported before the task is declared done; any trim taken is logged (no silent truncation).
+- **Fit — AS BUILT:** `openwisp-monitoring` uses **`netjson-monitoring`** (lua/shell), **not** collectd — so it is cheap (the design's collectd-trim assumption did not apply). Two real corrections from the build: (a) the `openmesh-image` recipe has **no `check-size`**, so `make` does **not** fail on overflow — the **verifier's fit gate is the real check**; (b) the first build overflowed at **7,668,635 B** (> 7,340,032). The fit was solved by dropping daemons a pure L2 mesh AP never uses (ten64 routes/firewalls/serves DHCP/DNS): **`firewall4`+nftables (`libnftables.so` ≈ 712 KB), `dnsmasq`, `ppp`/`ppp-mod-pppoe`, `odhcpd`** (~0.9 MB) — **keeping every managed feature** (openwisp + monitoring + mesh + batman + usteer). Result: all four images **7,144,347 B (~195 KB headroom)**, verified by `verify-om2p-image.py`.
+- **If a future change overflows again (in order):** drop `usteer`; `batctl-default` → `batctl-tiny`; drop the leftover netfilter kmods (`kmod-nft-*`/`kmod-nf-*`, dead weight once `firewall4` is gone); **last resort** — reduce `openwisp-monitoring`. Any trim is logged (no silent truncation).
 
 ## 11. Build mechanics & secrets
 
