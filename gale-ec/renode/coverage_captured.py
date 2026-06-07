@@ -95,9 +95,16 @@ def _pd_contract_post():
     def hexmsg(m):
         sm = pd_encode.encode_message(*m)
         return (sm + bytes([(sm[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])).hex()
-    c = ['sysbus.dma1 ClearResponses']
+    c = ['sysbus.dma1 ClearResponses', 'sysbus.dma1 ReactiveEnabled true']
     for i in range(8):
         c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, hexmsg(pd_encode.ctrl(1, i)))]
+    # Reactive-partner replies: Accept (slots 0-7, for soft-reset / DR/PR/VCONN swaps) + Sink_Cap
+    # (slot 8, for Get_Sink_Cap). The C# partner decodes gale's TX and delivers the matching reply,
+    # so the swap/reset handshakes complete -> pd_task's SNK_SWAP_*/SOFT_RESET/DR_SWAP states run.
+    sink_cap = (pd_encode.header(4, 1, 0), [0x2601912C])   # PD_DATA_SINK_CAP + a fixed 5V sink PDO
+    for i in range(8):
+        c += ['sysbus.dma1 SetReply %d "%s"' % (i, hexmsg(pd_encode.ACCEPT(i)))]
+    c += ['sysbus.dma1 SetReply 8 "%s"' % hexmsg(sink_cap)]
     for m in (pd_encode.SRC_CAP, pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
         c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)]
     def fire(t):

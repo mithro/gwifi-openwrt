@@ -62,8 +62,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             pdQueue.Enqueue(Unhex(hex));
         }
 
-        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; lastTx.Clear(); }
-        public void ClearTx() { lastTx.Clear(); }
+        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; lastTx.Clear(); replyQueue.Clear(); reactedCount = 0; replyMsgId = 0; }
+        public void ClearTx() { lastTx.Clear(); reactedCount = 0; }
 
         // CONTEXT-AWARE PD CC-PARTNER (for a live explicit contract). Two delivery contexts are
         // distinguished so the FIFO never desyncs against gale's pd_rx_start pattern:
@@ -85,6 +85,99 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             var sb = new System.Text.StringBuilder();
             foreach(var b in lastTx) { sb.Append(b.ToString("x2")); }
             System.IO.File.WriteAllText(path, sb.ToString());
+        }
+
+        // ---- REACTIVE PD PARTNER -------------------------------------------------------------
+        // Decode gale's PD TX (lastTx level stream, inverse of pd_encode — see pd_decode.py) and,
+        // for a request that needs a partner reply (Soft_Reset / DR_Swap / PR_Swap / VCONN_Swap /
+        // Get_Sink_Cap), queue a pre-staged encoded reply so the handshake completes and pd_task
+        // advances through its swap/reset states. Replies are delivered on the pd_rx_start AFTER
+        // the auto-GoodCRC. The harness pre-stages encoded replies via SetReply(slot, hex):
+        //   slot 0..7 = Accept with partner msg_id 0..7 ; slot 8 = Sink_Cap.
+        public void SetReply(int slot, string hex) { replyBank[slot & 0xF] = Unhex(hex); }
+        public bool ReactiveEnabled { get; set; }
+        public int LastTxType { get; private set; } = -1;   // for test/inspection
+
+        private void BuildPdTables()
+        {
+            if(revBmc != null) { return; }
+            revBmc = new System.Collections.Generic.Dictionary<int, int>();
+            for(var x = 0; x < 32; x++) { revBmc[Bmc(x)] = x; }
+            dec4b5b = new System.Collections.Generic.Dictionary<int, int>();
+            int[] enc = { 0x1E, 0x09, 0x14, 0x15, 0x0A, 0x0B, 0x0E, 0x0F,
+                          0x12, 0x13, 0x16, 0x17, 0x1A, 0x1B, 0x1C, 0x1D };
+            for(var n = 0; n < 16; n++) { dec4b5b[enc[n]] = n; }
+        }
+
+        private static int Bmc(int x)
+        {
+            return ((x & 1)  != 0 ? 0x001 : 0x3FF)
+                 ^ ((x & 2)  != 0 ? 0x004 : 0x3FC)
+                 ^ ((x & 4)  != 0 ? 0x010 : 0x3F0)
+                 ^ ((x & 8)  != 0 ? 0x040 : 0x3C0)
+                 ^ ((x & 16) != 0 ? 0x100 : 0x300);
+        }
+
+        // Decode the header of the PD message whose SOP starts at half-UI offset `start`; -1 if none.
+        private int DecodeHeaderAt(System.Collections.Generic.List<int> levels, int start)
+        {
+            int off = start, bt = 0x3FF;
+            var syms = new int[8];
+            for(var s = 0; s < 8; s++)
+            {
+                if(off + 10 > levels.Count) { return -1; }
+                int em = 0;
+                for(var k = 0; k < 10; k++) { em |= levels[off + k] << k; }
+                if(!revBmc.TryGetValue(em ^ bt, out var sym)) { return -1; }
+                syms[s] = sym;
+                bt = (em & 0x200) != 0 ? 0x3FF : 0;
+                off += 10;
+            }
+            if(syms[0] != 0x18 || syms[1] != 0x18 || syms[2] != 0x18 || syms[3] != 0x11) { return -1; }
+            int hdr = 0;
+            for(var j = 0; j < 4; j++)
+            {
+                if(!dec4b5b.TryGetValue(syms[4 + j], out var nib)) { return -1; }
+                hdr |= nib << (4 * j);
+            }
+            return hdr;
+        }
+
+        // Count complete PD messages in lastTx and return the header of the newest one (-1 none).
+        private int DecodeNewestTx(out int count)
+        {
+            BuildPdTables();
+            var levels = new System.Collections.Generic.List<int>(lastTx.Count * 8);
+            foreach(var b in lastTx) { for(var k = 0; k < 8; k++) { levels.Add((b >> k) & 1); } }
+            count = 0;
+            int newest = -1, i = 0;
+            while(i < levels.Count - 60)
+            {
+                int hdr = DecodeHeaderAt(levels, i);
+                if(hdr >= 0) { newest = hdr; count++; i += 200; } else { i++; }
+            }
+            return newest;
+        }
+
+        private void ReactToTx()
+        {
+            if(!ReactiveEnabled) { return; }
+            int hdr = DecodeNewestTx(out var count);
+            if(hdr < 0 || count <= reactedCount) { return; }   // only react to a newly-completed msg
+            reactedCount = count;
+            int type = hdr & 0x1f, cnt = (hdr >> 12) & 7;
+            LastTxType = cnt != 0 ? (0x100 | type) : type;
+            byte[] reply = null;
+            if(cnt == 0 && (type == 13 || type == 9 || type == 10 || type == 11))
+            {
+                reply = replyBank[replyMsgId & 7];             // Soft_Reset/DR/PR/VCONN_Swap -> Accept
+                replyMsgId++;
+            }
+            else if(cnt == 0 && type == 8)
+            {
+                reply = replyBank[8];                          // Get_Sink_Cap -> Sink_Cap
+            }
+            if(reply != null) { replyQueue.Enqueue(reply); }
         }
 
         private static byte[] Unhex(string hex)
@@ -182,6 +275,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     resp = goodCrcBank[id];
                     pendingGoodCrc = false;
                 }
+                else if(replyQueue.Count > 0)
+                {
+                    resp = replyQueue.Dequeue();   // reactive partner reply (Accept/PS_RDY/Sink_Cap)
+                }
                 else if(pdQueue.Count > 0)
                 {
                     resp = pdQueue.Dequeue();
@@ -241,6 +338,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     Complete(rx.Ch, rx.Ma, cpar[rx.Ch]);
                     pendingRx.Remove(pa);
                 }
+                if(pa == SPI1_DR) { ReactToTx(); }   // decode gale's PD TX -> queue a reactive reply
                 return;
             }
 
@@ -337,8 +435,15 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly System.Collections.Generic.Queue<byte[]> pdQueue =
             new System.Collections.Generic.Queue<byte[]>();
         private readonly byte[][] goodCrcBank = new byte[8][];
+        private readonly byte[][] replyBank = new byte[16][];
+        private readonly System.Collections.Generic.Queue<byte[]> replyQueue =
+            new System.Collections.Generic.Queue<byte[]>();
         private readonly System.Collections.Generic.List<byte> lastTx =
             new System.Collections.Generic.List<byte>();
+        private System.Collections.Generic.Dictionary<int, int> revBmc;
+        private System.Collections.Generic.Dictionary<int, int> dec4b5b;
+        private int reactedCount;
+        private int replyMsgId;
         private bool pendingGoodCrc;
         private bool nextIsContract;
         private int goodCrcCounter;
