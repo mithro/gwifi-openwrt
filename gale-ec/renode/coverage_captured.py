@@ -165,6 +165,38 @@ def _src_contract_post():
     return c
 
 
+def _usb_post():
+    """Drive USB device enumeration on the captured (CCD via SNK_ACCESSORY brings up usb_init).
+    A broad EP0 SETUP battery exercises ep0_rx's request dispatch: GET_DESCRIPTOR (device/config/
+    string indices), SET_ADDRESS, SET/GET_CONFIGURATION, GET_STATUS, CLEAR/SET_FEATURE, the vendor
+    USB_SPI_ENABLE (iface 3), and an unsupported request (STALL path). EP0 RX buffer at PMA+0x80
+    (btable_ep[0].rx_addr read live; BTABLE=0). Addresses are USB-hardware PMA = firmware-independent."""
+    import usb_host
+    ep0 = 0x40006080
+    setups = [
+        usb_host.GET_DEV,                       # GET_DEVICE_DESCRIPTOR
+        [0x0680, 0x0200, 0x0000, 0x0040],       # GET_CONFIG_DESCRIPTOR
+        [0x0680, 0x0300, 0x0000, 0x00ff],       # GET_STRING_DESCRIPTOR idx0 (langid)
+        [0x0680, 0x0301, 0x0409, 0x00ff],       # GET_STRING idx1
+        [0x0680, 0x0302, 0x0409, 0x00ff],       # GET_STRING idx2
+        [0x0680, 0x0600, 0x0000, 0x000a],       # GET_DEVICE_QUALIFIER (often STALLed)
+        [0x8000, 0x0000, 0x0000, 0x0002],       # GET_STATUS (device)
+        [0x0500, 0x0005, 0x0000, 0x0000],       # SET_ADDRESS 5
+        usb_host.SET_CFG,                       # SET_CONFIGURATION(1)
+        [0x8008, 0x0000, 0x0000, 0x0001],       # GET_CONFIGURATION
+        [0x0100, 0x0000, 0x0000, 0x0000],       # CLEAR_FEATURE
+        [0x0300, 0x0000, 0x0000, 0x0000],       # SET_FEATURE
+        [0x0900, 0x0000, 0x0000, 0x0000],       # SET_CONFIGURATION(0)
+        usb_host.SET_CFG,                       # re-SET_CONFIGURATION(1)
+        usb_host.SPI_EN,                        # vendor USB_SPI_ENABLE -> iface 3
+        [0x00ff, 0x0000, 0x0000, 0x0000],       # unsupported request -> STALL
+    ]
+    c = ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
+    for hws in setups:
+        c += usb_host.setup_ep0(ep0, hws)
+    return c
+
+
 def scenarios(boot):
     s = [("ro", [], RO_CMDS, boot, [])]
     # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
@@ -179,6 +211,10 @@ def scenarios(boot):
     # ready-state handlers (the previously-mis-excused source-role states). RO + RW.
     s.append(("src", ['sysbus.adc PartnerSink true'], [], "1.5", _src_contract_post()))
     s.append(("src_rw", ['sysbus.adc PartnerSink true'], ["sysjump rw"], "1.5", _src_contract_post()))
+    # USB enumeration: CCD (SNK_ACCESSORY) brings up usb_init, then an EP0 SETUP battery exercises
+    # ep0_rx / descriptor handling / usb_spi. VERIFIED: captured returns a valid device descriptor.
+    s.append(("usb", ['sysbus.adc ForceAccessory true'], [], "2.5", _usb_post()))
+    s.append(("usb_rw", ['sysbus.adc ForceAccessory true'], ["sysjump rw"], "2.5", _usb_post()))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
