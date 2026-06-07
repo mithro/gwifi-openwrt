@@ -108,7 +108,7 @@ def _contract_post():
     synchronous pd_rx_start; the Source_Caps/Accept/PS_RDY are FireComp-driven contract msgs.
     Then exercise ready-state ops (Get_Sink_Cap, VDM Discover Identity, PR/DR swap requests) so
     pd_task's SNK_REQUESTED/TRANSITION/READY + handle_ctrl/data + pd_svdm + swap branches run."""
-    c = ['sysbus.dma1 ClearResponses', 'sysbus.dma1 GoodCrcMsgIdAddress 0x20000fdc']
+    c = ['sysbus.dma1 ClearResponses']
     for i in range(8):
         c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, _hexmsg(pd_encode.ctrl(1, i)))]
     for m in (pd_encode.SRC_CAP, pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
@@ -133,19 +133,34 @@ def _fault_post():
     return c
 
 
+
+def _hc_battery_post(prefix):
+    """AP host-command battery via GaleI2c (address-independent): valid + error packets."""
+    def pkt(cmd, ver, sver, dlen, data, bad=False):
+        r=[sver&0xFF,0,cmd&0xFF,(cmd>>8)&0xFF,ver&0xFF,0,dlen&0xFF,(dlen>>8)&0xFF]+list(data)
+        r[1]=((-sum(r))&0xFF)^(0xA5 if bad else 0)
+        return "da"+"".join("%02x"%b for b in r)
+    pl=[pkt(c,0,3,dl,d) for c,dl,d in [(1,4,[0x44,0x33,0x22,0x11]),(2,0,[]),(4,0,[]),(5,0,[]),
+        (6,0,[]),(7,4,[0,0,0,0]),(8,2,[1,0]),(0xb,0,[]),(0x10,0,[]),(0xd,0,[]),(0xf,0,[])]]
+    pl+=[pkt(0xff,0,3,0,[]),pkt(1,1,3,4,[0,0,0,0]),pkt(1,0,4,4,[0,0,0,0]),pkt(1,0,2,4,[0,0,0,0]),
+         pkt(1,0,3,0xFFFF,[]),pkt(1,0,3,4,[0,0,0,0],bad=True)]
+    c=list(prefix)
+    for x in pl: c+=['sysbus.i2c1 HostCmd "%s"'%x,'emulation RunFor "0.05"']
+    return c
+
 def scenarios(boot):
     """List of (name, monitor-prelude-cmds, console-cmds). All run on ec-rebuilt.bin."""
     s = []
     s.append(("ro_readonly", [], RO_CMDS))
     s.append(("rw_readonly", [], ["sysjump rw"] + RO_CMDS))
     # debug accessory: brings up SRC_ACCESSORY -> ccd_set_mode -> usb_init -> usb_spi
-    s.append(("ccd_usb", ['sysbus.adc CcPullAddress 0x20001107'],
+    s.append(("ccd_usb", ['sysbus.adc ForceAccessory true'],
               ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec"]))
-    s.append(("ccd_usb_rw", ['sysbus.adc CcPullAddress 0x20001107'],
+    s.append(("ccd_usb_rw", ['sysbus.adc ForceAccessory true'],
               ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"]))
     # SINK attach to a SOURCE partner (GaleAdc PartnerSource): drives SNK_DISCONNECTED ->
     # DEBOUNCE -> SNK_DISCOVERY and the SinkWaitCap/soft-reset/hard-reset cycling branches.
-    s.append(("pd_sink", ['sysbus.adc CcPullAddress 0x20001107', 'sysbus.adc PartnerSource true'],
+    s.append(("pd_sink", ['sysbus.adc ForceSourceCc true'],
               ["pd 0 state", "pd dump 3", "pd 0 state", "typec", "tcpc"]))
     # SPI flash exercise (raiden target) — multiple lengths/offsets
     s.append(("spi", [], ["spixfer rlen 0 0x9f 3", "spixfer rlen 0 0x03000000 8",
@@ -197,27 +212,29 @@ def scenarios(boot):
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.SET_CFG)
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.SPI_EN)
     usbq += usb_host.raiden_cmds(4, 0x40006188, 0x40006148, usb_host.BT + 0x26)
-    out.append(("usb_live", ['sysbus.adc CcPullAddress 0x20001107'], [], "0.5", usbq))
+    out.append(("usb_live", ['sysbus.adc ForceAccessory true'], [], "0.5", usbq))
     # LIVE USB-PD: attach as sink, then inject a battery of PD messages over the modeled
     # CC-partner PD-PHY (GaleExti COMP-IRQ wake + GaleDma RX-sample feed). Each message is
     # decoded by the real pd_analyze_rx and dispatched by handle_request -> covers the
     # PD-PHY decode chain + protocol dispatch (the largest uncovered category).
-    pd_pre = ['sysbus.adc CcPullAddress 0x20001107', 'sysbus.adc PartnerSource true']
+    pd_pre = ['sysbus.adc ForceSourceCc true']
     pd_post = []
     for _name, msg in pd_encode.battery():
         pd_post += pd_inject.stage(msg)
-    out.append(("pd_live", pd_pre, [], boot, pd_post))
+    out.append(("pd_live", pd_pre, [], "2.0", _contract_post()))
     # RW variants of the heavy post-driven scenarios (sysjump rw first) -> RW coverage, which
     # otherwise lags badly (most scenarios run in RO). Addresses are identical in RO/RW.
     out.append(("console_edit_rw", [], ["sysjump rw"], boot, _edit_bytes()))
-    out.append(("usb_live_rw", ['sysbus.adc CcPullAddress 0x20001107'], ["sysjump rw"], "0.6", usbq))
-    out.append(("pd_live_rw", pd_pre, ["sysjump rw"], boot, pd_post))
+    out.append(("usb_live_rw", ['sysbus.adc ForceAccessory true'], ["sysjump rw"], "0.6", usbq))
+    out.append(("pd_live_rw", pd_pre, ["sysjump rw"], "2.0", _contract_post()))
     # Flash FAULT injection -> EC_ERROR_* / WRPRTERR / PGERR / stuck-busy error paths.
     out.append(("flash_fault", [], [], boot, _fault_post()))
     out.append(("flash_fault_rw", [], ["sysjump rw"], boot, _fault_post()))
     # LIVE explicit PD contract to SNK_READY + ready-state ops (RO and RW).
     out.append(("pd_contract", pd_pre, [], "2.0", _contract_post()))
     out.append(("pd_contract_rw", pd_pre, ["sysjump rw"], "2.0", _contract_post()))
+    out.append(("hostcmd", [], [], boot, _hc_battery_post([])))
+    out.append(("hostcmd_rw", [], ["sysjump rw"], boot, _hc_battery_post([])))
     return out
 
 
