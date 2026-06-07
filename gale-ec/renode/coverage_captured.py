@@ -165,6 +165,30 @@ def _src_contract_post():
     return c
 
 
+def _fault_hc_post():
+    """Inject flash hardware faults DURING the flash host commands so the flash_command_* /
+    flash_physical_* error-return paths (WRPRTERR / PGERR / busy-timeout / EC_RES_ERROR) run, not
+    just the success side. Each: arm a GaleFlash fault knob, then send the matching EC_CMD_FLASH_*
+    packet via the GaleI2c injector. Also re-run them clean so both directions of each guard flip."""
+    def hc(cmd, ver, sver, data):
+        return 'sysbus.i2c1 HostCmd "%s"' % hostcmd._pkt(cmd, ver, sver, data)
+    le = hostcmd._le32
+    c = []
+    seq = [
+        ("sysbus.flashif InjectProgErr true",      0x12, le(0x18000) + le(4) + le(0xDEADBEEF)),  # FLASH_WRITE prog-fail
+        ("sysbus.flashif InjectWriteProtErr true", 0x13, le(0x18000) + le(0x800)),               # FLASH_ERASE wp-fail
+        ("sysbus.flashif StuckBusy true",          0x12, le(0x18000) + le(4) + le(0x11223344)),  # FLASH_WRITE busy-timeout
+        ("sysbus.flashif StuckBusy false",         0x10, []),                                     # FLASH_INFO (clear)
+        ("sysbus.flashif InjectProgErr true",      0x15, le(1) + le(1)),                          # FLASH_PROTECT set under fault
+    ]
+    for knob, cmd, data in seq:
+        c += [knob, hc(cmd, 0, 3, data), 'emulation RunFor "0.06"']
+    # clean re-runs (success direction)
+    for cmd, data in ((0x13, le(0x18000) + le(0x800)), (0x12, le(0x18000) + le(4) + le(0)), (0x15, le(0) + le(0))):
+        c += [hc(cmd, 0, 3, data), 'emulation RunFor "0.06"']
+    return c
+
+
 def _usb_post():
     """Drive USB device enumeration on the captured (CCD via SNK_ACCESSORY brings up usb_init).
     A broad EP0 SETUP battery exercises ep0_rx's request dispatch: GET_DESCRIPTOR (device/config/
@@ -215,6 +239,10 @@ def scenarios(boot):
     # ep0_rx / descriptor handling / usb_spi. VERIFIED: captured returns a valid device descriptor.
     s.append(("usb", ['sysbus.adc ForceAccessory true'], [], "2.5", _usb_post()))
     s.append(("usb_rw", ['sysbus.adc ForceAccessory true'], ["sysjump rw"], "2.5", _usb_post()))
+    # Flash faults injected DURING the flash host commands -> flash_command_*/flash_physical_*
+    # error-return branches (write/erase/protect failure paths), then clean re-runs.
+    s.append(("fault_hc", [], [], boot, _fault_hc_post()))
+    s.append(("fault_hc_rw", [], ["sysjump rw"], boot, _fault_hc_post()))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
