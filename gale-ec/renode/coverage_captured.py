@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Branch-coverage measurement of the CAPTURED DEVICE firmware (the reference).
+
+The captured firmware is a raw flash dump with no ELF/symbols, so branches are enumerated by
+DISASSEMBLING THE RAW BINARY (objdump -b binary, Thumb) — RO at 0x08000000, RW at 0x08010000.
+A PC execution trace is captured while the firmware runs the test suite, then mapped against
+that disassembly to compute instruction + both-directions branch coverage.
+
+Per the project goal: the captured firmware is the reference; every branch in it must be
+reachable and executed by the emulation test suite. The test scenarios here are
+address-INDEPENDENT (console commands, sysjump, deliberate crashes, AP host commands via the
+GaleI2c injector — the firmware fills its own buffers), so they run identically on the captured
+and rebuilt firmwares.
+
+Usage: uv run python coverage_captured.py [--bin <captured>] [--boot 2.0]
+"""
+import argparse
+import os
+import re
+import subprocess
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.join(HERE, "base.resc")
+TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
+OBJDUMP = os.path.join(TC, "arm-none-eabi-objdump")
+CAPTURED = os.path.join(HERE, "..", "..", "gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin")
+TMP = os.path.join(HERE, "tmp")
+COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|cbnz)(\.[nw])?\b')
+
+RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", "adc",
+           "panicinfo", "chan", "flashinfo", "shmem", "history", "hcdebug", "hostevent",
+           "pd 0 state", "pd 0 srccaps", "pd dump 3", "tcpc", "typec", "syslock", "waitms 1",
+           "gpioget LID_OPEN", "md 0x20000000", "flashwp", "gale"]
+CRASH = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
+
+
+def host_cmd_battery():
+    """A battery of EC host-command packets (protocol v3) driving host_command_process + hc_*.
+    Each entry: (command, data_len, data_bytes). Built into the I2C write payload + checksum."""
+    cmds = [
+        (0x0001, 4, [0, 0, 0, 0]),   # HELLO (in_data)
+        (0x0002, 0, []),             # GET_VERSION
+        (0x0003, 0, []),             # READ_TEST? / GET_BUILD_INFO region
+        (0x0004, 0, []),             # GET_BUILD_INFO
+        (0x0005, 0, []),             # GET_CHIP_INFO
+        (0x0006, 0, []),             # GET_BOARD_VERSION
+        (0x0007, 4, [0, 0, 0, 0]),   # READ_MEMMAP
+        (0x0008, 0, []),             # GET_CMD_VERSIONS
+        (0x000b, 0, []),             # GET_PROTOCOL_INFO
+        (0x0010, 0, []),             # GET_FEATURES
+    ]
+    out = []
+    for cmd, dlen, data in cmds:
+        req = [0x03, 0x00, cmd & 0xFF, (cmd >> 8) & 0xFF, 0x00, 0x00, dlen & 0xFF, (dlen >> 8) & 0xFF] + data
+        req[1] = (-sum(req)) & 0xFF
+        out.append("da" + "".join("%02x" % b for b in req))
+    return out
+
+
+def scenarios(boot):
+    s = [("ro", [], RO_CMDS, boot, [])]
+    s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
+    for c in CRASH:
+        s.append(("crash_" + c.split()[1], [], [c], boot, []))
+        s.append(("crashrw_" + c.split()[1], [], ["sysjump rw", c], boot, []))
+    # AP host commands (address-independent injector) — RO and RW
+    hc = []
+    for p in host_cmd_battery():
+        hc += ['sysbus.i2c1 HostCmd "%s"' % p, 'emulation RunFor "0.05"']
+    s.append(("hostcmd", [], [], boot, hc))
+    s.append(("hostcmd_rw", [], ["sysjump rw"], boot, hc))
+    return s
+
+
+def disasm_branches(binpath):
+    """Disassemble the raw binary (Thumb) at 0x08000000; return (insn addrs, cond branch map)."""
+    out = subprocess.run([OBJDUMP, "-D", "-b", "binary", "-marm", "-Mforce-thumb",
+                          "--adjust-vma=0x08000000", binpath],
+                         stdout=subprocess.PIPE, universal_newlines=True).stdout
+    insns, cond = {}, {}
+    for ln in out.splitlines():
+        m = re.match(r'\s*([0-9a-f]+):\s+([0-9a-f ]+?)\s+(\S.*)$', ln)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        nb = len(m.group(2).replace(" ", "")) // 2
+        insns[addr] = nb
+        cm = COND.search(m.group(3))
+        if cm:
+            tm = re.search(r'\b([0-9a-f]+)\s+<', m.group(3)) or re.search(r'#?(0x[0-9a-f]+)', m.group(3))
+            if tm:
+                cond[addr] = (addr + nb, int(tm.group(1), 16))
+    return set(insns), cond
+
+
+def run_scenario(name, mon, cmds, boot, post, binpath):
+    trace = os.path.join(TMP, "cap_%s.txt" % name)
+    c = ['$h=@%s' % HERE, '$bin=@%s' % binpath, '$name="cap"', 'include @%s' % BASE] + mon
+    c += ['cpu CreateExecutionTracing "tr_%s" @%s PC' % (name, trace), 'emulation RunFor "%s"' % boot]
+    for cmd in cmds:
+        c += ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")]
+        c.append('emulation RunFor "0.06"')
+    c += (post or [])
+    c += ['cpu DisableExecutionTracing', 'quit']
+    subprocess.run(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=600)
+    return trace
+
+
+def fold(path, cond, executed, taken, nottaken):
+    prev = None
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln.startswith("0x"):
+                prev = None
+                continue
+            pc = int(ln, 16)
+            executed.add(pc)
+            if prev is not None and prev in cond:
+                fa, tg = cond[prev]
+                if pc == tg:
+                    taken.add(prev)
+                elif pc == fa:
+                    nottaken.add(prev)
+            prev = pc
+    os.remove(path)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", default=CAPTURED)
+    ap.add_argument("--boot", default="2.0")
+    args = ap.parse_args()
+    os.makedirs(TMP, exist_ok=True)
+    binpath = os.path.abspath(args.bin)
+    all_insn, cond = disasm_branches(binpath)
+    scns = scenarios(args.boot)
+    print("CAPTURED firmware coverage: %s (%d scenarios)" % (os.path.basename(binpath), len(scns)))
+    executed, taken, nottaken = set(), set(), set()
+    for name, mon, cmds, boot, post in scns:
+        print("  scenario: %-16s" % name)
+        fold(run_scenario(name, mon, cmds, boot, post, binpath), cond, executed, taken, nottaken)
+    # Only count branches in EXECUTED code regions (raw disasm includes literal-pool data that
+    # is never executed; a branch is "real code" if reached, or adjacent to reached instructions).
+    reached = [a for a in cond if a in executed]
+    both = [a for a in cond if a in taken and a in nottaken]
+    ex = executed & all_insn
+    print("\n=== CAPTURED firmware ===")
+    print("  instructions executed: %d" % len(ex))
+    print("  cond branches (raw disasm): %d total, %d reached, %d both-dirs covered" %
+          (len(cond), len(reached), len(both)))
+    print("  branch coverage: %.1f%% of reached both-dirs" % (100.0 * len(both) / max(len(reached), 1)))
+    uncov = sorted(a for a in reached if a not in (set(taken) & set(nottaken)))
+    with open(os.path.join(HERE, "cap_uncovered.txt"), "w") as f:
+        for a in uncov:
+            f.write("0x%08x %s\n" % (a, "taken-only" if a in taken else ("nottaken-only" if a in nottaken else "?")))
+    print("  reached-but-one-direction branches -> cap_uncovered.txt (%d)" % len(uncov))
+
+
+if __name__ == "__main__":
+    main()
