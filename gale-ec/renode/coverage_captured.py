@@ -95,9 +95,20 @@ def _pd_contract_post():
             f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
         return f + ['emulation RunFor "%s"' % t]
     c += fire("0.2") + fire("0.2") + fire("0.4")
-    for m in (pd_encode.ctrl(8, 3), pd_encode.vdm_discover_identity(4), pd_encode.ctrl(9, 5),
-              pd_encode.ctrl(10, 6), pd_encode.ctrl(2, 7)):
-        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.12")
+    # SNK_READY: inject a broad set of message TYPES the EC dispatches -> handle_ctrl_request /
+    # handle_data_request / pd_svdm branches. ctrl types: GOTO_MIN2 ACCEPT3 REJECT4 PING5 PS_RDY6
+    # GET_SRC_CAP7 GET_SNK_CAP8 DR_SWAP9 PR_SWAP10 VCONN_SWAP11 WAIT12 SOFT_RESET13.
+    mid = 3
+    msgs = []
+    for t in (8, 7, 9, 10, 11, 12, 5, 2, 4, 13, 6, 3):
+        msgs.append(pd_encode.ctrl(t, mid)); mid += 1
+    # VDM commands: Discover Identity(1)/SVIDs(2)/Modes(3)/Enter(4)/Exit(5) + a data SOURCE_CAP.
+    for vcmd in (1, 2, 3, 4, 5):
+        vdm = (0xFF00 << 16) | (1 << 15) | (0 << 6) | vcmd
+        msgs.append((pd_encode.header(15, 1, mid), [vdm])); mid += 1
+    msgs.append(pd_encode.SRC_CAP)            # re-send Source_Caps in READY (re-request path)
+    for m in msgs:
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.1")
     return c
 
 
@@ -106,6 +117,11 @@ def scenarios(boot):
     # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
     s.append(("pd", ['sysbus.adc ForceSourceCc true'], [], "2.0", _pd_contract_post()))
     s.append(("pd_rw", ['sysbus.adc ForceSourceCc true'], ["sysjump rw"], "2.0", _pd_contract_post()))
+    # Debug accessory -> SRC_ACCESSORY -> ccd_set_mode -> usb_init/CCD + raiden over the bridge.
+    s.append(("ccd", ['sysbus.adc ForceAccessory true'],
+              ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec", "version"], "2.5", []))
+    s.append(("ccd_rw", ['sysbus.adc ForceAccessory true'],
+              ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"], "2.5", []))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))

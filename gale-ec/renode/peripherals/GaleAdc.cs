@@ -62,6 +62,12 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // it sinking, so a constant CC1 source level drives SNK_DISCONNECTED -> SNK_DISCOVERY.
         public bool ForceSourceCc { get; set; }
 
+        // Address-independent DEBUG ACCESSORY: present BOTH CC lines in the Rd band so that when
+        // gale sources (DRP toggle) it detects a Type-C debug accessory -> SRC_ACCESSORY ->
+        // ccd_set_mode -> usb_init/CCD. Covers the source-accessory + CCD bring-up branches on
+        // any image without the per-firmware cc_pull RAM address.
+        public bool ForceAccessory { get; set; }
+
         public void Reset()
         {
             isr = 0; ier = 0; cr = 0; cfgr1 = 0; cfgr2 = 0;
@@ -144,6 +150,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             if(chselr == (1u << AIN_CC1) || chselr == (1u << AIN_CC2))
             {
+                if(ForceAccessory)  // address-independent: both CC in Rd band (debug accessory)
+                {
+                    return CC_RD_BAND_RAW;
+                }
                 if(ForceSourceCc)   // address-independent: constant source on CC1
                 {
                     return chselr == (1u << AIN_CC1) ? CC_RD_BAND_RAW : 0u;
