@@ -1,0 +1,90 @@
+#!/bin/sh
+# 99-om2p-bootstrap — first-boot network/mesh setup for OM2P auto-provisioning.
+# Idempotent: fixed UCI section names so re-runs overwrite, not duplicate.
+# Two ethernet ports; the WAN/PoE uplink is a different GMAC per revision, so
+# select UP/CLIENT from the board name (design C4). Trunk on UP; CLIENT = wired
+# client access port on the roam VLAN (matches the gale puck lan in br-roam).
+# shellcheck disable=SC1091
+. /lib/functions.sh
+
+case "$(board_name)" in
+	openmesh,om2p-lc|openmesh,om2p-v2) UP=eth1; CLIENT=eth0 ;;
+	openmesh,om2p-v1|openmesh,om2p-v4) UP=eth0; CLIENT=eth1 ;;
+	*) UP=eth0; CLIENT=eth1 ;;   # safe default for any other OM2P revision
+esac
+
+# VLAN map: NAME=VID. mgmt(5) gets DHCP; the rest are L2-only (APs attach later).
+VLANS="mgmt=5 int=10 roam=20 iot=90 guest=99"
+
+# --- batman-adv core (bat0) + the 802.11s hardif join ---
+uci -q batch <<'EOF'
+set network.bat0=interface
+set network.bat0.proto='batadv'
+set network.bat0.routing_algo='BATMAN_IV'
+set network.bat0.bridge_loop_avoidance='1'
+set network.bat0.distributed_arp_table='1'
+set network.bat0.gw_mode='client'
+set network.mesh_hardif=interface
+set network.mesh_hardif.proto='batadv_hardif'
+set network.mesh_hardif.master='bat0'
+set network.mesh_hardif.mtu='1536'
+EOF
+
+# $vid is numeric and $name is from the fixed VLANS list — no word-split/glob risk.
+# shellcheck disable=SC2086
+for kv in $VLANS; do
+	name=${kv%=*}; vid=${kv#*=}
+	# tagged sub-iface on the wired uplink trunk port (UP)
+	uci set network.up_$vid="device"
+	uci set network.up_$vid.type='8021q'
+	uci set network.up_$vid.ifname="$UP"
+	uci set network.up_$vid.vid="$vid"
+	uci set network.up_$vid.name="$UP.$vid"
+	# tagged sub-iface on the batman mesh
+	uci set network.bat_$vid="device"
+	uci set network.bat_$vid.type='8021q'
+	uci set network.bat_$vid.ifname='bat0'
+	uci set network.bat_$vid.vid="$vid"
+	uci set network.bat_$vid.name="bat0.$vid"
+	# per-VLAN bridge: wired uplink + mesh (APs auto-attach later via wifi-iface network=)
+	uci set network.br_$name="device"
+	uci set network.br_$name.type='bridge'
+	uci set network.br_$name.name="br-$name"
+	uci -q delete network.br_$name.ports
+	uci add_list network.br_$name.ports="$UP.$vid"
+	uci add_list network.br_$name.ports="bat0.$vid"
+	# interface on the bridge
+	uci set network.$name="interface"
+	uci set network.$name.device="br-$name"
+	if [ "$name" = "mgmt" ]; then
+		uci set network.$name.proto='dhcp'
+	else
+		uci set network.$name.proto='none'
+	fi
+done
+
+# wired client access port (CLIENT) untagged into br-roam (VLAN 20)
+uci add_list network.br_roam.ports="$CLIENT"
+uci commit network
+
+# --- wireless: single 2.4 GHz radio0 + 802.11s mesh on it (design C5) ---
+# radio0's per-SoC `path` is supplied by board detection; we configure by name.
+[ -f /etc/config/wireless ] || /sbin/wifi config
+uci -q batch <<'EOF'
+set wireless.radio0.disabled='0'
+set wireless.radio0.band='2g'
+set wireless.radio0.channel='6'
+set wireless.radio0.htmode='HT20'
+set wireless.mesh0=wifi-iface
+set wireless.mesh0.device='radio0'
+set wireless.mesh0.mode='mesh'
+set wireless.mesh0.mesh_id='__MESH_ID__'
+set wireless.mesh0.encryption='sae'
+set wireless.mesh0.key='__MESH_SAE_KEY__'
+set wireless.mesh0.network='mesh_hardif'
+set wireless.mesh0.mesh_fwding='0'
+set wireless.mesh0.mesh_rssi_threshold='0'
+EOF
+uci commit wireless
+
+exit 0
