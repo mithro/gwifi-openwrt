@@ -74,10 +74,12 @@ def main():
     org_id = org["id"]
     print("org %s -> %s" % (a.org, org_id))
 
-    # category (find or create)
-    cats = listing(s.get(api + "/firmware-upgrader/category/",
-                         params={"organization": org_id}, timeout=30))
-    cat = next((c for c in cats if c.get("name") == a.category), None)
+    # category (find or create). NOTE: the list endpoint's ?organization= filter
+    # returns empty (it does not match), so fetch unfiltered and match
+    # client-side on the returned name + organization fields.
+    cats = listing(s.get(api + "/firmware-upgrader/category/", timeout=30))
+    cat = next((c for c in cats if c.get("name") == a.category
+                and c.get("organization") == org_id), None)
     if cat:
         cat_id = cat["id"]
         print("category exists -> %s" % cat_id)
@@ -89,10 +91,11 @@ def main():
         cat_id = r.json()["id"]
         print("category created -> %s" % cat_id)
 
-    # build (find or create)
-    builds = listing(s.get(api + "/firmware-upgrader/build/",
-                           params={"category": cat_id}, timeout=30))
-    build = next((b for b in builds if str(b.get("version")) == a.version), None)
+    # build (find or create). Same filter caveat as category: fetch unfiltered
+    # and match client-side on the returned category + version fields.
+    builds = listing(s.get(api + "/firmware-upgrader/build/", timeout=30))
+    build = next((b for b in builds if b.get("category") == cat_id
+                  and str(b.get("version")) == a.version), None)
     if build:
         build_id = build["id"]
         print("build exists -> %s (version %s)" % (build_id, a.version))
