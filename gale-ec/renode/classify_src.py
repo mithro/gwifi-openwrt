@@ -105,6 +105,15 @@ def enclosing_case(file, line):
     return ""
 
 
+# Role-swap states: gale's force-sink board policy (pd_check_power_swap / pd_check_data_swap
+# return false) means it neither initiates nor accepts PR/DR/VCONN swaps — VERIFIED in emulation:
+# `pd 0 swap power/data` produce no swap TX. So the SNK_SWAP_*/SRC_SWAP_*/VCONN_SWAP/DR_SWAP states
+# are unreachable on THIS board in BOTH firmwares (matching dead code, not a divergence). The
+# SOURCE-CONTRACT states (SRC_STARTUP..SRC_READY) are NOT here — gale does source via `pd dualrole
+# source` + a sink partner, so those stay driveable.
+_SWAP_DEAD = re.compile(r'PD_STATE_(SNK|SRC)_SWAP|PD_STATE_VCONN_SWAP|PD_STATE_DR_SWAP')
+
+
 def categorize(func, file, line, text):
     # ABSENT_HARDWARE: only code for peripherals gale physically lacks is genuinely unreachable.
     if _BOARD_DEAD.search(text):
@@ -113,6 +122,9 @@ def categorize(func, file, line, text):
     # principle (bad params, hardware-error injection), so flagged but NOT auto-excused.
     if _DEFENSIVE.search(text):
         return "DEFENSIVE"
+    case = enclosing_case(file, line)
+    if case and _SWAP_DEAD.search(case):
+        return "SWAP_POLICY_DEAD"   # force-sink board refuses role swaps -> unreachable both images
     return "DRIVEABLE"
 
 
@@ -138,8 +150,8 @@ def main():
             key = (func, file, line)
             groups.setdefault(key, []).append(state)
         if agg:
-            cats = {"DRIVEABLE": 0, "ABSENT_HARDWARE": 0, "DEFENSIVE": 0}
-            cat_funcs = {"DRIVEABLE": {}, "ABSENT_HARDWARE": {}, "DEFENSIVE": {}}
+            cats = {"DRIVEABLE": 0, "ABSENT_HARDWARE": 0, "DEFENSIVE": 0, "SWAP_POLICY_DEAD": 0}
+            cat_funcs = {"DRIVEABLE": {}, "ABSENT_HARDWARE": {}, "DEFENSIVE": {}, "SWAP_POLICY_DEAD": {}}
             for (func, file, line), states in groups.items():
                 txt = src_line(file, line)
                 c = categorize(func, file, line, txt)
@@ -147,7 +159,7 @@ def main():
                 cat_funcs[c][func] = cat_funcs[c].get(func, 0) + len(states)
             tot = sum(cats.values())
             print("\n=== %s: %d uncovered branches by category ===" % (img, tot))
-            for c in ("DRIVEABLE", "ABSENT_HARDWARE", "DEFENSIVE"):
+            for c in ("DRIVEABLE", "ABSENT_HARDWARE", "DEFENSIVE", "SWAP_POLICY_DEAD"):
                 print("  %-12s %4d   top: %s" % (
                     c, cats[c], ", ".join("%s(%d)" % (f, n) for f, n in
                                           sorted(cat_funcs[c].items(), key=lambda k: -k[1])[:6])))
