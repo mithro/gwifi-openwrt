@@ -226,6 +226,14 @@ def ctrl(ctrl_type, mid):
     return (header(ctrl_type, 0, mid), [])
 
 
+def REQUEST(mid, pos=1, cur_10ma=150):
+    """A sink Request (PD_DATA_REQUEST, type 2) selecting source PDO `pos` (1-indexed). RDO:
+    bits30-28 object position, bits19-10 operating current, bits9-0 max current (10mA units).
+    Drives gale-as-source SRC_NEGOCIATE -> pd_check_requested_voltage -> SRC_ACCEPTED."""
+    rdo = (pos << 28) | (cur_10ma << 10) | cur_10ma
+    return (header(2, 1, mid), [rdo])
+
+
 def vdm_discover_identity(mid):
     """A structured VDM (data msg type 15) carrying a Discover Identity command, so the
     firmware's pd_svdm / VDM-handling branches execute. VDO[0] = SVID(PD SID 0xFF00)<<16 |

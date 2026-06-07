@@ -116,6 +116,38 @@ def _pd_contract_post():
     return c
 
 
+def _src_contract_post():
+    """Drive gale AS SOURCE through a full source contract (the previously-mis-excused SRC states).
+    With GaleAdc.PartnerSink (CC1 in the source Rd band, CC2 open) and `pd dualrole source`, gale
+    enters SRC_STARTUP -> SRC_DISCOVERY and TX's Source_Caps; we deliver a sink Request (FireComp
+    contract msg), and the counter-based auto-GoodCRC acks gale's own TXs (Source_Caps/Accept/
+    PS_RDY), driving SRC_NEGOCIATE -> SRC_ACCEPTED -> SRC_TRANSITION -> SRC_READY. Then exercise
+    ready-state requests so the source ready-state handlers run."""
+    import pd_encode
+    def hexmsg(m):
+        sm = pd_encode.encode_message(*m)
+        return (sm + bytes([(sm[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])).hex()
+    def cc(scmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
+    def fire(t):
+        f = ['sysbus.dma1 ExpectContractMsg']
+        for _ in range(3):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+        return f + ['emulation RunFor "%s"' % t]
+    c = ['sysbus.dma1 ClearResponses']
+    for i in range(8):
+        c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, hexmsg(pd_encode.ctrl(1, i)))]
+    c += cc("pd dualrole source") + ['emulation RunFor "1.2"']   # -> SRC_DISCOVERY (TX Source_Caps)
+    # Deliver the sink Request, then Get_Sink_Cap-ack window; gale's Accept/PS_RDY auto-GoodCRC'd.
+    for m in (pd_encode.REQUEST(2), pd_encode.REQUEST(3)):
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.3")
+    # SRC_READY: drive ready-state requests the source responds to (Get_Source_Cap / VDM / swaps).
+    mid = 4
+    for t in (7, 8, 9, 10, 11, 5, 2):    # GET_SRC_CAP GET_SNK_CAP DR_SWAP PR_SWAP VCONN_SWAP PING GOTO_MIN
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(pd_encode.ctrl(t, mid))] + fire("0.1"); mid += 1
+    return c
+
+
 def scenarios(boot):
     s = [("ro", [], RO_CMDS, boot, [])]
     # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
@@ -126,6 +158,10 @@ def scenarios(boot):
               ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec", "version"], "2.5", []))
     s.append(("ccd_rw", ['sysbus.adc ForceAccessory true'],
               ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"], "2.5", []))
+    # SOURCE contract (gale forced source + sink partner) -> SRC_STARTUP..SRC_READY + source
+    # ready-state handlers (the previously-mis-excused source-role states). RO + RW.
+    s.append(("src", ['sysbus.adc PartnerSink true'], [], "1.5", _src_contract_post()))
+    s.append(("src_rw", ['sysbus.adc PartnerSink true'], ["sysjump rw"], "1.5", _src_contract_post()))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
