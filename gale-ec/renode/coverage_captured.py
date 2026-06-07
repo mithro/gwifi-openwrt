@@ -116,34 +116,16 @@ def _pd_contract_post():
     return c
 
 
-def _ccd_post():
-    """Monitor sequence: force the source role, let the DRP toggle into SRC_ACCESSORY (->
-    ccd_set_mode -> usb_init), then exercise the raiden SPI bridge + PD/typec state. Each step
-    gets its own RunFor so the ~0.8s CC-debounce/transition actually completes (console commands
-    in the scenario `cmds` list only get ~0.06s each, too short)."""
-    def cc(s):
-        return ['sysbus.usart1 WriteChar %d' % ord(c) for c in (s + "\r")]
-    c = cc("pd 0 dualrole source") + ['emulation RunFor "1.2"']   # -> SRC_ACCESSORY -> usb_init
-    for cmd, t in (("spixfer rlen 0 0x1f 3", "0.2"), ("spixfer 500 0x9f", "0.2"),
-                   ("pd 0 state", "0.1"), ("typec", "0.1"), ("ccd", "0.1"), ("version", "0.1")):
-        c += cc(cmd) + ['emulation RunFor "%s"' % t]
-    return c
-
-
 def scenarios(boot):
     s = [("ro", [], RO_CMDS, boot, [])]
     # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
     s.append(("pd", ['sysbus.adc ForceSourceCc true'], [], "2.0", _pd_contract_post()))
     s.append(("pd_rw", ['sysbus.adc ForceSourceCc true'], ["sysjump rw"], "2.0", _pd_contract_post()))
     # Debug accessory -> SRC_ACCESSORY -> ccd_set_mode -> usb_init/CCD + raiden over the bridge.
-    # gale is force-sink by board policy, so it never sources -> never reaches SRC_ACCESSORY on its
-    # own. `pd 0 dualrole source` forces the source role (a real, supported console command) so that,
-    # with ForceAccessory presenting both CC in the Rd band, gale enters SRC_ACCESSORY ->
-    # ccd_set_mode(ENABLED) -> usb_console_enable + usb_spi_enable + usb_init (VERIFIED: reaches
-    # ccd_set_mode/usb_init/ep0_rx). The sequence runs via the post list so each step gets an
-    # explicit RunFor settle (the DRP needs ~0.8s to toggle into SRC_ACCESSORY).
-    s.append(("ccd", ['sysbus.adc ForceAccessory true'], [], "1.5", _ccd_post()))
-    s.append(("ccd_rw", ['sysbus.adc ForceAccessory true'], ["sysjump rw"], "1.5", _ccd_post()))
+    s.append(("ccd", ['sysbus.adc ForceAccessory true'],
+              ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec", "version"], "2.5", []))
+    s.append(("ccd_rw", ['sysbus.adc ForceAccessory true'],
+              ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"], "2.5", []))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
