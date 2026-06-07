@@ -261,7 +261,6 @@
 0x080051ec taken-only
 0x0800522a taken-only
 0x08005260 taken-only
-0x08005276 nottaken-only
 0x08005280 taken-only
 0x08005290 taken-only
 0x080052d8 taken-only
@@ -271,10 +270,7 @@
 0x08005330 taken-only
 0x0800533e nottaken-only
 0x08005342 nottaken-only
-0x08005378 taken-only
-0x08005390 nottaken-only
 0x08005396 nottaken-only
-0x080053d4 taken-only
 0x08005478 nottaken-only
 0x08005480 nottaken-only
 0x0800549a nottaken-only
@@ -910,7 +906,6 @@
 0x080151ec taken-only
 0x0801522a taken-only
 0x08015260 taken-only
-0x08015276 nottaken-only
 0x08015280 taken-only
 0x08015290 taken-only
 0x08015478 nottaken-only

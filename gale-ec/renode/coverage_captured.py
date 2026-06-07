@@ -47,26 +47,33 @@ CMD_ARGS = [
     "reboot ro", "hibernate 1"]
 
 
+def _hc_packet(cmd, ver, sver, dlen, data, bad_csum=False):
+    """Build an I2C host-command write payload: 0xda + ec_host_request + data + checksum."""
+    req = [sver & 0xFF, 0x00, cmd & 0xFF, (cmd >> 8) & 0xFF, ver & 0xFF, 0x00,
+           dlen & 0xFF, (dlen >> 8) & 0xFF] + list(data)
+    req[1] = ((-sum(req)) & 0xFF) ^ (0xA5 if bad_csum else 0)
+    return "da" + "".join("%02x" % b for b in req)
+
+
 def host_cmd_battery():
-    """A battery of EC host-command packets (protocol v3) driving host_command_process + hc_*.
-    Each entry: (command, data_len, data_bytes). Built into the I2C write payload + checksum."""
-    cmds = [
-        (0x0001, 4, [0, 0, 0, 0]),   # HELLO (in_data)
-        (0x0002, 0, []),             # GET_VERSION
-        (0x0003, 0, []),             # READ_TEST? / GET_BUILD_INFO region
-        (0x0004, 0, []),             # GET_BUILD_INFO
-        (0x0005, 0, []),             # GET_CHIP_INFO
-        (0x0006, 0, []),             # GET_BOARD_VERSION
-        (0x0007, 4, [0, 0, 0, 0]),   # READ_MEMMAP
-        (0x0008, 0, []),             # GET_CMD_VERSIONS
-        (0x000b, 0, []),             # GET_PROTOCOL_INFO
-        (0x0010, 0, []),             # GET_FEATURES
-    ]
+    """EC host-command packets driving host_command_process + hc_* — valid commands AND the
+    error cases ported from test/host_command.c (each flips a different host_command_process
+    branch: SUCCESS / INVALID_COMMAND / INVALID_VERSION / INVALID_HEADER / REQUEST_TRUNCATED /
+    INVALID_CHECKSUM)."""
     out = []
-    for cmd, dlen, data in cmds:
-        req = [0x03, 0x00, cmd & 0xFF, (cmd >> 8) & 0xFF, 0x00, 0x00, dlen & 0xFF, (dlen >> 8) & 0xFF] + data
-        req[1] = (-sum(req)) & 0xFF
-        out.append("da" + "".join("%02x" % b for b in req))
+    # Valid commands (cover hc_* handlers)
+    for cmd, dlen, data in [(0x0001, 4, [0x44, 0x33, 0x22, 0x11]),  # HELLO in_data=0x11223344
+                            (0x0002, 0, []), (0x0003, 0, []), (0x0004, 0, []), (0x0005, 0, []),
+                            (0x0006, 0, []), (0x0007, 4, [0, 0, 0, 0]), (0x0008, 2, [1, 0]),
+                            (0x000b, 0, []), (0x0010, 0, []), (0x000d, 0, []), (0x000f, 0, [])]:
+        out.append(_hc_packet(cmd, 0, 3, dlen, data))
+    # Error cases (ported from test/host_command.c) -> host_command_process error branches
+    out.append(_hc_packet(0x00ff, 0, 3, 0, []))                 # invalid command -> INVALID_COMMAND
+    out.append(_hc_packet(0x0001, 1, 3, 4, [0, 0, 0, 0]))       # wrong cmd version -> INVALID_VERSION
+    out.append(_hc_packet(0x0001, 0, 4, 4, [0, 0, 0, 0]))       # struct_version 4 -> INVALID_HEADER
+    out.append(_hc_packet(0x0001, 0, 2, 4, [0, 0, 0, 0]))       # struct_version 2 -> INVALID_HEADER
+    out.append(_hc_packet(0x0001, 0, 3, 0xFFFF, []))            # huge data_len -> REQUEST_TRUNCATED
+    out.append(_hc_packet(0x0001, 0, 3, 4, [0, 0, 0, 0], bad_csum=True))  # bad checksum -> INVALID_CHECKSUM
     return out
 
 
