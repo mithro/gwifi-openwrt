@@ -19,6 +19,8 @@ import os
 import re
 import subprocess
 
+import coverage_full   # reuse the address-independent scenario helpers (console-edit, faults, cmd args)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
 TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
@@ -32,6 +34,17 @@ RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", 
            "pd 0 state", "pd 0 srccaps", "pd dump 3", "tcpc", "typec", "syslock", "waitms 1",
            "gpioget LID_OPEN", "md 0x20000000", "flashwp", "gale"]
 CRASH = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
+# Console commands with VALID + ERROR args (address-independent) -> command_* parsing + vfnprintf
+CMD_ARGS = [
+    "help", "help pd", "help gpioget", "help xyzzy", "version foo",
+    "gpioget EC_INT_L", "gpioget NOPE", "gpioset EC_INT_L 1", "gpioset BADPIN 1",
+    "md 0x20000000 4", "md .b 0x08000000", "md badaddr", "rw 0x20000000", "rw badaddr",
+    "spixfer rlen 0 0x9f 3", "spixfer 0", "spixfer badarg",
+    "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump 9", "pd 0 trysrc 1", "pd 0 dualrole source",
+    "pd 0 dualrole sink", "pd 0 dualrole toggle-off", "pd 0 dualrole freeze",
+    "tcpc 0", "typec 0", "flashwp bogus", "flashwp enable", "flashwp now", "flashwp disable",
+    "chan 0", "chan save", "chan restore", "hcdebug params", "gale power on ap", "gale power off ap",
+    "reboot ro", "hibernate 1"]
 
 
 def host_cmd_battery():
@@ -57,8 +70,35 @@ def host_cmd_battery():
     return out
 
 
+def _pd_contract_post():
+    """Address-independent live PD contract: ForceSourceCc sink-attach + queue-delivered
+    Source_Caps/Accept/PS_RDY + counter-based auto-GoodCRC (no per-firmware RAM addresses)."""
+    import pd_encode
+    def hexmsg(m):
+        sm = pd_encode.encode_message(*m)
+        return (sm + bytes([(sm[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])).hex()
+    c = ['sysbus.dma1 ClearResponses']
+    for i in range(8):
+        c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, hexmsg(pd_encode.ctrl(1, i)))]
+    for m in (pd_encode.SRC_CAP, pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)]
+    def fire(t):
+        f = ['sysbus.dma1 ExpectContractMsg']
+        for _ in range(3):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+        return f + ['emulation RunFor "%s"' % t]
+    c += fire("0.2") + fire("0.2") + fire("0.4")
+    for m in (pd_encode.ctrl(8, 3), pd_encode.vdm_discover_identity(4), pd_encode.ctrl(9, 5),
+              pd_encode.ctrl(10, 6), pd_encode.ctrl(2, 7)):
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.12")
+    return c
+
+
 def scenarios(boot):
     s = [("ro", [], RO_CMDS, boot, [])]
+    # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
+    s.append(("pd", ['sysbus.adc ForceSourceCc true'], [], "2.0", _pd_contract_post()))
+    s.append(("pd_rw", ['sysbus.adc ForceSourceCc true'], ["sysjump rw"], "2.0", _pd_contract_post()))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
@@ -69,6 +109,13 @@ def scenarios(boot):
         hc += ['sysbus.i2c1 HostCmd "%s"' % p, 'emulation RunFor "0.05"']
     s.append(("hostcmd", [], [], boot, hc))
     s.append(("hostcmd_rw", [], ["sysjump rw"], boot, hc))
+    # address-independent high-yield scenarios (reused from coverage_full)
+    s.append(("cmd_args", [], CMD_ARGS, boot, []))
+    s.append(("cmd_args_rw", [], ["sysjump rw"] + CMD_ARGS, boot, []))
+    s.append(("console_edit", [], [], boot, coverage_full._edit_bytes()))
+    s.append(("console_edit_rw", [], ["sysjump rw"], boot, coverage_full._edit_bytes()))
+    s.append(("flash_fault", [], [], boot, coverage_full._fault_post()))
+    s.append(("flash_fault_rw", [], ["sysjump rw"], boot, coverage_full._fault_post()))
     return s
 
 

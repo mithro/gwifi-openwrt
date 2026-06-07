@@ -56,6 +56,12 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // VBUS need not be modeled: gale's pd_snk_is_vbus_provided() is hardwired to 1.
         public bool PartnerSource { get; set; }
 
+        // Address-INDEPENDENT source partner: present the SNK_1_5 Rp band on CC1 unconditionally
+        // (no cc_pull RAM read), so PD sink-attach works on ANY firmware image (the captured dump
+        // has different RAM addresses than the recreation). gale's force-sink board policy keeps
+        // it sinking, so a constant CC1 source level drives SNK_DISCONNECTED -> SNK_DISCOVERY.
+        public bool ForceSourceCc { get; set; }
+
         public void Reset()
         {
             isr = 0; ier = 0; cr = 0; cfgr1 = 0; cfgr2 = 0;
@@ -138,6 +144,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             if(chselr == (1u << AIN_CC1) || chselr == (1u << AIN_CC2))
             {
+                if(ForceSourceCc)   // address-independent: constant source on CC1
+                {
+                    return chselr == (1u << AIN_CC1) ? CC_RD_BAND_RAW : 0u;
+                }
                 byte ccPull = CcPullAddress != 0 ? sysbus.ReadByte(CcPullAddress) : (byte)0;
                 if(PartnerSource)
                 {

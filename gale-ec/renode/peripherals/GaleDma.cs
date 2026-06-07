@@ -62,7 +62,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             pdQueue.Enqueue(Unhex(hex));
         }
 
-        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; }
+        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; }
 
         // CONTEXT-AWARE PD CC-PARTNER (for a live explicit contract). Two delivery contexts are
         // distinguished so the FIFO never desyncs against gale's pd_rx_start pattern:
@@ -161,9 +161,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     resp = pdQueue.Dequeue();
                     nextIsContract = false;
                 }
-                else if(pendingGoodCrc && GoodCrcMsgIdAddress != 0)
+                else if(pendingGoodCrc && goodCrcBank[0] != null)
                 {
-                    var id = sysbus.ReadByte(GoodCrcMsgIdAddress) & 7;
+                    // The EC's msg_id increments per validated TX, so the partner's GoodCRC ids
+                    // run 0,1,2,... in TX order — a delivery counter matches without reading RAM
+                    // (address-independent; works on both the captured and rebuilt firmwares).
+                    var id = GoodCrcMsgIdAddress != 0 ? (sysbus.ReadByte(GoodCrcMsgIdAddress) & 7)
+                                                      : (goodCrcCounter++ & 7);
                     resp = goodCrcBank[id];
                     pendingGoodCrc = false;
                 }
@@ -319,6 +323,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly byte[][] goodCrcBank = new byte[8][];
         private bool pendingGoodCrc;
         private bool nextIsContract;
+        private int goodCrcCounter;
         private readonly IBusController sysbus;
         private readonly long size;
 
