@@ -53,6 +53,9 @@ for kv in $VLANS; do
 	uci -q delete network.br_$name.ports
 	uci add_list network.br_$name.ports="$UP.$vid"
 	uci add_list network.br_$name.ports="bat0.$vid"
+	# the second wired port is an untagged client-access port on the roam VLAN;
+	# adding it inside this delete+add block keeps br-roam.ports idempotent.
+	[ "$name" = "roam" ] && uci add_list network.br_$name.ports="$CLIENT"
 	# interface on the bridge
 	uci set network.$name="interface"
 	uci set network.$name.device="br-$name"
@@ -63,13 +66,17 @@ for kv in $VLANS; do
 	fi
 done
 
-# wired client access port (CLIENT) untagged into br-roam (VLAN 20)
-uci add_list network.br_roam.ports="$CLIENT"
 uci commit network
 
 # --- wireless: single 2.4 GHz radio0 + 802.11s mesh on it (design C5) ---
 # radio0's per-SoC `path` is supplied by board detection; we configure by name.
 [ -f /etc/config/wireless ] || /sbin/wifi config
+# radio0 must exist before we tune it; if board/driver detection hasn't produced
+# it yet, defer — return non-zero so OpenWrt re-runs this uci-default next boot.
+if ! uci -q get wireless.radio0 >/dev/null; then
+	logger -t om2p-bootstrap "radio0 not present yet; deferring wireless to next boot"
+	exit 1
+fi
 uci -q batch <<'EOF'
 set wireless.radio0.disabled='0'
 set wireless.radio0.band='2g'

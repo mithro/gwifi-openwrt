@@ -231,17 +231,6 @@ def om2p_netjson():
     }
 
 
-def om2p_ports(model):
-    """Map an OpenWISP device.model to its (uplink, client) GMAC (design C4).
-    Returns None for the bare 'OpenMesh OM2P' (revision unknown until onboard)."""
-    m = (model or "").lower()
-    if "om2p-lc" in m or "om2p v2" in m:
-        return {"uplink_port": "eth1", "client_port": "eth0"}
-    if "om2p v1" in m or "om2p v4" in m:
-        return {"uplink_port": "eth0", "client_port": "eth1"}
-    return None
-
-
 # Per-device ORM: create the gwifi-om2p template (NOT default), attach it to every
 # org-default device whose model starts "OpenMesh OM2P", and set each device's
 # uplink_port/client_port context by model (design C4). Bare "OpenMesh OM2P"

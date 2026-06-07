@@ -28,7 +28,7 @@ FLEET_SECRETS = os.environ.get("FLEET_SECRETS",
 IMAGE_SIZE_LIMIT = 7168 * 1024  # design C1 (IMAGE_SIZE := 7168k)
 
 REQUIRED_PACKAGES = ["openwisp-config", "openwisp-monitoring", "kmod-batman-adv",
-                     "wpad-mesh-mbedtls", "usteer", "batctl"]
+                     "wpad-mesh-mbedtls", "usteer", "batctl-default"]
 PROFILES = ["openmesh_om2p-lc", "openmesh_om2p-v1",
             "openmesh_om2p-v2", "openmesh_om2p-v4"]
 
