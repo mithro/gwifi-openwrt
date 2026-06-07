@@ -76,6 +76,16 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public void SetGoodCrc(int id, string hex) { goodCrcBank[id & 7] = Unhex(hex); }
         public void ExpectContractMsg() { nextIsContract = true; }
 
+        // Reactive-PD-partner groundwork: gale's last PD TX (the raw CC-line level bytes clocked
+        // out over SPI1) captured during the mem->SPI1_DR transfer. DumpTx writes it hex to a file
+        // so the harness can decode the message type and (eventually) inject the correct reply.
+        public void DumpTx(string path)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach(var b in lastTx) { sb.Append(b.ToString("x2")); }
+            System.IO.File.WriteAllText(path, sb.ToString());
+        }
+
         private static byte[] Unhex(string hex)
         {
             var b = new byte[hex.Length / 2];
@@ -205,11 +215,16 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 // gale's USB-PD TX bit-bangs the CC line via SPI1 (DMAC_SPI_TX = ch3 -> SPI1_DR).
                 // A TX is immediately followed (in send_validate_message) by a synchronous GoodCRC
                 // wait, so arm the auto-GoodCRC for the next TIM1-CCR1 RX pop.
-                if(pa == SPI1_DR) { pendingGoodCrc = true; }
+                if(pa == SPI1_DR) { pendingGoodCrc = true; lastTx.Clear(); }
                 RxPend rx = pendingRx.ContainsKey(pa) ? pendingRx[pa] : null;
                 for(uint i = 0; i < n; i++)
                 {
-                    sysbus.WriteDoubleWord(pa, ReadElem(ma, msize)); // clock out one TX byte
+                    var txw = ReadElem(ma, msize);
+                    sysbus.WriteDoubleWord(pa, txw);                 // clock out one TX byte
+                    if(pa == SPI1_DR)                                // capture gale's PD TX (CC line samples)
+                    {
+                        for(var k = 0; k < msize; k++) { lastTx.Add((byte)((txw >> (8 * k)) & 0xFF)); }
+                    }
                     var resp = sysbus.ReadDoubleWord(pa);            // simultaneous slave response
                     if(minc) { ma += (uint)msize; }
                     if(rx != null && i < rx.N)
@@ -321,6 +336,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private readonly System.Collections.Generic.Queue<byte[]> pdQueue =
             new System.Collections.Generic.Queue<byte[]>();
         private readonly byte[][] goodCrcBank = new byte[8][];
+        private readonly System.Collections.Generic.List<byte> lastTx =
+            new System.Collections.Generic.List<byte>();
         private bool pendingGoodCrc;
         private bool nextIsContract;
         private int goodCrcCounter;
