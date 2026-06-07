@@ -142,8 +142,19 @@ def scenarios(boot):
     return s
 
 
+# .text (code) ranges — branches/instructions outside these are .rodata/.data mis-disassembled
+# as Thumb and must NOT be counted. Bounds from the equivalent rebuilt ELF (.text size 0xb744,
+# RO @0x08000000, RW @0x08010000); the captured firmware shares this layout (same source).
+TEXT_RANGES = [(0x08000000, 0x0800b744), (0x08010000, 0x0801b744)]
+
+
+def _in_text(addr):
+    return any(lo <= addr < hi for lo, hi in TEXT_RANGES)
+
+
 def disasm_branches(binpath):
-    """Disassemble the raw binary (Thumb) at 0x08000000; return (insn addrs, cond branch map)."""
+    """Disassemble the raw binary (Thumb) at 0x08000000; return (insn addrs, cond branch map).
+    Only .text-range instructions are counted (excludes .rodata/.data false branches)."""
     out = subprocess.run([OBJDUMP, "-D", "-b", "binary", "-marm", "-Mforce-thumb",
                           "--adjust-vma=0x08000000", binpath],
                          stdout=subprocess.PIPE, universal_newlines=True).stdout
@@ -153,6 +164,8 @@ def disasm_branches(binpath):
         if not m:
             continue
         addr = int(m.group(1), 16)
+        if not _in_text(addr):
+            continue
         nb = len(m.group(2).replace(" ", "")) // 2
         insns[addr] = nb
         cm = COND.search(m.group(3))
