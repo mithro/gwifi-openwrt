@@ -79,23 +79,31 @@ class Rsp:
         return self.readreg(0)
 
 
+_next_port = [3333]
+
+
 class Session:
-    """A booted firmware + GDB stub; supports many calls, optionally with execution tracing."""
-    def __init__(self, binpath, boot="1.5", mon=None, trace=None):
+    """A booted firmware + GDB stub; supports many calls, optionally with execution tracing.
+    Each session uses a FRESH port so a torn-down session never collides with the next one."""
+    def __init__(self, binpath, boot="1.5", mon=None, trace=None, port=None):
         self.trace = trace
+        if port is None:
+            port = _next_port[0]
+            _next_port[0] = 3334 + (_next_port[0] - 3333 + 1) % 200   # rotate 3334..3534
+        self.port = port
         c = ['$h=@%s' % HERE, '$bin=@%s' % os.path.abspath(binpath), '$name="fc"',
              'include @%s' % BASE] + list(mon or [])
         c += ['emulation RunFor "%s"' % boot, 'sysbus WriteWord 0x%X 0xE7FE' % SPIN]
         if trace:
             c += ['cpu CreateExecutionTracing "t" @%s PC' % trace]
-        c += ['machine StartGdbServer 3333']
+        c += ['machine StartGdbServer %d' % port]
         self.p = subprocess.Popen(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
                                   stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.STDOUT)
         self.rsp = None
-        for _ in range(60):
+        for _ in range(80):
             try:
-                self.rsp = Rsp(); break
+                self.rsp = Rsp(port=port); break
             except OSError:
                 time.sleep(0.5)
         if self.rsp is None:
@@ -113,7 +121,14 @@ class Session:
             self.p.stdin.close()
         except Exception:
             pass
-        self.p.terminate()
+        try:
+            self.p.terminate()
+            self.p.wait(timeout=10)        # ensure the port is released before the next session
+        except Exception:
+            try:
+                self.p.kill()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

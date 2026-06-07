@@ -34,10 +34,13 @@ def main():
     binp = os.path.abspath(args.bin)
     os.makedirs(TMP, exist_ok=True)
 
-    # function entries to sweep (bl targets + pointer-table targets), RO image only for the demo
+    # function entries to sweep (bl targets + pointer-table targets), BOTH images.
     ins, cond, calls = rda.analyze(binp, extra_seeds=rda.ptr_targets(binp))
-    funcs = sorted(f for f in (set(calls) | rda.ptr_targets(binp)) if 0x08000000 <= f < 0x0800b744)
-    funcs = funcs[:args.max]
+    allfuncs = set(calls) | rda.ptr_targets(binp)
+    funcs = sorted(f for f in allfuncs
+                   if (0x08000000 <= f < 0x0800b744) or (0x08010000 <= f < 0x0801b744))
+    if args.max:
+        funcs = funcs[:args.max]
     print("sweeping %d functions x %d vectors via direct invocation" % (len(funcs), len(VECTORS)))
 
     trace = os.path.join(TMP, "sweep.txt")
@@ -59,28 +62,38 @@ def main():
         os.remove(trace)
 
     i = 0
-    while i < len(funcs):
-        batch = funcs[i:i + args.per_session]
+    calls_this_session = 0
+    s = None
+    def fresh():
+        nonlocal s, calls_this_session
+        if s is not None:
+            s.close(); fold()
         s = fcall.Session(binp, boot="1.5", trace=trace)
-        # seed scratch arg buffers
         try:
             s.rsp.writemem(0x20002000, b"\x00" * 64)
         except Exception:
             pass
-        for f in batch:
-            for v in VECTORS:
-                try:
-                    s.rsp.call(f, v, timeout_continue=3)
-                except Exception:
-                    # crash/hang: abandon this session, rebuild for the rest of the batch
-                    break
-            else:
-                continue
-            break
-        s.close()
-        fold()
-        i += args.per_session
-        print("  ...%d/%d functions swept, %d edges so far" % (min(i, len(funcs)), len(funcs), len(edges)))
+        calls_this_session = 0
+    fresh()
+    while i < len(funcs):
+        f = funcs[i]
+        crashed = False
+        for v in VECTORS:
+            try:
+                s.rsp.call(f, v, timeout_continue=3)
+                calls_this_session += 1
+            except Exception:
+                crashed = True
+                break
+        i += 1
+        if crashed:
+            fresh()                                   # a faulting call wedges the stub: rebuild
+        elif calls_this_session >= args.per_session:
+            fresh()                                   # periodic refresh to bound trace size / drift
+        if i % 25 == 0:
+            print("  ...%d/%d functions swept, %d edges so far" % (i, len(funcs), len(edges)))
+    if s is not None:
+        s.close(); fold()
 
     # measure both-dirs over the rda denominator
     taken = set(a for a in cond if (a, cond[a][1]) in edges)
