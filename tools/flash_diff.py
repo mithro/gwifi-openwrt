@@ -119,23 +119,40 @@ def diff(args):
               f"0x{length:x} = {length / 1024:.0f} KiB)")
         print(f"   chunk  = 0x{args.chunk:x}   READ-ONLY (parks AP before each chunk)")
 
-    # read [off,off+length) one fresh worker process per chunk (cliff reset)
+    # read [off,off+length) one fresh worker process per chunk (cliff reset).
+    # The EC bridge occasionally reports RDID=000000 ("not ready") on a fresh
+    # ENABLE -- a transient bring-up glitch, NOT bad data. So retry the whole
+    # fresh-process read a few times before giving up. Fail-loud is preserved:
+    # data is accepted ONLY on rc==0 AND exact length; a mid-read framing error
+    # still raises inside the worker; and once the retry budget is spent we
+    # sys.exit(2). We never accept a short/zero read as flash content.
+    READ_TRIES = 4
     cf = f"{TMP}/_diff_rd.bin"
     hw = bytearray()
     a = off
     while a < off + length:
         clen = min(args.chunk, off + length - a)
-        if os.path.exists(cf):
-            os.remove(cf)
-        p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), cf],
-                           capture_output=True, text=True)
-        data = open(cf, "rb").read() if os.path.exists(cf) else b""
-        if p.returncode != 0 or len(data) != clen:
-            print(f"ERROR: read failed at 0x{a:06x} (rc={p.returncode}, got {len(data)}/{clen} B):\n"
-                  + (p.stdout + p.stderr).strip(), file=sys.stderr)
+        data = None
+        for attempt in range(1, READ_TRIES + 1):
             if os.path.exists(cf):
                 os.remove(cf)
-            sys.exit(2)
+            p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), cf],
+                               capture_output=True, text=True)
+            got = open(cf, "rb").read() if os.path.exists(cf) else b""
+            if p.returncode == 0 and len(got) == clen:
+                data = got
+                break
+            err = (p.stdout + p.stderr).strip()
+            if attempt < READ_TRIES:
+                print(f"   [0x{a:06x}] read attempt {attempt}/{READ_TRIES} failed "
+                      f"(rc={p.returncode}, got {len(got)}/{clen} B); re-parking + retrying",
+                      file=sys.stderr)
+            else:
+                print(f"ERROR: read failed at 0x{a:06x} after {READ_TRIES} attempts "
+                      f"(rc={p.returncode}, got {len(got)}/{clen} B):\n" + err, file=sys.stderr)
+                if os.path.exists(cf):
+                    os.remove(cf)
+                sys.exit(2)
         nb = sum(1 for x, y in zip(data, image[a:a + clen]) if x != y)
         if not args.quiet and (nb or (a // args.chunk) % 8 == 0):
             print(f"   [0x{a:06x}] {clen // 1024:>3d} KiB  "
