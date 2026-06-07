@@ -224,6 +224,10 @@ def _usb_post():
     c = ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
     for hws in setups:
         c += usb_host.setup_ep0(ep0, hws)
+    # raiden SPI bridge over USB (usb_spi on ep3 for the captured: tx_addr 0x140, rx_addr 0x180) —
+    # drives the never-entered usb_spi / ep-handler functions (RDID 0x9f -> ef4017). btable ep3
+    # rx_count at PMA + 3*8 + 6 = 0x4000601E.
+    c += usb_host.raiden_cmds(3, 0x40006180, 0x40006140, 0x40006000 + 3 * 8 + 6)
     return c
 
 
