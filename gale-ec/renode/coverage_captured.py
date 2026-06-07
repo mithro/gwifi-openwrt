@@ -34,7 +34,9 @@ COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|
 RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", "adc",
            "panicinfo", "chan", "flashinfo", "shmem", "history", "hcdebug", "hostevent",
            "pd 0 state", "pd 0 srccaps", "pd dump 3", "tcpc", "typec", "syslock", "waitms 1",
-           "gpioget LID_OPEN", "md 0x20000000", "flashwp", "gale"]
+           "gpioget LID_OPEN", "md 0x20000000", "flashwp", "gale",
+           # hash command (command_hash, 13 unreached): no-arg status + recompute RO/RW + abort
+           "hash", "hash ro", "hash rw", "hash 0x10000 0x100", "hash abort", "hash bogus"]
 CRASH = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
 # Console commands with VALID + ERROR args (address-independent) -> command_* parsing + vfnprintf
 CMD_ARGS = [

@@ -7,13 +7,15 @@ Each uncovered branch is binned by its containing function symbol into one of:
   UNREACHABLE_FAULT   panic / exception / hard-fault / assert handlers — taking both
                       directions needs a fault that resets the CPU; the not-taken side
                       is the normal path, so both-in-one-image is structurally excluded.
-  AP_DEPENDENT        host-command / LPC / AP-stream / keyboard / charger paths. In
-                      gale-as-built these are UNREACHABLE DEAD CODE: board/gale defines
-                      no host-command transport (no CONFIG_HOSTCMD_I2C_SLAVE_ADDR, no
-                      LPC/SPI host iface, no CONFIG_CMD_HOSTCMD), so host_packet_receive /
-                      host_command_received / i2c_event_handler are GC'd — nothing can
-                      invoke host_command_process at runtime. (Plus gale-absent
-                      peripherals: no battery/charger/keyboard.) See COVERAGE.md.
+  ABSENT_HARDWARE     paths for peripherals gale physically lacks (no keyboard, battery,
+                      charger, motion sensor, lid, backlight, ALS, PWM) — genuinely
+                      unreachable on this board. CORRECTION (2026-06-07): host-command /
+                      hc_* / hostevent / lpc are NO LONGER in this category. They were
+                      wrongly excused as dead code; in fact the captured device enables an
+                      I2C host-command slave (OAR1=0x803C) and the recreation restores it
+                      (CONFIG_HOSTCMD_I2C_SLAVE_ADDR=0x3C), so the GaleI2c harness drives
+                      host_command_process / hc_* for real — they are COVERABLE work, not
+                      an exclusion. See COVERAGE.md.
   HW_CANT_FAIL        EC_ERROR_* returns for modeled hardware that never errors
                       (flash never BSY, SPI slave always responds, I2C ack).
   WATCHDOG_TIMEOUT    watchdog-trip / timeout-expiry guards that never fire deterministically.
@@ -36,9 +38,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FAULT = re.compile(r'(panic|exception|hard_?fault|fault_|_fault|assert|software_panic|'
                    r'reboot|watchdog|wdt|hook_critical|cpu_reset|system_reset|jump_to_image|'
                    r'exception_panic|report_panic|hibernate)', re.I)
-AP_DEP = re.compile(r'(host_command|hostcmd|host_event|hostevent|lpc|^hc_|_hc_|keyboard|'
-                    r'kb_|charge|battery|charger|pmu|motion|als|tablet|backlight|pwm|'
-                    r'lid|power_button|chipset|ap_|x86|espi)', re.I)
+# ABSENT HARDWARE: peripherals gale physically does not have, so the code is genuinely
+# unreachable on this board (no keyboard / battery / charger / motion sensor / lid / backlight /
+# ALS / PWM). NOTE (2026-06-07): host-command / hc_* / hostevent / lpc were REMOVED from this set —
+# they are NO LONGER dead code. The captured device enables an I2C host-command slave (OAR1=0x803C)
+# and the recreation restores it (CONFIG_HOSTCMD_I2C_SLAVE_ADDR=0x3C); the GaleI2c harness drives
+# host_command_process / hc_* for real, so those branches belong in the COVERABLE work-list, not an
+# exclusion. Excusing them would be a stale dead-code claim that a verifier must reject.
+ABSENT_HW = re.compile(r'(keyboard|kb_|charge_manager|battery|charger|pmu|motion|als|tablet|'
+                       r'backlight|\bpwm|lid_|power_button)', re.I)
 HW_FAIL = re.compile(r'(flash_|spi_|i2c_|adc_|dma_|_read_|_write_|_xfer|_transfer|crc)', re.I)
 WDT = re.compile(r'(watchdog|wdt|timeout|deadline|timer_|hwtimer)', re.I)
 
@@ -52,8 +60,8 @@ def classify(sym, state):
         return "COVERABLE_GAP"
     if FAULT.search(sym):
         return "UNREACHABLE_FAULT"
-    if AP_DEP.search(sym):
-        return "AP_DEPENDENT"
+    if ABSENT_HW.search(sym):
+        return "ABSENT_HARDWARE"
     if WDT.search(sym):
         return "WATCHDOG_TIMEOUT"
     if HW_FAIL.search(sym):

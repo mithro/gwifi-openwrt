@@ -26,6 +26,7 @@ import subprocess
 import pd_encode
 import pd_inject
 import usb_host
+import hostcmd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
@@ -42,7 +43,9 @@ COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|
 RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", "adc",
            "panicinfo", "chan", "flashinfo", "shmem", "history", "hcdebug", "hostevent",
            "pd 0 state", "pd 0 srccaps", "pd dump", "tcpc", "typec", "syslock",
-           "gpioget LID_OPEN", "md 0x20000000", "waitms 1"]
+           "gpioget LID_OPEN", "md 0x20000000", "waitms 1",
+           # hash command (command_hash, 13 unreached): no-arg status + recompute RO/RW + abort
+           "hash", "hash ro", "hash rw", "hash 0x10000 0x100", "hash abort", "hash bogus"]
 # Deliberate fault / state-changing commands (drive defensive + handler branches).
 CRASH_CMDS = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
 
@@ -233,8 +236,8 @@ def scenarios(boot):
     # LIVE explicit PD contract to SNK_READY + ready-state ops (RO and RW).
     out.append(("pd_contract", pd_pre, [], "2.0", _contract_post()))
     out.append(("pd_contract_rw", pd_pre, ["sysjump rw"], "2.0", _contract_post()))
-    out.append(("hostcmd", [], [], boot, _hc_battery_post([])))
-    out.append(("hostcmd_rw", [], ["sysjump rw"], boot, _hc_battery_post([])))
+    out.append(("hostcmd", [], [], boot, hostcmd.post([])))
+    out.append(("hostcmd_rw", [], ["sysjump rw"], boot, hostcmd.post([])))
     return out
 
 
