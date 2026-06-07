@@ -1,5 +1,30 @@
 # Reconstruction divergence #2: rebuilt crashes entering the PD SOURCE path
 
+**Status:** CONFIRMED divergence; DIAGNOSED 2026-06-08, root cause not yet isolated (deep). Predates
+the SNK_ACCESSORY fix (the old rebuilt crashed here too). On an esoteric path gale never takes in
+normal operation (force the source role on a sink-only AP AND attach a sink); the captured handles
+it (reaches SRC_DISCOVERY), the rebuilt does not.
+
+## Diagnosis (2026-06-08)
+- The assert is `timer_cancel(me)` with `me = current_task - tasks` corrupted to 0x88 (136) — i.e.
+  the scheduler global `current_task` holds a wild pointer (136 entries past the 5-entry tasks[]).
+- NOT stack overflow: crash sp=0x20001bf0 is healthy (PD_C0 stack 0x200019B8..0x20001C38, ~72 B
+  used). Bumping PD_C0 to VENTI (768) did NOT help (and made it crash 3/3 — deterministic, not a
+  timing fluke).
+- Trace before the crash: `__svc_handler -> __switchto -> __idle` — the reschedule/context-switch
+  path. But `__svc_handler` sets `current_task = __task_id_to_ptr(__fls(tasks_ready))` whose index
+  is <=31, so it cannot itself produce 136 — `current_task` is set to a wild value some other way.
+- The scheduler/context-switch code (core/cortex-m0/task.c, switch.S) is logically SHARED with the
+  captured, yet only the rebuilt crashes under identical stimulus+emulation. Crash needs the
+  two-command `pd dualrole source` + `pd 0 state` timing (one command reaches SRC_STARTUP cleanly),
+  i.e. a reschedule lands at a specific instruction boundary.
+- CONCLUSION: likely either (a) a subtle reconstruction bug upstream feeding a bad task id/port
+  into a reschedule, or (b) a Renode Cortex-M SVC/PendSV exception-stacking interaction triggered by
+  the rebuilt's instruction layout (not the captured's). Distinguishing needs RE of the captured's
+  scheduler path or instruction-level exception-state inspection. Not a quick patch; deferred behind
+  the (fixed) SNK_ACCESSORY divergence.
+
+----- original finding -----
 **Status:** CONFIRMED behavioral divergence, found 2026-06-07 (needs root-cause).
 **Related:** likely the same gale-vintage PD customization gap as the missing
 [`PD_STATE_SNK_ACCESSORY`](gale-snk-accessory-divergence.md).

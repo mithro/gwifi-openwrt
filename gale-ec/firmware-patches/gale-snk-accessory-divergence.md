@@ -1,6 +1,9 @@
 # Reconstruction divergence: missing `PD_STATE_SNK_ACCESSORY` (sink-side CCD trigger)
 
-**Status:** CONFIRMED divergence, found 2026-06-07 by the Renode equivalence harness.
+**Status:** FIXED 2026-06-08 (ec/ branch `gale-divergence-fixes`, commit 5120003). The rebuilt now
+reaches `SNK_ACCESSORY` and brings USB up under a debug accessory (USB_CNTR=0xE400), matching the
+captured; normal boot is unchanged (both reach SRC_ACCESSORY identically). See "Fix" below.
+Originally CONFIRMED 2026-06-07 by the Renode equivalence harness.
 **Severity:** functional — the reconstruction cannot enable Case-Closed Debug (CCD) / USB on
 the real (sink-only) board; the captured device firmware can.
 
