@@ -202,6 +202,14 @@ def scenarios(boot):
     s.append(("flash_ops", [], ["flashwp", "flashwp enable", "flashwp disable", "flashwp now",
                                  "flashwp noprotect", "syslock", "flashinfo", "reboot ro"]))
     out = [(n, m, cc, boot, []) for (n, m, cc) in s]
+
+    def _ccd_bringup():
+        # Force the source role so the force-sink board policy doesn't block SRC_ACCESSORY; with
+        # ForceAccessory's both-CC-Rd this drives SRC_ACCESSORY -> ccd_set_mode(ENABLED) ->
+        # usb_console_enable + usb_spi_enable + usb_init (VERIFIED reaches ccd_set_mode/usb_init/
+        # ep0_rx). The 1.2s RunFor lets the DRP debounce/toggle complete before EP0 enumeration.
+        return ['sysbus.usart1 WriteChar %d' % ord(c) for c in "pd 0 dualrole source\r"] + \
+               ['emulation RunFor "1.2"']
     # Console line editing: raw control chars + escape sequences (post-boot monitor WriteChars)
     # -> console_handle_char branches (history/arrows/home/end/kill/backspace/DEL/bad-escape).
     out.append(("console_edit", [], [], boot, _edit_bytes()))
@@ -209,13 +217,16 @@ def scenarios(boot):
     # enumeration + SET_CONFIG + USB_SPI enable + raiden RDID -> ep_0_rx / usb_spi_* / usb_stream
     # branches. Short boot stays in the rebuilt's pre-panic / early usb_spi window.
     ep0_rx = 0x40006088                     # rebuilt EP0 rx buffer
-    usbq = ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
+    # Bring up usb_init FIRST (force source -> SRC_ACCESSORY -> ccd_set_mode -> usb_init), THEN
+    # drive EP0 enumeration: without the bringup, SignalReset/setup_ep0 fire into an
+    # uninitialised USB controller and cover nothing.
+    usbq = _ccd_bringup() + ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.GET_DEV)
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.GET_CFG)
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.SET_CFG)
     usbq += usb_host.setup_ep0(ep0_rx, usb_host.SPI_EN)
     usbq += usb_host.raiden_cmds(4, 0x40006188, 0x40006148, usb_host.BT + 0x26)
-    out.append(("usb_live", ['sysbus.adc ForceAccessory true'], [], "0.5", usbq))
+    out.append(("usb_live", ['sysbus.adc ForceAccessory true'], [], "1.0", usbq))
     # LIVE USB-PD: attach as sink, then inject a battery of PD messages over the modeled
     # CC-partner PD-PHY (GaleExti COMP-IRQ wake + GaleDma RX-sample feed). Each message is
     # decoded by the real pd_analyze_rx and dispatched by handle_request -> covers the
