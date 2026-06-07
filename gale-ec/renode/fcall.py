@@ -17,9 +17,32 @@ are captured for branch coverage.
 GDB register numbers (Cortex-M): r0..r12 = 0..12, sp = 13, lr = 14, pc = 15.
 """
 import os
+import signal
 import socket
 import subprocess
 import time
+
+RENODE_MEM_MAX = os.environ.get("RENODE_MEM_MAX", "2500M")
+
+
+def _have_systemd_run():
+    try:
+        return subprocess.run(["systemd-run", "--user", "--scope", "-q", "true"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+_HAVE_SYSTEMD_RUN = _have_systemd_run()
+
+
+def _renode_argv(monitor_script):
+    base = ["renode", "--disable-gui", "--console", "-e", monitor_script]
+    if _HAVE_SYSTEMD_RUN:
+        return ["systemd-run", "--user", "--scope", "-q",
+                "-p", "MemoryMax=%s" % RENODE_MEM_MAX, "-p", "MemorySwapMax=0"] + base
+    return base
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
@@ -97,9 +120,12 @@ class Session:
         if trace:
             c += ['cpu CreateExecutionTracing "t" @%s PC' % trace]
         c += ['machine StartGdbServer %d' % port]
-        self.p = subprocess.Popen(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
+        # Own process group + memory-capped cgroup so close() can kill the WHOLE tree (the renode
+        # bash wrapper AND its dotnet child) — orphaned dotnet children were the memory leak that
+        # exhausted RAM and made later sessions fail to start.
+        self.p = subprocess.Popen(_renode_argv("; ".join(c)),
                                   stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.STDOUT)
+                                  stderr=subprocess.STDOUT, start_new_session=True)
         self.rsp = None
         for _ in range(80):
             try:
@@ -121,14 +147,19 @@ class Session:
             self.p.stdin.close()
         except Exception:
             pass
+        # Kill the entire process group (systemd-run/scope + renode wrapper + dotnet child) so no
+        # dotnet orphan survives to leak memory.
         try:
-            self.p.terminate()
-            self.p.wait(timeout=10)        # ensure the port is released before the next session
+            os.killpg(os.getpgid(self.p.pid), signal.SIGKILL)
         except Exception:
             try:
                 self.p.kill()
             except Exception:
                 pass
+        try:
+            self.p.wait(timeout=10)        # reap; release the port before the next session
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
