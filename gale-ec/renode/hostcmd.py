@@ -64,6 +64,23 @@ def battery():
              _pkt(0x112, 0, 3, [0, 0])]                                # USB_PD_DEV_INFO port0
     # Reboot (host_command_reboot) — cmd=0 (cancel, safe)
     cmds += [_pkt(0xd2, 0, 3, [0, 0])]
+    # The remaining implemented EC_CMDs (from the captured __hcmds table) whose handlers were
+    # otherwise NEVER ENTERED — sending each covers its handler entry + param-validation branches.
+    gpio_name = list(b"EC_INT_L") + [0] * (32 - 8)
+    cmds += [
+        _pkt(0x00, 0, 3, []),                              # PROTO_VERSION
+        _pkt(0x03, 0, 3, _le32(0) + _le32(0x20)),          # READ_TEST {offset,size}
+        _pkt(0x09, 0, 3, []),                              # GET_COMMS_STATUS
+        _pkt(0x0a, 0, 3, _le32(0) + _le32(4) + [0] * 32),  # TEST_PROTOCOL {ec_result,ret_len,buf[32]}
+        _pkt(0x17, 0, 3, _le32(0) + [0] * 16),             # VBNV_CONTEXT {op=read, block[16]}
+        _pkt(0x2a, 0, 3, [0, 0, 0, 0] + _le32(0) + _le32(0)),   # VBOOT_HASH {cmd=GET,...}
+        _pkt(0x2a, 0, 3, [2, 1, 0, 0] + _le32(0) + _le32(0x10000)),  # VBOOT_HASH {cmd=START,SHA256}
+        _pkt(0x92, 0, 3, gpio_name + _le32(1)),            # GPIO_SET {name[32],val}
+        _pkt(0x93, 0, 3, gpio_name),                       # GPIO_GET {name[32]}
+        _pkt(0xb6, 0, 3, _le32(0)),                        # ENTERING_MODE {vtm}
+        _pkt(0xd3, 0, 3, []),                              # GET_PANIC_INFO
+        _pkt(0xdb, 0, 3, []),                              # RESEND_RESPONSE
+    ]
     # Error cases (ported from test/host_command.c)
     cmds += [_pkt(0x1234, 0, 3, []),                       # invalid command -> INVALID_COMMAND
              _pkt(0x01, 1, 3, _le32(0)),                   # wrong cmd version -> INVALID_VERSION
