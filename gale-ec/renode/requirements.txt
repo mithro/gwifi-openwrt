@@ -1,0 +1,4 @@
+# Python deps for the coverage harness. Create the env with:
+#   uv venv .venv && uv pip install --python .venv -r requirements.txt
+# then run the scripts with:  uv run --python .venv python coverage_captured.py
+capstone>=5.0,<6        # ARMv6-M Thumb disassembly for rda.py (recursive-descent branch denominator)
