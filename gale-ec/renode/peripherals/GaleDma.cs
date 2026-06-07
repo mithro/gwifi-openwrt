@@ -62,7 +62,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             pdQueue.Enqueue(Unhex(hex));
         }
 
-        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; }
+        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; lastTx.Clear(); }
+        public void ClearTx() { lastTx.Clear(); }
 
         // CONTEXT-AWARE PD CC-PARTNER (for a live explicit contract). Two delivery contexts are
         // distinguished so the FIFO never desyncs against gale's pd_rx_start pattern:
@@ -215,7 +216,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 // gale's USB-PD TX bit-bangs the CC line via SPI1 (DMAC_SPI_TX = ch3 -> SPI1_DR).
                 // A TX is immediately followed (in send_validate_message) by a synchronous GoodCRC
                 // wait, so arm the auto-GoodCRC for the next TIM1-CCR1 RX pop.
-                if(pa == SPI1_DR) { pendingGoodCrc = true; lastTx.Clear(); }
+                if(pa == SPI1_DR) { pendingGoodCrc = true; }   // accumulate TX bytes (cleared via ClearTx)
                 RxPend rx = pendingRx.ContainsKey(pa) ? pendingRx[pa] : null;
                 for(uint i = 0; i < n; i++)
                 {
