@@ -132,7 +132,7 @@ def main():
             failures.append("FAIL bootstrap: not executable")
         check_value(bs, "MESH_ID", "bootstrap")
         check_value(bs, "MESH_SAE_KEY", "bootstrap")
-        for needle, label in (("mode 'mesh'", "mesh mode"), ("board_name", "port selection")):
+        for needle, label in (("mode='mesh'", "mesh mode"), ("board_name", "port selection")):
             if needle in bs:
                 print("  PASS bootstrap: %s present" % label)
             else:
