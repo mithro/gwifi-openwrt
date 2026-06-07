@@ -2,10 +2,10 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 OWRT=${OWRT:-/home/tim/local/gwifi/openwrt}
-SECRETS="$HERE/gale-secrets.conf"
-[ -f "$SECRETS" ] || { echo "missing $SECRETS (copy from .example)"; exit 1; }
+FLEET_SECRETS=${FLEET_SECRETS:-$HERE/../fleet-secrets.conf}
+[ -f "$FLEET_SECRETS" ] || { echo "missing $FLEET_SECRETS (copy from fleet-secrets.conf.example)"; exit 1; }
 # shellcheck disable=SC1090
-. "$SECRETS"
+. "$FLEET_SECRETS"
 : "${OPENWISP_SHARED_SECRET:?}"; : "${MESH_SAE_KEY:?}"; : "${MESH_ID:?}"; : "${OPENWISP_URL:?}"
 
 # 1) render overlay into the build tree (gitignored there)
@@ -23,6 +23,8 @@ find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__MESH_ID__|$mi|g" \
 	-e "s|__OPENWISP_URL__|$ou|g" {} +
 chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap"
+
+[ "${RENDER_ONLY:-0}" = "1" ] && { echo "rendered overlay to $OWRT/files (RENDER_ONLY)"; exit 0; }
 
 # 2) seed config: stock device config + our fragment
 { printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n';

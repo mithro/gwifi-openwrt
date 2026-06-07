@@ -14,6 +14,7 @@ photos/
 # key): committed overlay files use placeholders; real values live untracked
 # here. See docs/gale-autoprovision-mesh-design.md, "Secrets handling".
 gale-secrets.conf
+fleet-secrets.conf
 *.secret
 
 # Python / OS cruft and scratch.
