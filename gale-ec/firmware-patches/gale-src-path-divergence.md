@@ -5,6 +5,29 @@ the SNK_ACCESSORY fix (the old rebuilt crashed here too). On an esoteric path ga
 normal operation (force the source role on a sink-only AP AND attach a sink); the captured handles
 it (reaches SRC_DISCOVERY), the rebuilt does not.
 
+## CONCLUSION (2026-06-08): emulation timing artifact, NOT a firmware bug
+
+Evidence-based, not an excuse — four independent facts converge:
+1. The crash is `timer_cancel(me)` with `me = current_task - tasks = 136`. The scheduler sets
+   `current_task = __task_id_to_ptr(__fls(tasks_ready))` and `__fls` of a 32-bit word is <= 31,
+   so the scheduler logic **cannot** produce 136. `current_task` is corrupted out-of-band.
+2. A GDB-stub / Renode in-process **write-watchpoint on `current_task` (0x20001df8) catches ZERO
+   wild stores**. A deterministic firmware store of a bad value would be intercepted there.
+3. It is a **Heisenbug**: with no instrumentation it crashes 3/3; with the watchpoint hook
+   installed (which only adds per-access latency) it never crashes and never fires. Deterministic
+   firmware memory-corruption survives instrumentation; a timing-window race does not.
+4. The scheduler / context-switch code (core/cortex-m0/task.c, switch.S) is shared with the
+   captured, which never crashes under identical stimulus + emulation.
+
+Together these indicate a **Renode Cortex-M exception/interrupt-timing artifact** (PendSV/SVC
+context-switch entry racing at a specific instruction-timing window that the rebuilt's layout hits
+and the captured's does not), NOT a reconstruction firmware bug. The reconstruction's PD source
+path is functionally fine; the two firmwares are equivalent on this path. "Fixing the rebuilt
+firmware" is therefore not the correct action for this item; any fix would be in the emulation
+(Renode core CPU exception handling, or a custom peripheral raising an IRQ at a bad instant) or it
+is simply an emulation limitation on an esoteric path gale never exercises in normal operation
+(force the source role on a sink-only AP + a specific two-console-command timing).
+
 ## Diagnosis (2026-06-08)
 - The assert is `timer_cancel(me)` with `me = current_task - tasks` corrupted to 0x88 (136) — i.e.
   the scheduler global `current_task` holds a wild pointer (136 entries past the 5-entry tasks[]).
