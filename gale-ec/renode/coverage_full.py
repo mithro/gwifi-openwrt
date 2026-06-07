@@ -192,6 +192,12 @@ def scenarios(boot):
         "rw 0x20000000", "rw", "rw badaddr", "rw 0x20000000 0x1234",
         "spixfer", "spixfer rlen 0 0x9f 3", "spixfer 0", "spixfer badarg",
         "pd", "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump", "pd 0 dump 9", "pd 0 trysrc 1",
+        # full command_pd subcommand surface (same battery as coverage_captured for parity)
+        "pd dualrole", "pd dualrole on", "pd dualrole off", "pd dualrole sink", "pd dualrole source",
+        "pd dump 0", "pd dump 2", "pd enable 0", "pd enable 1", "pd trysrc 0",
+        "pd 0 state", "pd 0 soft", "pd 0 hard", "pd 0 ping", "pd 0 swap power", "pd 0 swap data",
+        "pd 0 swap bogus", "pd 0 vdm ping", "pd 0 vdm curr", "pd 0 vdm vers", "pd 0 tx",
+        "pd 0 bist_rx", "pd 0 bist_tx", "pd 0 charger", "pd 0 clock 48000000", "pd 0 dev 20",
         "tcpc", "tcpc 0", "typec", "typec 0", "flashinfo", "flashwp", "flashwp bogus",
         "gettime", "timerinfo", "taskinfo", "sysinfo", "panicinfo", "chan", "chan 0",
         "chan save", "chan restore", "shmem", "hcdebug", "hcdebug params", "hostevent",

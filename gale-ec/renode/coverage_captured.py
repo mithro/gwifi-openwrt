@@ -44,7 +44,14 @@ CMD_ARGS = [
     "gpioget EC_INT_L", "gpioget NOPE", "gpioset EC_INT_L 1", "gpioset BADPIN 1",
     "md 0x20000000 4", "md .b 0x08000000", "md badaddr", "rw 0x20000000", "rw badaddr",
     "spixfer rlen 0 0x9f 3", "spixfer 0", "spixfer badarg",
-    "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump 9", "pd 0 trysrc 1", "pd 0 dualrole source",
+    "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump 9", "pd 0 trysrc 1",
+    # full command_pd subcommand surface (correct syntax: `pd dualrole ...` has no port arg) —
+    # drives the command_pd dispatch branches AND initiates PD actions (soft/hard reset, swaps, VDM)
+    "pd dualrole", "pd dualrole on", "pd dualrole off", "pd dualrole sink", "pd dualrole source",
+    "pd dump", "pd dump 0", "pd dump 2", "pd enable 0", "pd enable 1", "pd trysrc 0", "pd trysrc 1",
+    "pd 0 state", "pd 0 soft", "pd 0 hard", "pd 0 ping", "pd 0 swap power", "pd 0 swap data",
+    "pd 0 swap bogus", "pd 0 vdm ping", "pd 0 vdm curr", "pd 0 vdm vers", "pd 0 tx",
+    "pd 0 bist_rx", "pd 0 bist_tx", "pd 0 charger", "pd 0 clock 48000000", "pd 0 dev 20",
     "pd 0 dualrole sink", "pd 0 dualrole toggle-off", "pd 0 dualrole freeze",
     "tcpc 0", "typec 0", "flashwp bogus", "flashwp enable", "flashwp now", "flashwp disable",
     "chan 0", "chan save", "chan restore", "hcdebug params", "gale power on ap", "gale power off ap",
@@ -113,6 +120,16 @@ def _pd_contract_post():
     msgs.append(pd_encode.SRC_CAP)            # re-send Source_Caps in READY (re-request path)
     for m in msgs:
         c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.1")
+    # GALE-INITIATED actions from SNK_READY (console), with the partner accepting each so the
+    # swap / soft-reset / VDM STATE machines actually run (SNK_SWAP_*, SOFT_RESET, DR_SWAP, VDM):
+    # gale TX's the request (auto-GoodCRC'd), we deliver an Accept then a PS_RDY via FireComp.
+    def cc(scmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
+    for action, mid0 in (("pd 0 swap power", 20), ("pd 0 swap data", 23),
+                         ("pd 0 vdm vers", 26), ("pd 0 soft", 28), ("pd 0 hard", 30)):
+        c += cc(action) + ['emulation RunFor "0.05"']
+        for off, mt in ((0, 3), (1, 6), (2, 3)):     # Accept, PS_RDY, Accept (covers swap+soft seq)
+            c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(pd_encode.ctrl(mt, mid0 + off))] + fire("0.1")
     return c
 
 
