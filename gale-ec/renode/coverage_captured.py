@@ -253,6 +253,13 @@ def scenarios(boot):
     # error-return branches (write/erase/protect failure paths), then clean re-runs.
     s.append(("fault_hc", [], [], boot, _fault_hc_post()))
     s.append(("fault_hc_rw", [], ["sysjump rw"], boot, _fault_hc_post()))
+    # Reset-cause variety: set the RCC_CSR reset-flag register (0x40021024) pre-boot so
+    # check_reset_cause() reads each cause (genuine HW state = what a real reset leaves behind):
+    # watchdog 0x60000000, soft 0x10000000, power-on 0x08000000, pin 0x04000000, other 0x02000000.
+    for tag, csr in (("wdt", 0x60000000), ("soft", 0x10000000), ("por", 0x08000000),
+                     ("pin", 0x04000000), ("other", 0x02000000)):
+        s.append(("rst_" + tag, ['sysbus WriteDoubleWord 0x40021024 0x%08X' % csr],
+                  ["sysinfo", "panicinfo"], "0.6", []))
     s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
     for c in CRASH:
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
