@@ -73,21 +73,23 @@ import re
 # Source-line classification of an uncovered branch. Distinguishes branches that are GENUINELY
 # unreachable on gale-as-built (so excludable with justification) from ones we simply have not
 # driven yet (the work-list). Keyed on the actual source text + function name.
+# ABSENT_HARDWARE only — peripherals gale physically lacks. PD source/swap states are NOT here
+# (they are driveable; see categorize()).
 _BOARD_DEAD = re.compile(
-    r'PD_STATE_SRC_(?!ACCESSORY)|PD_STATE_SNK_SWAP|PD_STATE_SRC_SWAP|PD_STATE_DR_SWAP|'
-    r'PD_STATE_VCONN_SWAP|PR_SWAP|power_role == PD_ROLE_SOURCE|DUAL_ROLE_IF_ELSE|'
-    r'\bcharge|\bbattery\b|keyboard|motion|lid_|backlight', re.I)
+    r'charge_manager|\bbattery\b|charger|keyboard|\bkb_|motion|\bals\b|tablet|backlight|'
+    r'lid_|power_button', re.I)
 _DEFENSIVE = re.compile(
     r'\bASSERT|\bpanic|should not|cannot happen|BUG\(|__builtin_unreachable|'
     r'default:|EC_ERROR_(UNKNOWN|INVAL|UNIMPLEMENTED)|/\* unreachable', re.I)
 
 
 _CASE = re.compile(r'^\s*case\s+(PD_STATE_\w+)\s*:')
-# Source-role / power-swap states a sink-only AP (gale: board_no_charger forces SINK, no battery to
-# source from) never enters. SRC_ACCESSORY is the ONE source state gale does reach (debug accessory
-# -> CCD), so it is NOT board-dead.
-_DEAD_STATE = re.compile(r'PD_STATE_SRC_(?!ACCESSORY)|PD_STATE_SNK_SWAP|PD_STATE_SRC_SWAP|'
-                         r'PD_STATE_DR_SWAP|PD_STATE_VCONN_SWAP')
+# CORRECTION (2026-06-07): PD source-role / power-swap states are NOT board-dead. gale's board
+# policy prefers SINK, but the state machine reaches the SOURCE states fine with `pd dualrole
+# source` + a sink partner (GaleAdc.PartnerSink) — VERIFIED: captured sources to SRC_DISCOVERY.
+# (The rebuilt currently crashes there = divergence #2, see gale-src-path-divergence.md, but that
+# is a bug to FIX, not a reason to excuse the branch.) So PD states are DRIVEABLE, not excluded.
+# The only genuinely board-dead code is for hardware gale physically lacks (keyboard/battery/...).
 
 
 def enclosing_case(file, line):
@@ -104,14 +106,13 @@ def enclosing_case(file, line):
 
 
 def categorize(func, file, line, text):
+    # ABSENT_HARDWARE: only code for peripherals gale physically lacks is genuinely unreachable.
+    if _BOARD_DEAD.search(text):
+        return "ABSENT_HARDWARE"
+    # DEFENSIVE asserts/panics: the failing side usually needs fault injection — driveable in
+    # principle (bad params, hardware-error injection), so flagged but NOT auto-excused.
     if _DEFENSIVE.search(text):
         return "DEFENSIVE"
-    if _BOARD_DEAD.search(text):
-        return "BOARD_DEAD"
-    # state-machine body: classify by the enclosing case label
-    case = enclosing_case(file, line)
-    if case and _DEAD_STATE.search(case):
-        return "BOARD_DEAD"
     return "DRIVEABLE"
 
 
@@ -137,8 +138,8 @@ def main():
             key = (func, file, line)
             groups.setdefault(key, []).append(state)
         if agg:
-            cats = {"DRIVEABLE": 0, "BOARD_DEAD": 0, "DEFENSIVE": 0}
-            cat_funcs = {"DRIVEABLE": {}, "BOARD_DEAD": {}, "DEFENSIVE": {}}
+            cats = {"DRIVEABLE": 0, "ABSENT_HARDWARE": 0, "DEFENSIVE": 0}
+            cat_funcs = {"DRIVEABLE": {}, "ABSENT_HARDWARE": {}, "DEFENSIVE": {}}
             for (func, file, line), states in groups.items():
                 txt = src_line(file, line)
                 c = categorize(func, file, line, txt)
@@ -146,7 +147,7 @@ def main():
                 cat_funcs[c][func] = cat_funcs[c].get(func, 0) + len(states)
             tot = sum(cats.values())
             print("\n=== %s: %d uncovered branches by category ===" % (img, tot))
-            for c in ("DRIVEABLE", "BOARD_DEAD", "DEFENSIVE"):
+            for c in ("DRIVEABLE", "ABSENT_HARDWARE", "DEFENSIVE"):
                 print("  %-12s %4d   top: %s" % (
                     c, cats[c], ", ".join("%s(%d)" % (f, n) for f, n in
                                           sorted(cat_funcs[c].items(), key=lambda k: -k[1])[:6])))

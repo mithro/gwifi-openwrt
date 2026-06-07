@@ -68,6 +68,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // any image without the per-firmware cc_pull RAM address.
         public bool ForceAccessory { get; set; }
 
+        // Address-independent NORMAL SINK partner attached to gale-as-SOURCE: present ONE CC in the
+        // Rd band (sink on CC1) and the other OPEN (>= VNC). When gale is forced to source
+        // (`pd dualrole source`), it sees a single Rd -> SRC_DISCONNECTED_DEBOUNCE -> SRC_STARTUP
+        // -> SRC_DISCOVERY (sends Source_Caps) -> ... -> SRC_READY. This drives the SOURCE-side
+        // contract states (previously mis-classified board-dead): they ARE reachable with a sink
+        // partner, not structurally impossible.
+        public bool PartnerSink { get; set; }
+
         public void Reset()
         {
             isr = 0; ier = 0; cr = 0; cfgr1 = 0; cfgr2 = 0;
@@ -154,6 +162,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 {
                     return CC_RD_BAND_RAW;
                 }
+                if(PartnerSink)     // normal sink on CC1, CC2 open -> gale-as-source attaches a sink
+                {
+                    return chselr == (1u << AIN_CC1) ? CC_RD_BAND_RAW : CC_OPEN_RAW;
+                }
                 if(ForceSourceCc)   // address-independent: constant source on CC1
                 {
                     return chselr == (1u << AIN_CC1) ? CC_RD_BAND_RAW : 0u;
@@ -213,7 +225,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const byte TYPEC_CC_RP = 1;
         private const byte TYPEC_CC_RD = 2;
 
-        // ~800 mV in the CC channels' 3300/4096 scale: 800*4096/3300 = 993.
+        // ~800 mV in the CC channels' 3300/4096 scale: 800*4096/3300 = 993. In the source RD band
+        // [400,1600)mV so gale-as-source reads it as a sink (Rd) attached.
         private const uint CC_RD_BAND_RAW = 993;
+        // ~1800 mV >= PD_SRC_1_5_VNC_MV (1600) -> CC_NC (open) for a source: the unused CC line.
+        private const uint CC_OPEN_RAW = 2234;
     }
 }
