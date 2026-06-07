@@ -18,6 +18,7 @@ include $h/peripherals/GaleSpiFlash.cs
 include $h/peripherals/GaleUsb.cs
 include $h/peripherals/GaleAdc.cs
 include $h/peripherals/GaleExti.cs
+include $h/peripherals/GaleI2c.cs
 
 # Stock STM32F072 platform (CPU, NVIC, GPIO, USART, SPI, I2C, timers, ADC, EXTI...)
 machine LoadPlatformDescription @platforms/cpus/stm32f072.repl
@@ -27,6 +28,7 @@ sysbus Unregister sysbus.DMA
 sysbus Unregister sysbus.adc
 sysbus Unregister sysbus.timer2
 sysbus Unregister sysbus.exti
+sysbus Unregister sysbus.i2c1
 machine LoadPlatformDescription $h/gale.repl
 
 # Real option-byte values (RDP=0xAA level 0, WRP=0xFF none) at 0x1FFFF800.
