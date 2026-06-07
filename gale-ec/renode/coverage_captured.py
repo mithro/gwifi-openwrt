@@ -214,6 +214,35 @@ def disasm_branches(binpath):
     return set(insns), cond
 
 
+# Hard per-process RSS ceiling for each renode (mono) instance via a transient systemd cgroup
+# scope. RLIMIT_AS is unusable here — mono reserves tens of GB of *virtual* space, so an address-
+# space cap kills it even at modest real usage; MemoryMax caps actual resident memory and the
+# cgroup OOM-kills only if the run genuinely exceeds it. One gale machine + a file-streamed trace
+# sits well under 2.5 GiB. Override with RENODE_MEM_MAX (systemd size, e.g. "3G").
+RENODE_MEM_MAX = os.environ.get("RENODE_MEM_MAX", "2500M")
+
+
+def _renode_cmd(monitor_script):
+    base = ["renode", "--disable-gui", "--console", "-e", monitor_script]
+    # Prefer a cgroup RSS cap; fall back to bare renode if systemd-run is unavailable.
+    if _HAVE_SYSTEMD_RUN:
+        return ["systemd-run", "--user", "--scope", "-q",
+                "-p", "MemoryMax=%s" % RENODE_MEM_MAX, "-p", "MemorySwapMax=0"] + base
+    return base
+
+
+def _have_systemd_run():
+    try:
+        return subprocess.run(["systemd-run", "--user", "--scope", "-q", "true"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+_HAVE_SYSTEMD_RUN = _have_systemd_run()
+
+
 def run_scenario(name, mon, cmds, boot, post, binpath):
     trace = os.path.join(TMP, "cap_%s.txt" % name)
     c = ['$h=@%s' % HERE, '$bin=@%s' % binpath, '$name="cap"', 'include @%s' % BASE] + mon
@@ -223,8 +252,9 @@ def run_scenario(name, mon, cmds, boot, post, binpath):
         c.append('emulation RunFor "0.06"')
     c += (post or [])
     c += ['cpu DisableExecutionTracing', 'quit']
-    subprocess.run(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=600)
+    # Single renode at a time (no parallelism), RSS-capped via a transient systemd scope.
+    subprocess.run(_renode_cmd("; ".join(c)),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=900)
     return trace
 
 
@@ -272,9 +302,11 @@ def main():
             executed, edges = pickle.load(f)
         print("  reusing cached trace: %d executed PCs, %d edges" % (len(executed), len(edges)))
     else:
-        for name, mon, cmds, boot, post in scns:
-            print("  scenario: %-16s" % name)
-            fold_edges(run_scenario(name, mon, cmds, boot, post, binpath), executed, edges)
+        # SERIAL: one renode at a time (keeps peak memory low — no concurrent VM instances). Each
+        # renode process is additionally memory-capped (see run_scenario).
+        for (n, m, c, b, p) in scns:
+            print("  scenario: %-16s" % n)
+            fold_edges(run_scenario(n, m, c, b, p, binpath), executed, edges)
         import pickle
         with open(cache, "wb") as f:
             pickle.dump((executed, edges), f)

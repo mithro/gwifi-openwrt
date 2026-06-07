@@ -265,6 +265,32 @@ def disasm_branches(elf):
     return set(insns), cond, sym
 
 
+# Per-process RSS cap for renode via a transient systemd cgroup scope (RLIMIT_AS is unusable —
+# mono reserves tens of GB of virtual space). One gale machine + a file-streamed trace fits under
+# 2.5 GiB. Scenarios run SERIALLY (one renode at a time) — no parallel jobs.
+RENODE_MEM_MAX = os.environ.get("RENODE_MEM_MAX", "2500M")
+
+
+def _have_systemd_run():
+    try:
+        return subprocess.run(["systemd-run", "--user", "--scope", "-q", "true"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+_HAVE_SYSTEMD_RUN = _have_systemd_run()
+
+
+def _renode_cmd(monitor_script):
+    base = ["renode", "--disable-gui", "--console", "-e", monitor_script]
+    if _HAVE_SYSTEMD_RUN:
+        return ["systemd-run", "--user", "--scope", "-q",
+                "-p", "MemoryMax=%s" % RENODE_MEM_MAX, "-p", "MemorySwapMax=0"] + base
+    return base
+
+
 def run_scenario(name, mon, cmds, boot, post=None):
     trace = os.path.join(TMP, "cov_%s.txt" % name)
     c = ['$h=@%s' % HERE, '$bin=@%s' % REBUILT, '$name="cov"', 'include @%s' % BASE] + mon
@@ -275,8 +301,8 @@ def run_scenario(name, mon, cmds, boot, post=None):
         c.append('emulation RunFor "0.08"')
     c += (post or [])              # post-boot monitor commands (e.g. PD message injection)
     c += ['cpu DisableExecutionTracing', 'quit']
-    subprocess.run(["renode", "--disable-gui", "--console", "-e", "; ".join(c)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=600)
+    subprocess.run(_renode_cmd("; ".join(c)),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=900)
     return trace
 
 
