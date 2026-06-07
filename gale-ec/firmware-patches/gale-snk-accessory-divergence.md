@@ -60,6 +60,27 @@ uv run --python .venv python capture_console.py --bin ec-rebuilt.bin \
 strings <bin> | grep -E '^SNK_' | sort -u
 ```
 
+## Exact enum position (reverse-engineered from the captured pd_state_names[])
+
+The captured `pd_state_names[]` table is at **0x0800d638** (37 entries). `SNK_ACCESSORY` is at
+**index 4**, inserted between `SNK_DISCONNECTED_DEBOUNCE` (3) and `SNK_HARD_RESET_RECOVER` (5);
+every other state matches the upstream order exactly (so all states after index 3 are shifted +1
+vs the reconstruction's 36-state enum — this is also why captured `pd 0 state` prints higher
+`stN` numbers than the rebuilt). Full captured order: DISABLED, SUSPENDED, SNK_DISCONNECTED,
+SNK_DISCONNECTED_DEBOUNCE, **SNK_ACCESSORY**, SNK_HARD_RESET_RECOVER, SNK_DISCOVERY, SNK_REQUESTED,
+SNK_TRANSITION, SNK_READY, SNK_SWAP_INIT, SNK_SWAP_SNK_DISABLE, SNK_SWAP_SRC_DISABLE,
+SNK_SWAP_STANDBY, SNK_SWAP_COMPLETE, SRC_DISCONNECTED, SRC_DISCONNECTED_DEBOUNCE, SRC_ACCESSORY,
+SRC_HARD_RESET_RECOVER, SRC_STARTUP, SRC_DISCOVERY, SRC_NEGOCIATE, SRC_ACCEPTED, SRC_POWERED,
+SRC_TRANSITION, SRC_READY, SRC_GET_SNK_CAP, DR_SWAP, SRC_SWAP_INIT, SRC_SWAP_SNK_DISABLE,
+SRC_SWAP_SRC_DISABLE, SRC_SWAP_STANDBY, SOFT_RESET, HARD_RESET_SEND, HARD_RESET_EXECUTE,
+BIST_RX, BIST_TX.
+
+Behaviour (from the observable): on entry SNK_ACCESSORY calls `ccd_set_mode(ENABLED)` (USB
+comes up, CNTR=0xE400), and the port is reached from `SNK_DISCONNECTED_DEBOUNCE` when both CC
+lines read the Rd band (debug accessory) while sinking. The exact handler body still needs to be
+read from the captured pd_task's case-4 disassembly to guarantee byte/behaviour-identical
+equivalence (not just "reaches the state").
+
 ## Fix (reconstruction work required)
 
 Restore `PD_STATE_SNK_ACCESSORY` to the gale reconstruction's `common/usb_pd_protocol.c` (and the
