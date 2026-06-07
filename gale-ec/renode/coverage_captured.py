@@ -19,7 +19,9 @@ import os
 import re
 import subprocess
 
-import coverage_full   # reuse the address-independent scenario helpers (console-edit, faults, cmd args)
+import coverage_full
+import hostcmd   # reuse the address-independent scenario helpers (console-edit, faults, cmd args)
+import rda       # validated recursive-descent disassembler -> honest branch denominator
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
@@ -127,9 +129,7 @@ def scenarios(boot):
         s.append(("crash_" + c.split()[1], [], [c], boot, []))
         s.append(("crashrw_" + c.split()[1], [], ["sysjump rw", c], boot, []))
     # AP host commands (address-independent injector) — RO and RW
-    hc = []
-    for p in host_cmd_battery():
-        hc += ['sysbus.i2c1 HostCmd "%s"' % p, 'emulation RunFor "0.05"']
+    hc = hostcmd.post([])
     s.append(("hostcmd", [], [], boot, hc))
     s.append(("hostcmd_rw", [], ["sysjump rw"], boot, hc))
     # address-independent high-yield scenarios (reused from coverage_full)
@@ -190,7 +190,11 @@ def run_scenario(name, mon, cmds, boot, post, binpath):
     return trace
 
 
-def fold(path, cond, executed, taken, nottaken):
+def fold_edges(path, executed, edges):
+    """Pass 1: collect executed PCs and the set of directed control-flow edges (prev -> pc) from
+    a trace. We do NOT need the branch map yet — the rda denominator is built afterward, seeded by
+    `executed`, then taken/not-taken are derived from `edges`. Edges are deduplicated, so memory is
+    bounded by the number of distinct transitions, not trace length."""
     prev = None
     if not os.path.exists(path):
         return
@@ -202,12 +206,8 @@ def fold(path, cond, executed, taken, nottaken):
                 continue
             pc = int(ln, 16)
             executed.add(pc)
-            if prev is not None and prev in cond:
-                fa, tg = cond[prev]
-                if pc == tg:
-                    taken.add(prev)
-                elif pc == fa:
-                    nottaken.add(prev)
+            if prev is not None:
+                edges.add((prev, pc))
             prev = pc
     os.remove(path)
 
@@ -216,31 +216,76 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=CAPTURED)
     ap.add_argument("--boot", default="2.0")
+    ap.add_argument("--reuse", action="store_true",
+                    help="reuse cached executed/edges from the last run (skip renode) — for fast "
+                         "re-analysis after denominator/reporting changes")
     args = ap.parse_args()
     os.makedirs(TMP, exist_ok=True)
     binpath = os.path.abspath(args.bin)
-    all_insn, cond = disasm_branches(binpath)
     scns = scenarios(args.boot)
+    cache = os.path.join(TMP, "cap_trace_cache.pkl")
     print("CAPTURED firmware coverage: %s (%d scenarios)" % (os.path.basename(binpath), len(scns)))
-    executed, taken, nottaken = set(), set(), set()
-    for name, mon, cmds, boot, post in scns:
-        print("  scenario: %-16s" % name)
-        fold(run_scenario(name, mon, cmds, boot, post, binpath), cond, executed, taken, nottaken)
-    # Only count branches in EXECUTED code regions (raw disasm includes literal-pool data that
-    # is never executed; a branch is "real code" if reached, or adjacent to reached instructions).
+
+    # Pass 1: run every scenario, collecting executed PCs + control-flow edges (or reuse the cache).
+    executed, edges = set(), set()
+    if args.reuse and os.path.exists(cache):
+        import pickle
+        with open(cache, "rb") as f:
+            executed, edges = pickle.load(f)
+        print("  reusing cached trace: %d executed PCs, %d edges" % (len(executed), len(edges)))
+    else:
+        for name, mon, cmds, boot, post in scns:
+            print("  scenario: %-16s" % name)
+            fold_edges(run_scenario(name, mon, cmds, boot, post, binpath), executed, edges)
+        import pickle
+        with open(cache, "wb") as f:
+            pickle.dump((executed, edges), f)
+
+    # HONEST, FIXED denominator: recursive-descent disassembly (rda, validated 0-FP/0-FN vs the
+    # rebuilt ELF) seeded by the vector table, EVERY function-pointer-table target, AND every
+    # executed PC. Seeding with the pointer-table targets (DECLARE_HOST_COMMAND / CONSOLE / HOOK /
+    # task list) makes the denominator COMPLETE and STABLE — it counts the branches inside
+    # functions the suite has not yet entered, so the total does not grow as coverage improves.
+    # No flat-disasm phantom branches.
+    seeds = set(executed) | rda.ptr_targets(binpath)
+    insns, cond, calls = rda.analyze(binpath, extra_seeds=seeds)
+    taken = set(a for a in cond if (a, cond[a][1]) in edges)         # branch -> target edge seen
+    nottaken = set(a for a in cond if (a, cond[a][0]) in edges)      # branch -> fall-through seen
+
     reached = [a for a in cond if a in executed]
     both = [a for a in cond if a in taken and a in nottaken]
-    ex = executed & all_insn
-    print("\n=== CAPTURED firmware ===")
-    print("  instructions executed: %d" % len(ex))
-    print("  cond branches (raw disasm): %d total, %d reached, %d both-dirs covered" %
+    ex = executed & insns
+    print("\n=== CAPTURED firmware (rda denominator) ===")
+    print("  instructions: %d executed / %d in recursive-descent code" % (len(ex), len(insns)))
+    print("  cond branches: %d total (rda), %d reached, %d both-dirs covered" %
           (len(cond), len(reached), len(both)))
-    print("  branch coverage: %.1f%% of reached both-dirs" % (100.0 * len(both) / max(len(reached), 1)))
-    uncov = sorted(a for a in reached if a not in (set(taken) & set(nottaken)))
+    print("  branch coverage: %.1f%% of total, %.1f%% of reached both-dirs" %
+          (100.0 * len(both) / max(len(cond), 1), 100.0 * len(both) / max(len(reached), 1)))
+
+    # Every uncovered branch (unreached, or reached one-direction-only) with its state, for the
+    # grind / exclusion-justification analysis.
+    uncov = sorted(a for a in cond if a not in (taken & nottaken))
     with open(os.path.join(HERE, "cap_uncovered.txt"), "w") as f:
         for a in uncov:
-            f.write("0x%08x %s\n" % (a, "taken-only" if a in taken else ("nottaken-only" if a in nottaken else "?")))
-    print("  reached-but-one-direction branches -> cap_uncovered.txt (%d)" % len(uncov))
+            if a not in executed:
+                st = "unreached"
+            elif a in taken:
+                st = "taken-only"
+            elif a in nottaken:
+                st = "nottaken-only"
+            else:
+                st = "reached-nofold"
+            f.write("0x%08x %s\n" % (a, st))
+    print("  wrote %d uncovered branches -> cap_uncovered.txt" % len(uncov))
+
+    # Completeness pass: function-pointer-table targets the suite never entered (dead-code
+    # candidates to drive or justify) — the union check the goal demands ("no dead code").
+    ptrs = rda.ptr_targets(binpath)
+    never = sorted(p for p in ptrs if p not in executed)
+    with open(os.path.join(HERE, "cap_unentered_funcs.txt"), "w") as f:
+        for p in never:
+            f.write("0x%08x\n" % p)
+    print("  pointer-table targets never entered: %d -> cap_unentered_funcs.txt" % len(never))
 
 
 if __name__ == "__main__":
