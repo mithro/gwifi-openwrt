@@ -73,14 +73,15 @@ apply_serve() {  # $1 = on|off  (AP BSSes only; the 802.11s mesh is supplicant-m
 	_want=$1; _act=disable; [ "$_want" = on ] && _act=enable
 	for obj in $(ubus list | parse_hostapd_objs); do
 		_mode=$(ubus call "$obj" get_status | grep -oE '"mode": ?"[a-z]+"' | cut -d'"' -f4)
-		[ "$_mode" = mesh ] && continue          # belt-and-suspenders guard (mesh stays up)
+		[ "$_mode" = mesh ] && continue          # best-effort guard; real protection: mesh has no hostapd.* obj
 		ubus call "$obj" "$_act" >/dev/null
 	done
 	logger -t "$LOG_TAG" "serve -> $_want"
 }
 
-# ---- main -----------------------------------------------------------------
-main() {
+# ---- evaluate (no side effects) -------------------------------------------
+# Sets globals cur fail wired gw role serve newfail. Shared by main + status.
+_eval() {
 	cur=off; fail=0
 	if [ -r "$STATE" ]; then read -r cur fail < "$STATE" || true; fi
 	case "$cur" in on|off) : ;; *) cur=off ;; esac
@@ -92,13 +93,27 @@ main() {
 	set -- $(decide "$wired" "$gw" "$fail" "$K" "$cur")
 	role=$1; serve=$2; newfail=$3
 	[ "$newfail" -gt "$K" ] && newfail="$K"   # clamp persisted counter (Task 1 review)
+}
 
+# ---- main (--once: evaluate + actuate + persist) --------------------------
+main() {
+	_eval
 	apply_role "$role"
 	apply_serve "$serve"
 	printf '%s %s\n' "$serve" "$newfail" > "$STATE"
 }
 
+# ---- status (--status: print derived decision; no actuation, no persist) --
+status() {
+	_eval
+	printf 'wired=%s gw_present=%s cur_serve=%s fail=%s -> role=%s serve=%s newfail=%s\n' \
+		"$wired" "$gw" "$cur" "$fail" "$role" "$serve" "$newfail"
+}
+
 case "${GWIFI_GATE_SOURCED:-}" in
 	1) : ;;            # sourced (tests) — do not run
-	*) main "$@" ;;
+	*) case "${1:-}" in
+		--status) status ;;
+		*)        main "$@" ;;
+	   esac ;;
 esac

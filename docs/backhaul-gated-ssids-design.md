@@ -178,17 +178,18 @@ OpenWISP: **no template change required.** Gating is runtime-only via ubus and d
 ## 13. File inventory (delta)
 
 ```
-gale-image/files/usr/sbin/gwifi-backhaul-gate                 (new, shared)
-gale-image/files/etc/hotplug.d/net/30-gwifi-backhaul         (new, shared)
-gale-image/files/etc/uci-defaults/99-gale-bootstrap          (edit: install cron line, fail-closed init)
-om2p-image/files/usr/sbin/gwifi-backhaul-gate                 (new, identical copy)
-om2p-image/files/etc/hotplug.d/net/30-gwifi-backhaul         (new, identical copy)
-om2p-image/files/etc/uci-defaults/99-om2p-bootstrap          (edit: install cron line, fail-closed init)
-verify-gale-image.py / verify-om2p-image.py                   (edit: assert presence)
-docs/backhaul-gated-ssids-plan.md                             (next: implementation plan)
+fleet-files/usr/sbin/gwifi-backhaul-gate                     (new, shared canonical source)
+fleet-files/etc/hotplug.d/net/30-gwifi-backhaul             (new, shared canonical source)
+gale-image/build-gale-image.sh, om2p-image/build-om2p-image.sh  (edit: merge fleet-files/ + chmod)
+gale-image/files/etc/uci-defaults/99-gale-bootstrap         (edit: install cron line; fail-closed = script default serve=OFF)
+om2p-image/files/etc/uci-defaults/99-om2p-bootstrap         (edit: install cron line, before the radio0-deferral exit 1)
+gale-image/verify-gale-image.py, om2p-image/verify-om2p-image.py  (edit: assert gate+hotplug present/exec + cron snippet)
+tests/backhaul-gating/test-decide.sh                         (new: decide()/parser unit tests)
+tests/backhaul-gating/{netns-harness.sh,fake-ubus}          (new: live netns+batman integration harness)
+docs/backhaul-gated-ssids-plan.md                           (implementation plan)
 ```
 
-(The two new files are byte-identical across the images; the plan will keep them DRY via a single source copied into both overlays at build time, mirroring how `fleet-secrets.conf` is shared.)
+(As-built: the two overlay files live ONCE in `fleet-files/` and are merged into both images at build time by the build scripts — DRY, mirroring how `fleet-secrets.conf` is shared.)
 
 ## Spike findings & locked decisions (Task 0)
 
