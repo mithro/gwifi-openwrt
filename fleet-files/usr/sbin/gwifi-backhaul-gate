@@ -39,7 +39,64 @@ parse_gwl_count() { grep -vE '^\[' | grep -cE '([0-9a-f]{2}:){5}[0-9a-f]{2}' || 
 # parse_hostapd_objs (stdin = `ubus list`) -> hostapd.<iface> object names (AP BSSes).
 parse_hostapd_objs() { grep -E '^hostapd\.' || true; }
 
-main() { :; }   # filled in Task 3
+# ---- system probes --------------------------------------------------------
+discover_uplink_member() {
+	ls "/sys/class/net/$MGMT_BR/brif" | parse_uplink_member "$MGMT_VID"
+}
+discover_gateway() { ip -4 route show default dev "$MGMT_BR" | parse_gateway; }
+
+# wired_reaches_gw -> 0 (true) iff ten64 is reachable specifically via the wired
+# uplink. Q1 baseline (Task 0 spike): carrier + FDB-port confirmation after a
+# priming ping. (arping -I is a bench-confirmable upgrade; not used day-one.)
+wired_reaches_gw() {
+	_member=$(discover_uplink_member); [ -n "$_member" ] || return 1
+	_uplink=${_member%.*}
+	[ -r "/sys/class/net/$_uplink/carrier" ] || return 1
+	[ "$(cat "/sys/class/net/$_uplink/carrier")" = 1 ] || return 1
+	_gw=$(discover_gateway); [ -n "$_gw" ] || return 1
+	ping -c1 -w2 -I "$MGMT_BR" "$_gw" >/dev/null || return 1   # prime neigh (any path)
+	_mac=$(ip neigh show "$_gw" dev "$MGMT_BR" \
+		| awk '{for(i=1;i<NF;i++) if($i=="lladdr"){print $(i+1); exit}}')
+	[ -n "$_mac" ] || return 1
+	bridge fdb show br "$MGMT_BR" | grep -iq "$_mac dev $_member"   # learned on wired port?
+}
+gw_present() { [ "$(batctl gwl | parse_gwl_count)" -gt 0 ]; }
+
+# ---- actuators (idempotent) ----------------------------------------------
+apply_role() {  # $1 = server|client
+	_want=$1; _cur=$(batctl gw | awk '{print $1}')
+	case "$_cur" in "$_want"*) return 0 ;; esac
+	if [ "$_want" = server ]; then batctl gw server "$GW_BW"; else batctl gw client; fi
+	logger -t "$LOG_TAG" "gw_mode -> $_want"
+}
+apply_serve() {  # $1 = on|off  (AP BSSes only; the 802.11s mesh is supplicant-managed)
+	_want=$1; _act=disable; [ "$_want" = on ] && _act=enable
+	for obj in $(ubus list | parse_hostapd_objs); do
+		_mode=$(ubus call "$obj" get_status | grep -o '"mode":"[a-z]*"' | cut -d'"' -f4)
+		[ "$_mode" = mesh ] && continue          # belt-and-suspenders guard (mesh stays up)
+		ubus call "$obj" "$_act" >/dev/null
+	done
+	logger -t "$LOG_TAG" "serve -> $_want"
+}
+
+# ---- main -----------------------------------------------------------------
+main() {
+	cur=off; fail=0
+	if [ -r "$STATE" ]; then read -r cur fail < "$STATE" || true; fi
+	case "$cur" in on|off) : ;; *) cur=off ;; esac
+	case "$fail" in ''|*[!0-9]*) fail=0 ;; esac
+
+	wired=0; gw=0
+	if wired_reaches_gw; then wired=1; else gw_present && gw=1; fi
+
+	set -- $(decide "$wired" "$gw" "$fail" "$K" "$cur")
+	role=$1; serve=$2; newfail=$3
+	[ "$newfail" -gt "$K" ] && newfail="$K"   # clamp persisted counter (Task 1 review)
+
+	apply_role "$role"
+	apply_serve "$serve"
+	printf '%s %s\n' "$serve" "$newfail" > "$STATE"
+}
 
 case "${GWIFI_GATE_SOURCED:-}" in
 	1) : ;;            # sourced (tests) — do not run
