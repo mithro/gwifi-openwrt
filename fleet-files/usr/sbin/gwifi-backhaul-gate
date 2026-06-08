@@ -1,0 +1,34 @@
+#!/bin/sh
+# gwifi-backhaul-gate — gate client SSIDs on backhaul reachability to ten64,
+# using batman-adv gateway mode as a distributed signal. Board-agnostic.
+# Invoked by cron (--once) and /etc/hotplug.d/net. See
+# docs/backhaul-gated-ssids-design.md. Sourceable for tests via GWIFI_GATE_SOURCED=1.
+set -u
+
+K=${GWIFI_GATE_K:-3}                 # consecutive no-backhaul cycles before gating off
+GW_BW=${GWIFI_GATE_BW:-100mbit/100mbit}
+STATE=${GWIFI_GATE_STATE:-/tmp/gwifi-backhaul.state}   # "CUR_SERVE FAIL_COUNT"
+MGMT_BR=${GWIFI_GATE_MGMT_BR:-br-mgmt}
+MGMT_VID=${GWIFI_GATE_MGMT_VID:-5}
+LOG_TAG=gwifi-backhaul
+
+# ---- pure decision logic (unit-tested) ------------------------------------
+# decide WIRED_OK GW_PRESENT FAIL_COUNT K CUR_SERVE -> "ROLE SERVE NEW_FAIL"
+decide() {
+	_wired=$1; _gw=$2; _fail=$3; _k=$4; _cur=$5
+	if [ "$_wired" = 1 ]; then echo "server on 0"; return; fi
+	if [ "$_gw" = 1 ]; then echo "client on 0"; return; fi
+	_fail=$((_fail + 1))
+	if [ "$_cur" = on ] && [ "$_fail" -lt "$_k" ]; then
+		echo "client on $_fail"        # debounce: was serving, still in grace
+	else
+		echo "client off $_fail"       # cold start, or grace exhausted -> fail-closed
+	fi
+}
+
+main() { :; }   # filled in Task 3
+
+case "${GWIFI_GATE_SOURCED:-}" in
+	1) : ;;            # sourced (tests) — do not run
+	*) main "$@" ;;
+esac
