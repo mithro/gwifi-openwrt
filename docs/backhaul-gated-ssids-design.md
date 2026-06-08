@@ -189,3 +189,64 @@ docs/backhaul-gated-ssids-plan.md                             (next: implementat
 ```
 
 (The two new files are byte-identical across the images; the plan will keep them DRY via a single source copied into both overlays at build time, mirroring how `fleet-secrets.conf` is shared.)
+
+## Spike findings & locked decisions (Task 0)
+
+- **Date:** 2026-06-09. **Status:** spike complete — Q2 + Q7 confirmed live; Q1/Q3/Q4 defaults locked (device-specifics flagged bench-to-confirm).
+- **Where:** Linux dev box only (no hardware touched, ten64/client data path untouched). Throwaway harness `tmp/spike-batman-netns.sh` (removed after recording, per the `tmp/` cleanup rule).
+- **Versions exercised:** `batman-adv` kernel module **2024.2** (`modprobe batman-adv`, Debian trixie kernel 6.12.57), `batctl` **debian-2025.0-2** (installs to `/usr/sbin/batctl`, *not* on the default user `PATH`). NB the field images run a different (OpenWrt-shipped) batman-adv build, so absolute timings below are indicative, not contractual — the *semantics* are what's locked.
+
+### Q2 + Q7 — batman gateway-list propagation (CONFIRMED live, netns)
+
+Harness: 3 network namespaces in a **line** (not a shared segment) — `n1 ==veth== n2 ==veth== n3`, each with its own `bat0`; **n2 is the relay** (its `bat0` enslaves both veths), so n3 is genuinely 2 hops from n1. `n1 = batctl gw server 100mbit/100mbit`, `n2`/`n3 = batctl gw client`. (Modern batctl syntax: `batctl meshif bat0 interface add <veth>`, `… gw server|client|off`, `… gwl`.)
+
+**Q2 — `gwl` populates in client mode and empties when the server stops:** while n1 ran as server, the 1-hop client (n2) listed it:
+
+```
+=== Q2 :: gwl on n2 (1 hop) — expect n1 listed while server runs ===
+  Router            ( TQ) Next Hop          [outgoingIf]  Bandwidth
+* 26:2a:01:4f:f6:9e (102) 26:2a:01:4f:f6:9e [       vA2]: 100.0/100.0 MBit
+```
+
+After `n1 batctl gw off`, both client gateway lists dropped the gateway row at **t≈2 s** (polled once per second; the `[B.A.T.M.A.N. adv …]` banner remains but carries **no** gateway entry):
+
+```
+  t=  1s  n2_gw_rows=1  n3_gw_rows=1
+  t=  2s  n2_gw_rows=0  n3_gw_rows=0
+  -> n2 gateway list drained at t=2s
+  -> n3 gateway list drained at t=2s
+
+=== Q2 :: gwl on n2 AFTER gw off ===
+  Router            ( TQ) Next Hop          [outgoingIf]  Bandwidth          # <- header only, no row
+```
+
+→ `batctl gwl` is a valid, fast-reacting backhaul signal: populated iff a server is reachable, drained within a couple of seconds of the last server leaving. (Server→on is effectively immediate on the next OGM.)
+
+**Q7 — multi-hop propagation works:** the 2-hop client (n3, reachable from n1 only via the n2 relay) **also** listed the gateway, with the relay as next hop and a degraded TQ — i.e. it is a genuine relayed entry, not a same-segment artifact:
+
+```
+=== Q7 :: gwl on n3 (2 hops via n2 relay) ===
+  Router            ( TQ) Next Hop          [outgoingIf]  Bandwidth
+* 26:2a:01:4f:f6:9e ( 35) 16:a5:8c:15:2d:70 [       vB3]: 100.0/100.0 MBit
+```
+
+Note the **Next Hop is n2's interface MAC (`16:a5:8c:15:2d:70`), not n1's gateway MAC (`26:2a:01:4f:f6:9e`)**, and TQ fell from 102 (n2, 1 hop) to 35 (n3, 2 hops) — confirming the announcement was relayed across a hop. `originators` on n3 corroborated: n1 appears with Nexthop = n2. The gateway TVLV rides batman's own OGMs over the hardif, independent of any L2 relaying, exactly as §7.4/Q7 hypothesised.
+
+**Caveat (unchanged from §11.2/§11.4):** veth links are lossless and the relay was an explicit two-hardif `bat0`. This proves the *propagation mechanism* (gateway TVLV survives a relay hop and `gwl` reflects it end-to-end), **not** RF behaviour or the `mesh_fwding=0` interaction on real 802.11s — those remain **bench-to-confirm** (§11.4). With `mesh_fwding=0` the OGMs are still batman broadcasts on the hardif, so the expectation is unchanged, but it must be verified on metal.
+
+### Q1 — `wired_ok` isolation primitive (LOCKED default; upgrade bench-gated)
+
+- **Locked baseline (no extra package, ships day one):** carrier check (`/sys/class/net/<uplink>/carrier == 1`) **then** FDB-port confirmation after a priming ping — `ping -c1 -w1 <gw_ip>`, read `gw_mac` from `ip neigh`, confirm the bridge learned it on the **wired** port (`bridge fdb show | grep -i "<gw_mac>.*dev <uplink>.5"`). This needs nothing beyond busybox + iproute2 already in the image.
+- **Preferred upgrade (bench-gated):** `arping -I <uplink>.5 -c1 -w1 <gw_ip>` — strictly more honest than FDB (FDB can show a *false* wired-exit when BLA bridges mesh-origin traffic for ten64's MAC back onto the wired port). Adopt it **iff** the bench confirms `arping -I` actually egresses the bridge-enslaved `.5` sub-iface on the OpenWrt build (and that the `arping` applet/pkg is present); otherwise stay on the FDB baseline.
+- **Either way** the whole probe is isolated in one function `wired_reaches_gw()` so swapping the primitive is a one-function change with no effect on the decision logic. The *contract* ("ten64 reachable specifically via my wired uplink") is fixed; only the implementation is bench-selectable.
+
+### Q3 / Q4 — hostapd ubus gating (LOCKED default; behaviour bench-to-confirm)
+
+- **Q3 (target-set safety):** client AP BSSes register `hostapd.<ifname>` ubus objects; the 802.11s mesh is **wpa_supplicant-managed and has no `hostapd.*` object**, so enumerating `hostapd.*` cannot reach the mesh. **Locked:** target set = `ubus list | grep '^hostapd\.'`, **plus** an explicit hard guard that refuses to act on any iface whose mode is `mesh` (belt-and-braces, kept regardless of the enumeration result). (`ubus`/`hostapd.*` object presence to be reconfirmed on 25.12.4 at the bench.)
+- **Q4 (actuation):** **Locked:** `ubus call hostapd.<bss> disable` / `… enable` for runtime BSS down/up — no uci edit (never fights OpenWISP's pushed config) and no radio reload. Bench must confirm on 25.12.4 that `disable` actually stops beacons and `enable` restores the BSS cleanly without a radio bounce; the `--once` actuator stays **idempotent** (no-op when already in the desired state) to avoid BSS churn / log spam if the bench shows any edge cases.
+- **Fail-safe (unchanged):** empty `hostapd.*` set = successful no-op (a fresh unit legitimately has no client BSS yet); boot `serve` state = OFF (fail-closed); the mesh-mode guard means even a future config that somehow surfaced a mesh iface as `hostapd.*` would still be skipped.
+
+### What ran vs. what is deferred
+
+- **Ran live (dev box):** `apt install batctl`; `modprobe batman-adv`; the full 3-netns line harness with `gw server`/`gw client`/`gw off`; `gwl` + `originators` capture on n2 and n3; teardown verified (no leftover netns, module `rmmod`-ed, no stray veths). → **Q2 and Q7 closed.**
+- **Deferred to bench (no OpenWrt/RF in dev env):** Q1 `arping` egress decision, Q3 `hostapd.*` presence on 25.12.4, Q4 `disable/enable` beacon behaviour, and the `mesh_fwding=0` RF interaction for Q7. Safe defaults above hold until then; none of the deferred items block writing the Task-1 script.
