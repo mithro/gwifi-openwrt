@@ -68,6 +68,16 @@ done
 
 uci commit network
 
+# --- backhaul-gating: 1-min cron re-assert + ensure crond runs (idempotent) ---
+CRON=/etc/crontabs/root
+LINE='* * * * * /usr/sbin/gwifi-backhaul-gate --once'
+mkdir -p /etc/crontabs
+{ [ -f "$CRON" ] && grep -qF "$LINE" "$CRON"; } || echo "$LINE" >> "$CRON"
+/etc/init.d/cron enable || true
+/etc/init.d/cron restart || true
+# Fail-closed boot: the gate defaults serve=OFF until it confirms backhaul; the
+# hotplug hook fires as interfaces come up, so the first evaluation runs at boot.
+
 # --- wireless: single 2.4 GHz radio0 + 802.11s mesh on it (design C5) ---
 # radio0's per-SoC `path` is supplied by board detection; we configure by name.
 [ -f /etc/config/wireless ] || /sbin/wifi config

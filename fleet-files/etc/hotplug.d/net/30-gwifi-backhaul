@@ -1,0 +1,4 @@
+# Re-evaluate backhaul gating when an interface comes up or changes carrier.
+# Fires at boot (ifaces appear) and on uplink carrier transitions.
+[ "$ACTION" = add ] || [ "$ACTION" = ifup ] || [ "$ACTION" = ifupdate ] || exit 0
+[ -x /usr/sbin/gwifi-backhaul-gate ] && /usr/sbin/gwifi-backhaul-gate --once
