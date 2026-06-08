@@ -40,7 +40,8 @@
 - Create (throwaway): `tmp/spike-batman-netns.sh`
 - Modify: `docs/backhaul-gated-ssids-design.md` (append findings)
 
-- [ ] **Step 1: Batman signal spike (Q2, Q7) in network namespaces.** Write `tmp/spike-batman-netns.sh` that (as root) creates 3 netns `n1 n2 n3` joined in a **line** by veth pairs (n1—n2—n2—n3), loads `batman-adv`, adds each node's veth(s) to `bat0`, sets `n1` `batctl gw server 100mbit/100mbit` and `n2`,`n3` `batctl gw client`, then prints `batctl -m bat0 gwl` on n2 and n3. Run it: `sudo sh tmp/spike-batman-netns.sh`.
+- [ ] **Step 0: Prerequisite — install batman tooling on the dev box.** The spike (below) and the Task 7 harness both need `batctl`, which is not installed: `sudo apt install batctl` (Debian trixie main). The `batman-adv` kernel module is already available (`modprobe batman-adv`).
+- [ ] **Step 1: Batman signal spike (Q2, Q7) in network namespaces.** Write `tmp/spike-batman-netns.sh` that (as root) creates 3 netns `n1 n2 n3` joined in a **line** by veth pairs (n1—n2 and n2—n3), loads `batman-adv`, adds each node's veth(s) to `bat0`, sets `n1` `batctl gw server 100mbit/100mbit` and `n2`,`n3` `batctl gw client`, then prints `batctl -m bat0 gwl` on n2 and n3. Run it: `sudo sh tmp/spike-batman-netns.sh`.
   - Expected/confirm: **Q2** — `gwl` on a client lists n1 while the server runs, and becomes **empty** within a few seconds after `n1` does `batctl gw off`. **Q7** — n3 (2 hops from n1) also lists the gateway, confirming multi-hop propagation over a relayed batman path.
 - [ ] **Step 2: Record device-only decisions (Q1, Q3, Q4).** These need real OpenWrt/wifi (deferred to bench) but get a safe **default that does not depend on them**:
   - **Q1 wired-isolation:** baseline = carrier check + **FDB-port confirmation** after a priming ping (no extra package); `arping -I <uplink>.5` is the preferred upgrade *if* the bench confirms it egresses a bridge-enslaved sub-iface. The script isolates this in one function `wired_reaches_gw()` so the bench can swap the method without touching logic.
@@ -167,7 +168,7 @@ eq "uplink member none"    ""       "$(printf 'bat0.5\n'        | parse_uplink_m
 # parse_gateway: nexthop from `ip route show default dev br-mgmt`
 eq "gateway parse" "10.1.5.1" "$(echo 'default via 10.1.5.1 proto dhcp src 10.1.5.7' | parse_gateway)"
 # parse_gwl_count: number of gateways in `batctl gwl` output (header lines ignored)
-eq "gwl two"  "2" "$(printf 'B.A.T.M.A.N. ... Gateway ...\n  aa:bb ( 80) ...\n* cc:dd (120) ...\n' | parse_gwl_count)"
+eq "gwl two"  "2" "$(printf 'B.A.T.M.A.N. ... Gateway ...\n  aa:bb:cc:dd:ee:01 ( 80) ...\n* aa:bb:cc:dd:ee:02 (120) ...\n' | parse_gwl_count)"
 eq "gwl none" "0" "$(printf 'No gateways in range ...\n' | parse_gwl_count)"
 # parse_hostapd_objs: hostapd.<iface> objects from `ubus list`
 eq "hostapd objs" "hostapd.ap-roam hostapd.ap-iot" \
@@ -307,7 +308,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 [ -x /usr/sbin/gwifi-backhaul-gate ] && /usr/sbin/gwifi-backhaul-gate --once
 ```
 
-- [ ] **Step 2: Append the idempotent cron+crond block to BOTH bootstraps** (before their final `exit 0`). Identical snippet in `99-gale-bootstrap` and `99-om2p-bootstrap`:
+- [ ] **Step 2: Insert the idempotent cron+crond block into BOTH bootstraps** — same snippet, but **mind placement** (the two bootstraps differ): in `99-gale-bootstrap` put it just before the final `exit 0`; in `99-om2p-bootstrap` put it **immediately after `uci commit network` (line ~69), before the wireless section** — that bootstrap has an earlier `exit 1` (the "radio0 not present yet; deferring to next boot" path, line ~78), so a block before the final `exit 0` would be skipped on any boot where radio0 isn't ready, and the periodic re-assert (the self-heal / re-gate-after-OpenWISP-reload mechanism) might never install. Snippet:
 ```sh
 # --- backhaul-gating: 1-min cron re-assert + ensure crond runs (idempotent) ---
 CRON=/etc/crontabs/root
@@ -486,7 +487,7 @@ modprobe batman-adv
 # Teardown: delete all netns; rmmod batman-adv (best-effort).
 echo "harness: see inline assertions; exits non-zero on first failure"
 ```
-Implement the elided sections concretely (one `ip netns exec` per probe; invoke the gate with `GWIFI_GATE_STATE=$tmp GWIFI_GATE_K=2 PATH=$HERE:$PATH ip netns exec nX sh "$GATE" --once`; assert against `FAKE_UBUS_LOG` and `batctl -m bat0 gwl`). Use a short `K` and a poll-with-timeout loop for `gwl` convergence.
+Implement the elided sections concretely (one `ip netns exec` per probe; invoke the gate with `GWIFI_GATE_STATE=$tmp GWIFI_GATE_K=2 PATH=$HERE:$PATH ip netns exec nX sh "$GATE" --once`; assert against `FAKE_UBUS_LOG` and `batctl -m bat0 gwl`). Use a short `K` and a poll-with-timeout loop for `gwl` convergence. **Multi-hop caveat (Q7):** a flat single-segment veth mesh can populate `gwl` at every node regardless of hop count (spec §11.2), so assertion C must poll until n3 (2 hops) sees the gateway *after convergence*, and the topology must be a genuine line (wire n1—n2 and n2—n3 as separate veth pairs with n2 relaying), not a shared segment — otherwise the multi-hop check passes trivially.
 
 - [ ] **Step 3: Run the harness.**
 Run: `sudo sh tests/backhaul-gating/netns-harness.sh`
@@ -510,14 +511,14 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 - Modify: `docs/backhaul-gated-ssids-design.md` (Status)
 - (build artifacts — not committed)
 
-- [ ] **Step 1: Build one image and run its verifier end-to-end** (proves overlay merge + verifier assertions on a real squashfs). For speed, build the single smallest OM2P profile:
+- [ ] **Step 1: Build and verify end-to-end** (proves overlay merge + verifier assertions on a real rootfs). Build the **full OM2P multi-profile (all four)** — the verifier's fit gate checks every profile in `PROFILES`, so a single-profile build would make it report missing-image FAILs; do **not** restrict `DEVICES`:
 ```bash
-DEVICES=openmesh_om2p-lc FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
+FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
   sh om2p-image/build-om2p-image.sh
 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
   uv run python om2p-image/verify-om2p-image.py
 ```
-Expected: build completes; verifier prints the new `PASS backhaul-gate / backhaul-hotplug / bootstrap: cron line installed` lines and `RESULT: PASS`.
+Expected: build completes; verifier prints the new `PASS backhaul-gate / backhaul-hotplug / bootstrap: cron line installed` lines, all four `PASS fit:` lines, and `RESULT: PASS`. (Optional: also `sh gale-image/build-gale-image.sh` + `uv run python gale-image/verify-gale-image.py` to exercise the gale verifier's new assertions on a squashfs `.bin`.)
 
 - [ ] **Step 2: Flip the spec Status** in `docs/backhaul-gated-ssids-design.md` from "Draft — pending …" to "Implemented (branch `openwisp-controller`); bench items: spike Q1/Q3/Q4 device-confirm + real-hardware §11.4."
 
