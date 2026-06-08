@@ -58,7 +58,7 @@ wired_reaches_gw() {
 	_mac=$(ip neigh show "$_gw" dev "$MGMT_BR" \
 		| awk '{for(i=1;i<NF;i++) if($i=="lladdr"){print $(i+1); exit}}')
 	[ -n "$_mac" ] || return 1
-	bridge fdb show br "$MGMT_BR" | grep -iq "$_mac dev $_member"   # learned on wired port?
+	bridge fdb show br "$MGMT_BR" | grep -iqF "$_mac dev $_member"   # learned on wired port?
 }
 gw_present() { [ "$(batctl gwl | parse_gwl_count)" -gt 0 ]; }
 
@@ -72,7 +72,7 @@ apply_role() {  # $1 = server|client
 apply_serve() {  # $1 = on|off  (AP BSSes only; the 802.11s mesh is supplicant-managed)
 	_want=$1; _act=disable; [ "$_want" = on ] && _act=enable
 	for obj in $(ubus list | parse_hostapd_objs); do
-		_mode=$(ubus call "$obj" get_status | grep -o '"mode":"[a-z]*"' | cut -d'"' -f4)
+		_mode=$(ubus call "$obj" get_status | grep -oE '"mode": ?"[a-z]+"' | cut -d'"' -f4)
 		[ "$_mode" = mesh ] && continue          # belt-and-suspenders guard (mesh stays up)
 		ubus call "$obj" "$_act" >/dev/null
 	done
