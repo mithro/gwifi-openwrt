@@ -489,7 +489,7 @@ echo "harness: see inline assertions; exits non-zero on first failure"
 ```
 Implement the elided sections concretely (one `ip netns exec` per probe; invoke the gate with `GWIFI_GATE_STATE=$tmp GWIFI_GATE_K=2 PATH=$HERE:$PATH ip netns exec nX sh "$GATE" --once`; assert against `FAKE_UBUS_LOG` and `batctl -m bat0 gwl`). Use a short `K` and a poll-with-timeout loop for `gwl` convergence. **Multi-hop caveat (Q7):** a flat single-segment veth mesh can populate `gwl` at every node regardless of hop count (spec §11.2), so assertion C must poll until n3 (2 hops) sees the gateway *after convergence*, and the topology must be a genuine line (wire n1—n2 and n2—n3 as separate veth pairs with n2 relaying), not a shared segment — otherwise the multi-hop check passes trivially.
 
-- [ ] **Step 3: Run the harness.**
+- [ ] **Step 3: Run the harness** (requires `batctl` + root — see Task 0 Step 0).
 Run: `sudo sh tests/backhaul-gating/netns-harness.sh`
 Expected: prints PASS for A–D and exits 0. (If batman multi-hop `gwl` needs a few seconds, the poll loop handles it.)
 
@@ -518,7 +518,7 @@ FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
   uv run python om2p-image/verify-om2p-image.py
 ```
-Expected: build completes; verifier prints the new `PASS backhaul-gate / backhaul-hotplug / bootstrap: cron line installed` lines, all four `PASS fit:` lines, and `RESULT: PASS`. (Optional: also `sh gale-image/build-gale-image.sh` + `uv run python gale-image/verify-gale-image.py` to exercise the gale verifier's new assertions on a squashfs `.bin`.)
+Expected: build completes; verifier prints the new `PASS backhaul-gate / backhaul-hotplug / bootstrap: cron line installed` lines, all four `PASS fit:` lines, and `RESULT: PASS`. (Optional: also `sh gale-image/build-gale-image.sh` + `uv run python gale-image/verify-gale-image.py` to exercise the gale verifier's new assertions on a squashfs `.bin`; that verifier reads `gale-image/gale-secrets.conf` (not `FLEET_SECRETS`), so ensure it exists.)
 
 - [ ] **Step 2: Flip the spec Status** in `docs/backhaul-gated-ssids-design.md` from "Draft — pending …" to "Implemented (branch `openwisp-controller`); bench items: spike Q1/Q3/Q4 device-confirm + real-hardware §11.4."
 
