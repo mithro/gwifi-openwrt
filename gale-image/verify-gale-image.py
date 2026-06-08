@@ -84,7 +84,7 @@ def unsquash(squashfs_file, dest_dir):
     # Extract only /etc — all our assertions live there, and it avoids the
     # device nodes under /dev that unsquashfs cannot create as non-root.
     out = os.path.join(dest_dir, "squashfs-root")
-    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file, "/etc"],
+    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file, "/etc", "/usr/sbin/gwifi-backhaul-gate"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("unsquashfs failed:\n%s" % r.stderr)
@@ -168,6 +168,21 @@ def run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path):
         print("  PASS bootstrap: present and executable")
     else:
         failures.append("FAIL bootstrap: present but not executable")
+
+    # 5) backhaul-gate script + hotplug hook present & executable; cron wired in bootstrap.
+    gate = os.path.join(rootfs_dir, "usr", "sbin", "gwifi-backhaul-gate")
+    hook = os.path.join(rootfs_dir, "etc", "hotplug.d", "net", "30-gwifi-backhaul")
+    for path, label in ((gate, "backhaul-gate"), (hook, "backhaul-hotplug")):
+        if not os.path.isfile(path):
+            failures.append("FAIL %s: %s missing" % (label, path))
+        elif os.stat(path).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            print("  PASS %s: present and executable" % label)
+        else:
+            failures.append("FAIL %s: present but not executable" % label)
+    if os.path.isfile(bootstrap) and "gwifi-backhaul-gate --once" in open(bootstrap).read():
+        print("  PASS bootstrap: cron line installed")
+    else:
+        failures.append("FAIL bootstrap: cron-install snippet missing")
 
     # 4) Package manifest lists the required packages.
     manifest = find_manifest(image_dir, sysupgrade_path)

@@ -53,7 +53,8 @@ def parse_secrets(path):
 def read_etc_files(image_dir):
     """Return ({relpath: text}, {relpath: mode}, source-label) for the two overlay
     files, from the rootfs tarball (preferred) or the build staging dir (fallback)."""
-    want = ("etc/config/openwisp", "etc/uci-defaults/99-om2p-bootstrap")
+    want = ("etc/config/openwisp", "etc/uci-defaults/99-om2p-bootstrap",
+            "usr/sbin/gwifi-backhaul-gate", "etc/hotplug.d/net/30-gwifi-backhaul")
     tarballs = glob.glob(os.path.join(image_dir, "*rootfs.tar.gz"))
     if tarballs:
         files, modes = {}, {}
@@ -138,6 +139,19 @@ def main():
             else:
                 failures.append("FAIL bootstrap: %s ('%s') missing" % (label, needle))
         check_no_ph(bs, "bootstrap")
+
+    for rel, label in (("usr/sbin/gwifi-backhaul-gate", "backhaul-gate"),
+                       ("etc/hotplug.d/net/30-gwifi-backhaul", "backhaul-hotplug")):
+        if rel not in files:
+            failures.append("FAIL %s: %s missing from rootfs" % (label, rel))
+        elif modes.get(rel, 0) & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            print("  PASS %s: present and executable" % label)
+        else:
+            failures.append("FAIL %s: present but not executable" % label)
+    if bs and "gwifi-backhaul-gate --once" in bs:
+        print("  PASS bootstrap: cron line installed")
+    else:
+        failures.append("FAIL bootstrap: cron-install snippet missing")
 
     manifest = find_manifest(IMAGE_DIR)
     if manifest is None:
