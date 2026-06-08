@@ -26,6 +26,19 @@ decide() {
 	fi
 }
 
+# ---- pure parsers (unit-tested) -------------------------------------------
+# parse_uplink_member MGMT_VID  (stdin = brif names) -> the ".VID" member not on bat0.
+parse_uplink_member() {
+	awk -v vid="$1" '$0 !~ /^bat0[.]/ && $0 ~ ("[.]" vid "$") {print; exit}'
+}
+# parse_gateway  (stdin = `ip route show default ...`) -> nexthop IP after "via".
+parse_gateway() { awk '{for(i=1;i<NF;i++) if($i=="via"){print $(i+1); exit}}'; }
+# parse_gwl_count (stdin = `batctl gwl`) -> number of gateway rows. Drops the
+# "[B.A.T.M.A.N. adv ...]" banner first (it contains a MAC), then counts MAC-bearing rows.
+parse_gwl_count() { grep -vE '^\[' | grep -cE '([0-9a-f]{2}:){5}[0-9a-f]{2}' || true; }
+# parse_hostapd_objs (stdin = `ubus list`) -> hostapd.<iface> object names (AP BSSes).
+parse_hostapd_objs() { grep -E '^hostapd\.' || true; }
+
 main() { :; }   # filled in Task 3
 
 case "${GWIFI_GATE_SOURCED:-}" in
