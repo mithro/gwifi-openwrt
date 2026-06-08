@@ -10,7 +10,7 @@
 
 **Spec:** `docs/gale-autoprovision-mesh-design.md`
 
-**Conventions:** All paths relative to `/home/tim/local/gwifi`. Repo = `tmp/gwifi-openwrt` (branch `gale-autoprovision-mesh`). Build tree = `openwrt`. Overlay source-of-truth lives in the repo under `gale-image/`; the build script renders it into `openwrt/files/` (gitignored in the build tree). Commit after each task (repo only — never commit secrets or `.bin`s).
+**Conventions:** All paths relative to `/home/tim/local/gwifi`. Repo = `gwifi-openwrt` (branch `gale-autoprovision-mesh`). Build tree = `openwrt`. Overlay source-of-truth lives in the repo under `gale-image/`; the build script renders it into `openwrt/files/` (gitignored in the build tree). Commit after each task (repo only — never commit secrets or `.bin`s).
 
 ---
 
@@ -38,9 +38,9 @@ Built images land in `openwrt/bin/targets/ipq40xx/chromium/` (gitignored).
 ## Task 1: Repo scaffolding + secrets template
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/README.md`
-- Create: `tmp/gwifi-openwrt/gale-image/gale-secrets.conf.example`
-- Create (untracked): `tmp/gwifi-openwrt/gale-image/gale-secrets.conf`
+- Create: `gwifi-openwrt/gale-image/README.md`
+- Create: `gwifi-openwrt/gale-image/gale-secrets.conf.example`
+- Create (untracked): `gwifi-openwrt/gale-image/gale-secrets.conf`
 
 - [ ] **Step 1: Write `gale-secrets.conf.example`** (committed template)
 
@@ -59,7 +59,7 @@ Run: `cp gale-image/gale-secrets.conf.example gale-image/gale-secrets.conf` then
 
 - [ ] **Step 3: Verify it is gitignored**
 
-Run: `cd tmp/gwifi-openwrt && git check-ignore gale-image/gale-secrets.conf`
+Run: `cd gwifi-openwrt && git check-ignore gale-image/gale-secrets.conf`
 Expected: prints the path (ignored). If not, add `gale-image/gale-secrets.conf` to `.gitignore`.
 
 - [ ] **Step 4: Write `gale-image/README.md`** (build + secrets instructions; ~20 lines).
@@ -76,7 +76,7 @@ git commit -m "gale-image: secrets template + build README"
 ## Task 2: Build config fragment (package selection)
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/gale.config`
+- Create: `gwifi-openwrt/gale-image/gale.config`
 
 - [ ] **Step 1: Write `gale.config`** — the per-spec §9 package set as a config seed
 
@@ -119,7 +119,7 @@ git commit -m "gale-image: build config fragment (package set)"
 ## Task 3: uci-defaults bootstrap — batman + VLANs + bridges (the core)
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap`
+- Create: `gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap`
 
 This is the heart of the design (spec §6/§7.4). DRY loop over the VLAN map; idempotent.
 
@@ -182,13 +182,13 @@ exit 0
 
 - [ ] **Step 2: shellcheck the script**
 
-Run: `shellcheck -s sh tmp/gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap`
+Run: `shellcheck -s sh gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap`
 Expected: no errors (warnings about heredoc acceptable). Install shellcheck via apt if missing.
 
 - [ ] **Step 3: Dry-run the UCI logic on the host** (catch obvious syntax errors without a device)
 
 Run a host check that sources the loop logic against a throwaway UCI tree (or at minimum `sh -n` syntax check):
-Run: `sh -n tmp/gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap && echo SYNTAX_OK`
+Run: `sh -n gwifi-openwrt/gale-image/files/etc/uci-defaults/99-gale-bootstrap && echo SYNTAX_OK`
 Expected: `SYNTAX_OK`.
 
 - [ ] **Step 4: Commit**
@@ -205,7 +205,7 @@ git commit -m "gale-image: uci-defaults bootstrap (batman + VLAN bridges)"
 ## Task 4: Wireless overlay — 802.11s mesh + radios
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/files/etc/config/wireless`
+- Create: `gwifi-openwrt/gale-image/files/etc/config/wireless`
 
 - [ ] **Step 1: Write `wireless`** — 5 GHz radio with an 802.11s mesh iface (SAE), 2.4 GHz radio enabled; placeholders for mesh-id/key. No client AP ifaces (OpenWISP adds them).
 
@@ -259,8 +259,8 @@ git commit -m "gale-image: 802.11s SAE mesh on 5GHz + 2.4GHz radio"
 ## Task 5: OpenWISP + usteer overlay
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/files/etc/config/openwisp`
-- Create: `tmp/gwifi-openwrt/gale-image/files/etc/config/usteer`
+- Create: `gwifi-openwrt/gale-image/files/etc/config/openwisp`
+- Create: `gwifi-openwrt/gale-image/files/etc/config/usteer`
 
 - [ ] **Step 1: Write `openwisp`** (placeholders substituted at build)
 
@@ -285,7 +285,7 @@ config usteer
 
 - [ ] **Step 3: Validate placeholders are the only `__...__` tokens**
 
-Run: `grep -rn "__[A-Z_]*__" tmp/gwifi-openwrt/gale-image/files | sort` — confirm only the four known tokens appear (`__MESH_ID__`, `__MESH_SAE_KEY__`, `__OPENWISP_URL__`, `__OPENWISP_SHARED_SECRET__`).
+Run: `grep -rn "__[A-Z_]*__" gwifi-openwrt/gale-image/files | sort` — confirm only the four known tokens appear (`__MESH_ID__`, `__MESH_SAE_KEY__`, `__OPENWISP_URL__`, `__OPENWISP_SHARED_SECRET__`).
 
 - [ ] **Step 4: Commit**
 
@@ -299,7 +299,7 @@ git commit -m "gale-image: openwisp-config + usteer overlay (placeholders)"
 ## Task 6: Build script (render secrets → build)
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/build-gale-image.sh`
+- Create: `gwifi-openwrt/gale-image/build-gale-image.sh`
 
 - [ ] **Step 1: Write `build-gale-image.sh`**
 
@@ -336,12 +336,12 @@ echo "images: $OWRT/bin/targets/ipq40xx/chromium/"
 
 - [ ] **Step 2: shellcheck + syntax**
 
-Run: `shellcheck tmp/gwifi-openwrt/gale-image/build-gale-image.sh && sh -n tmp/gwifi-openwrt/gale-image/build-gale-image.sh && echo OK`
+Run: `shellcheck gwifi-openwrt/gale-image/build-gale-image.sh && sh -n gwifi-openwrt/gale-image/build-gale-image.sh && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 3: Confirm no secret leaks into the build tree's tracked files**
 
-(The `openwrt/files` is in a separate repo/tree; ensure `openwrt/` isn't the gwifi-openwrt repo — it is not.) Run: `grep -rn "__OPENWISP_SHARED_SECRET__" tmp/gwifi-openwrt/gale-image/files` Expected: the placeholder present (proves committed source has no real secret).
+(The `openwrt/files` is in a separate repo/tree; ensure `openwrt/` isn't the gwifi-openwrt repo — it is not.) Run: `grep -rn "__OPENWISP_SHARED_SECRET__" gwifi-openwrt/gale-image/files` Expected: the placeholder present (proves committed source has no real secret).
 
 - [ ] **Step 4: Commit**
 
@@ -355,7 +355,7 @@ git commit -m "gale-image: build script (secret render + make)"
 ## Task 7: Image verification script
 
 **Files:**
-- Create: `tmp/gwifi-openwrt/gale-image/verify-gale-image.py`
+- Create: `gwifi-openwrt/gale-image/verify-gale-image.py`
 
 - [ ] **Step 1: Write `verify-gale-image.py`** — extract the squashfs rootfs from the sysupgrade image and assert overlay + packages
 
@@ -368,7 +368,7 @@ Behavior (use `unsquashfs` on the `root` member of the sysupgrade tar; fall back
 
 - [ ] **Step 2: `sh -n`/py-compile the script**
 
-Run: `uv run --no-project python -m py_compile tmp/gwifi-openwrt/gale-image/verify-gale-image.py && echo OK`
+Run: `uv run --no-project python -m py_compile gwifi-openwrt/gale-image/verify-gale-image.py && echo OK`
 Expected: `OK`.
 
 - [ ] **Step 3: Commit**
@@ -392,17 +392,17 @@ Expected: no `NOT RESOLVED` lines; `CONFIG_PACKAGE_wpad-mesh-mbedtls=y` present 
 
 - [ ] **Step 2: Build**
 
-Run: `tmp/gwifi-openwrt/gale-image/build-gale-image.sh` (background; ~35–45 min)
+Run: `gwifi-openwrt/gale-image/build-gale-image.sh` (background; ~35–45 min)
 Expected: exit 0; images in `openwrt/bin/targets/ipq40xx/chromium/`.
 
 - [ ] **Step 3: Run the image verifier**
 
-Run: `uv run --no-project python tmp/gwifi-openwrt/gale-image/verify-gale-image.py`
+Run: `uv run --no-project python gwifi-openwrt/gale-image/verify-gale-image.py`
 Expected: `RESULT: PASS` (overlay present, secrets substituted, packages present).
 
 - [ ] **Step 4: Confirm no secrets in the repo**
 
-Run: `cd tmp/gwifi-openwrt && git status --short && git grep -nI "$(. gale-image/gale-secrets.conf; echo "$MESH_SAE_KEY")" || echo "no secret in tracked files"`
+Run: `cd gwifi-openwrt && git status --short && git grep -nI "$(. gale-image/gale-secrets.conf; echo "$MESH_SAE_KEY")" || echo "no secret in tracked files"`
 Expected: clean status; `no secret in tracked files`.
 
 - [ ] **Step 5: Commit** (any verifier fixes only — never images/secrets)
