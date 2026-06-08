@@ -95,7 +95,7 @@ A single POSIX-sh script. Structure:
 
 Two-stage, cheap-first:
 1. **Carrier:** `cat /sys/class/net/<uplink>/carrier` == `1`. If down → `wired_ok=false` immediately.
-2. **Reachability constrained to the wired path** (distinguish wired from the BLA mesh-failover path). Primary method: `arping -I <uplink>.5 -c1 -w1 <gw_ip>`. If the mgmt sub-iface is bridge-enslaved and `arping -I` cannot egress it directly, fallback: prime the neighbor (`ping -c1 -w1 <gw_ip>`), read `gw_mac` (`ip neigh`), then confirm the bridge learned it on the wired port — `bridge fdb show | grep -i "<gw_mac> .*dev <uplink>.5"`. (Exact method finalized in the §12 spike; the *function* — "ten64 reachable specifically via my wired uplink" — is fixed.)
+2. **Reachability constrained to the wired path** (distinguish wired from the BLA mesh-failover path). Primary method: `arping -I <uplink>.5 -c1 -w1 <gw_ip>`. If the mgmt sub-iface is bridge-enslaved and `arping -I` cannot egress it directly, fallback: prime the neighbor (`ping -c1 -w1 <gw_ip>`), read `gw_mac` (`ip neigh`), then confirm the bridge learned it on the wired port — `bridge fdb show | grep -i "<gw_mac> .*dev <uplink>.5"`. The FDB fallback is **weaker** than the primary: with BLA active and ten64 reachable over both paths, the bridge can learn ten64's MAC on the wired port from mesh-origin traffic BLA bridged back in, yielding a *false* wired-exit — so `arping` is strongly preferred and FDB is a last resort. (Exact method finalized in the §12 spike; the *function* — "ten64 reachable specifically via my wired uplink" — is fixed.)
 
 Rationale for wired-isolation: a node must announce gateway-server only if **its own** uplink is a real exit. If only the mesh reaches ten64, it must be a *client* (mesh-exit), not a server. Getting this wrong is not catastrophic (traffic still exits via BLA failover) but would make gateway election suboptimal; isolating wired keeps the signal honest.
 
@@ -111,6 +111,7 @@ Runtime via `batctl gw server <bw>` / `batctl gw client` (not uci, to avoid chur
 
 - **Target set:** all client AP BSSes = the `hostapd.*` ubus objects (`ubus list | grep '^hostapd\.'`). The 802.11s mesh is supplicant-managed and therefore **not** in this set; as a hard safety guard the script also explicitly refuses to touch any iface whose mode is `mesh`.
 - **Enable/disable:** `ubus call hostapd.<bss> disable` / `enable` (runtime only — does **not** edit uci, so it never fights OpenWISP's pushed config and never churns the radio).
+- **Empty target set = no-op:** if an evaluation runs before OpenWISP has pushed/started any client BSS, `hostapd.*` is legitimately empty; the actuator treats this as a successful no-op (nothing to gate), never an error.
 - **Management is unaffected:** mgmt/OpenWISP live on `br-mgmt` (wired/mesh), not on a client BSS — so a gated node stays reachable, keeps polling OpenWISP, and keeps the mesh up to detect recovery.
 
 ### 7.7 Scheduling & triggers
@@ -121,7 +122,7 @@ Runtime via `batctl gw server <bw>` / `batctl gw client` (not uci, to avoid chur
 ### 7.8 Hysteresis & fail-safe
 
 - **Debounce down, fast up:** flip `serve=OFF` only after **K** consecutive "no backhaul" evaluations (default K=3 ≈ 3 min with 1-min cron, plus instant hotplug for carrier loss); flip `serve=ON` on the first positive evaluation. Counter persisted in `/tmp`.
-- **Boot state = fail-closed:** SSIDs start **disabled** (overlay ships them `disabled` or the bootstrap gates them) and are enabled only after the first evaluation confirms backhaul — prevents a boot-time black hole. The script is part of the image and asserted present by the verifier (§12), so "script missing" is caught at build time.
+- **Boot state = fail-closed:** the script's initial `serve` state is **OFF**; client BSSes are enabled only after the first evaluation confirms backhaul, preventing a boot-time black hole. (A fresh unit has *no* client SSIDs anyway — they arrive later from OpenWISP — so the guarantee is the script defaulting to OFF and gating each BSS as/after it appears, **not** pre-disabling anything in the overlay.) The script is part of the image and asserted present by the verifier (§12), so "script missing" is caught at build time.
 
 ## 8. Interaction with the existing design
 
@@ -140,7 +141,7 @@ Runtime via `batctl gw server <bw>` / `batctl gw client` (not uci, to avoid chur
 Identical files added to **both** overlays (`gale-image/files/`, `om2p-image/files/`):
 - `usr/sbin/gwifi-backhaul-gate` (the script).
 - `etc/hotplug.d/net/30-gwifi-backhaul` (carrier trigger).
-- cron line installed idempotently by the existing `uci-defaults` bootstrap (`99-gale-bootstrap` / `99-om2p-bootstrap`), which also ensures `cron` is enabled; the bootstrap also sets the fail-closed initial SSID state.
+- cron line installed idempotently by the existing `uci-defaults` bootstrap (`99-gale-bootstrap` / `99-om2p-bootstrap`), which also ensures `cron` is enabled. (Fail-closed boot comes from the script's default `serve=OFF` per §7.8, not from pre-disabling SSIDs — a fresh unit has none.)
 - Optional `etc/config/gwifi-backhaul` for tunables (poll interval, K, gw bandwidth) — else constants at the top of the script.
 
 OpenWISP: **no template change required.** Gating is runtime-only via ubus and does not modify the pushed wireless config; the per-minute re-assert tolerates OpenWISP config reloads (a reload may re-enable a BSS for up to ~1 cycle before it's re-gated — accepted, and noted as known behavior).
@@ -160,7 +161,7 @@ OpenWISP: **no template change required.** Gating is runtime-only via ubus and d
 ## 11. Validation & testing (no hardware yet)
 
 1. **Unit tests of `decide()`** — exhaustive truth table (`wired_ok` × `gw_present` × `fail_count`) + hysteresis transitions, run on the dev box with a plain sh test harness (or `shunit2`). Pure function, no root.
-2. **Namespace integration harness** — on the Linux dev box, build a mini-fleet with `ip netns` + `veth` + batman-adv (mainline kernel): node-A (veth "wired" to a "ten64" netns + a veth "mesh" to node-B), node-B (mesh only). Assert: A→server & SSIDs on; cut A's wired → A demotes to client and (if B has no other exit) both gate off; restore → recover. Validates `gw`/`gwl` semantics and the actuators without gale/OM2P hardware.
+2. **Namespace integration harness** — on the Linux dev box, build a mini-fleet with `ip netns` + `veth` + batman-adv (mainline kernel): node-A (veth "wired" to a "ten64" netns + a veth "mesh" to node-B), node-B (mesh only). Assert: A→server & SSIDs on; cut A's wired → A demotes to client and (if B has no other exit) both gate off; restore → recover. Validates `gw`/`gwl` semantics and the actuators without gale/OM2P hardware. **Caveat:** a flat `veth` mesh is a single L2 segment (every node hears every node), so it does *not* exercise multi-hop gateway propagation; add a 3-node **line** topology (A—B—C, only A wired, B relaying) to approximate, and treat true multi-hop RF propagation as bench-only (§11.4, Q7).
 3. **Image verifier** — extend `verify-gale-image.py` / `verify-om2p-image.py` to assert the script + hotplug hook + cron line are present and `batctl-default`/`cron` are in the manifest.
 4. **Bench (later, when hardware is available)** — real gale + OM2P: pull/cut the uplink, partition the mesh, confirm beaconing tracks backhaul and DHCP still works on the mesh-failover path. (Folds into the existing gale Task-9 / OM2P bench.)
 
@@ -172,6 +173,7 @@ OpenWISP: **no template change required.** Gating is runtime-only via ubus and d
 - **Q4** `ubus hostapd.<bss> disable/enable` behavior on 25.12.4 (clean BSS down/up, beacons actually stop, re-enable restores cleanly).
 - **Q5** Hysteresis K and cron interval tuning (default K=3 @ 1 min).
 - **Q6** gw server bandwidth class value and whether multiple equal servers cause any churn in selection (cosmetic).
+- **Q7** Gateway-announcement propagation across a multi-hop 802.11s mesh with `mesh_fwding=0`: batman OGMs carrying gateway TQ are batman's own broadcasts over the hardif and *should* be independent of 802.11s-layer forwarding, but the whole signal hinges on `gwl` populating on a mesh-only node ≥2 hops from any wired node. Validate with the 3-node line harness (§11.2) and confirm on the bench (§11.4).
 
 ## 13. File inventory (delta)
 
