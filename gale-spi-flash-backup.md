@@ -26,13 +26,9 @@ so a single full-chip `flashrom -r` looks like a *zeroed / bricked* chip when it
 not. `tools/chunk_read.py` works around this by reading in 64 KiB pieces — each in a
 fresh session, re-parking the AP between pieces — and stitching them into one image.
 
-Two read caveats, both handled/documented under `tools/`:
-
-- **~212-byte blind spot at address 0** (`0x0–0xd4`): a read based at `0x0` returns
-  `0x00` over the bootblock ELF header, even though the real bytes are on the chip.
-  Patch those `0xd4` bytes from a known-good bootblock for a byte-faithful image.
-- flashrom (and the bridge) re-power the AP **on** after each read, so the AP must be
-  re-parked before the next session.
+One read caveat, handled/documented under `tools/`: flashrom (and the bridge)
+re-power the AP **on** after each read, so the AP must be re-parked before the
+next session.
 
 ## Requirements
 

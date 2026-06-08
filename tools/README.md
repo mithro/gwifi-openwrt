@@ -20,10 +20,7 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
    *fresh process* (re-`REQ_ENABLE`, re-park, and `DISABLE`+`ENABLE` within one libusb
    claim all fail). So every tool works in `<84 KiB` pieces, one fresh process per
    piece. A single full-chip read therefore looks "bricked" (all zeros) — it isn't.
-2. **~212-byte blind spot at flash address 0** (`0x0–0xd4`). A region read based at
-   `0x0` returns `0x00` over the bootblock ELF header (the real bytes are present on
-   the chip). Patch those `0xd4` bytes from a known-good bootblock for a faithful image.
-3. **Status register is locked** (`SRP1=1`, power-cycle lock). The array is NOT
+2. **Status register is locked** (`SRP1=1`, power-cycle lock). The array is NOT
    write-protected (`BP=CMP=WPS=0`), but stock flashrom's WP-unlock step trips on the
    SR lock and its erase then silently no-ops — which is why these tools drive the
    bridge directly instead.
@@ -37,7 +34,7 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
   4 KiB alignment. (16 KiB is the safe per-session write ceiling — a transaction
   guard refuses bigger `--chunk`.)
 - **`chunk_read.py`** — chunked reader / backup. `all <out.bin>` reads and stitches
-  the full 8 MiB, re-parking per chunk. Remember to patch the `0x0` blind spot.
+  the full 8 MiB, re-parking per chunk.
 - **`raiden_sr.py`** — read `RDID` + status registers `SR1/SR2/SR3` (self-validated
   by `RDID == ef4017`). Surfaces the `BP/CMP/WPS/SRP` write-protect bits flashrom
   doesn't decode.
@@ -77,9 +74,8 @@ python3 raiden_write_region.py gale-backup.bin 0x700000:0x100000 --commit
 
 ## Why not flashrom
 `flashrom -p raiden_debug_spi … -E/-w` fails on this unit: it logs *"Failed to unlock
-flash status reg with wp support"* (the `SRP1` lock) and its erase silently no-ops (it
-also verifies at the `0x0` blind spot → a false `ERASE_FAILED`). `flashrom -r` works
-only if each read stays `< 84 KiB`.
+flash status reg with wp support"* (the `SRP1` lock) and its erase silently no-ops.
+`flashrom -r` works only if each read stays `< 84 KiB`.
 
 ## Configuration (environment variables)
 - `GALE_FLASHROM` — path to a `raiden_debug_spi`-capable flashrom (used by `chunk_read.py`).
