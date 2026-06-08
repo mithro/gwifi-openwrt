@@ -16,6 +16,11 @@ OpenWrt on it.
   a USB-ethernet dongle worked). Includes the full bring-up docs, the from-scratch
   build recipe, recovery procedures, and the `mithro/depthcharge` fork as a nested
   submodule.
+- **[`docs/gale-boot-process.md`](docs/gale-boot-process.md)** — empirically
+  validated gale boot chain (mask ROM → bootblock → verstage → vboot phases →
+  romstage → ramstage → depthcharge → kernel) and per-region SPI flash roles.
+  Grounded in live serial captures from the AP console; read this if anything
+  about the boot flow or the layout of any SPI region is unclear.
 - **[`gale-spi-flash-backup.md`](gale-spi-flash-backup.md)** — how to back up the
   `gale` SPI boot flash over a **SuzyQ/CCD cable** (no case-opening, no eMMC access),
   using the [`tools/`](tools/) toolkit.
@@ -35,8 +40,7 @@ OpenWrt on it.
 1. **Back up the stock SPI flash** first (see `gale-spi-flash-backup.md`) — keep it
    as your undo image.
 2. **Netboot OpenWrt over TFTP** using a depthcharge build that includes the
-   IPQ4019 driver (see the submodule's `docs/build.md` and
-   `docs/post-recovery-recipe.md`).
+   IPQ4019 driver (see the submodule's `docs/build.md`).
 3. Once validated, install OpenWrt to eMMC — see
    **[`docs/gale-openwrt-netboot-install.md`](docs/gale-openwrt-netboot-install.md)**
    for the full TFTP-netboot → eMMC-install runbook (DHCP/TFTP/HTTP setup,
