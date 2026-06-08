@@ -1,7 +1,7 @@
 # Backhaul-gated SSID advertisement (distributed batman gateways) — Design Spec
 
 - **Date:** 2026-06-08
-- **Status:** Draft — pending spec review + user approval.
+- **Status:** Implemented (branch `openwisp-controller`); unit + netns-integration + image-verify all green. Bench-to-confirm: Q1 arping-egress, Q3/Q4 ubus disable/enable actually stops beacons on 25.12.4, and the §11.4 real-hardware checks.
 - **Scope:** "Project 2" of the ten64-Wi-Fi initiative. (Project 1 = folding ten64's own radios into an OpenWISP-managed passthrough guest — deferred, separate spec.)
 - **Target devices:** the whole AP fleet — Google Wifi (gale) `ipq40xx/chromium`, and Open-Mesh OM2P `ath79/generic` (lc/v1/v2/v4).
 - **Controller:** OpenWISP (pull mode) at `https://wisp.welland.mithis.com`.
