@@ -10,7 +10,9 @@ eq() { if [ "$2" = "$3" ]; then printf '  PASS %s\n' "$1";
 
 # Build a fake /sys/class/ieee80211. Real sysfs models phyN/device as a SYMLINK to the
 # PCI <BDF> dir, and <BDF>/driver as a symlink to the bus driver — mirror that exactly.
-SB=$(mktemp -d ./tmp/radio-test.XXXXXX)
+SCRATCH="$HERE/../../tmp"; mkdir -p "$SCRATCH"   # project-local tmp (never /tmp), CWD-independent
+SB=$(mktemp -d "$SCRATCH/radio-test.XXXXXX") || { echo "FAIL: cannot create scratch dir"; exit 1; }
+[ -d "$SB" ] || { echo "FAIL: empty scratch dir (mktemp)"; exit 1; }   # guard: never operate on /
 trap 'rm -rf "$SB"' EXIT INT TERM   # clean up even if an assertion path exits early
 mkdir -p "$SB/phy0" "$SB/phy1" \
          "$SB/bus/ath11k_pci" "$SB/bus/ath10k_pci" \
