@@ -179,16 +179,17 @@ fails=0
 eq() { if [ "$2" = "$3" ]; then printf '  PASS %s\n' "$1";
        else printf '  FAIL %s (want [%s] got [%s])\n' "$1" "$2" "$3"; fails=$((fails+1)); fi; }
 
-# Build a fake /sys/class/ieee80211 with two phys bound to ath11k_pci / ath10k_pci.
+# Build a fake /sys/class/ieee80211. Real sysfs models phyN/device as a SYMLINK to the
+# PCI <BDF> dir, and <BDF>/driver as a symlink to the bus driver — mirror that exactly.
 SB=$(mktemp -d ./tmp/radio-test.XXXXXX)
-mkdir -p "$SB/phy0/device" "$SB/phy1/device" \
-         "$SB/bus/ath11k_pci" "$SB/bus/ath10k_pci"
+mkdir -p "$SB/phy0" "$SB/phy1" \
+         "$SB/bus/ath11k_pci" "$SB/bus/ath10k_pci" \
+         "$SB/devices/0000:00:03.0" "$SB/devices/0000:00:02.0"
 # phy0 -> ath10k_pci at BDF 0000:00:03.0 ; phy1 -> ath11k_pci at BDF 0000:00:02.0
-mkdir -p "$SB/devices/0000:00:03.0" "$SB/devices/0000:00:02.0"
-ln -s ../../bus/ath10k_pci "$SB/phy0/device/driver"
-ln -s ../../bus/ath11k_pci "$SB/phy1/device/driver"
-ln -s ../devices/0000:00:03.0 "$SB/phy0/device/dev0" ; ln -s "$SB/devices/0000:00:03.0" "$SB/phy0/device/pcidev"
-ln -s "$SB/devices/0000:00:02.0" "$SB/phy1/device/pcidev"
+ln -s ../devices/0000:00:03.0 "$SB/phy0/device"
+ln -s ../devices/0000:00:02.0 "$SB/phy1/device"
+ln -s ../../bus/ath10k_pci "$SB/devices/0000:00:03.0/driver"
+ln -s ../../bus/ath11k_pci "$SB/devices/0000:00:02.0/driver"
 GWIFI_RADIO_SYSFS="$SB"
 
 eq "ath11k phy"        "phy1" "$(phy_for_driver ath11k_pci)"
@@ -222,15 +223,16 @@ Expected: error sourcing the missing script (FAIL).
 # OpenWISP. No-op when no radio/phy is present (image-first / pre-passthrough).
 # Sourceable for tests via GWIFI_RADIO_SOURCED=1. See docs/ten64-vm-image-design.md §7.3.
 set -u
-SYSFS=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
 LOG_TAG=gwifi-radio-setup
 
 # ---- pure helpers (unit-tested) -------------------------------------------
+# Each helper reads GWIFI_RADIO_SYSFS *live* (not a top-level snapshot) so tests can point
+# it at a fake sysfs tree after sourcing.
 # phy_for_driver DRIVER -> first phy whose device/driver basename == DRIVER ("" if none).
 phy_for_driver() {
-	_drv=$1
-	[ -d "$SYSFS" ] || return 0
-	for _p in "$SYSFS"/phy*; do
+	_drv=$1; _sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	[ -d "$_sysfs" ] || return 0
+	for _p in "$_sysfs"/phy*; do
 		[ -e "$_p/device/driver" ] || continue
 		_l=$(readlink "$_p/device/driver") || continue
 		case "${_l##*/}" in "$_drv") echo "${_p##*/}"; return 0 ;; esac
@@ -238,7 +240,8 @@ phy_for_driver() {
 }
 # bdf_of_phy PHY -> the PCI BDF (basename of the resolved device dir), e.g. 0000:00:02.0.
 bdf_of_phy() {
-	_t=$(readlink -f "$SYSFS/$1/device") || return 0
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	_t=$(readlink -f "$_sysfs/$1/device") || return 0
 	echo "${_t##*/}"
 }
 
@@ -727,11 +730,14 @@ MARKER = "TENVM-BOOTSTRAP-COMPLETE"
 BOOT_FALLBACK = "procd: - init complete -"     # accept as a weaker "kernel booted" signal
 TIMEOUT = int(os.environ.get("SMOKE_TIMEOUT", "360"))
 
+# Prefer unified firmware images (usable directly via -bios); the split AAVMF_CODE.fd is
+# last because it really wants a paired varstore.
 FIRMWARE_CANDIDATES = [
-    "/usr/share/AAVMF/AAVMF_CODE.fd",
     "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
     "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+    "/usr/share/AAVMF/QEMU_EFI.fd",
     "/usr/share/qemu/edk2-aarch64-code.fd",
+    "/usr/share/AAVMF/AAVMF_CODE.fd",
 ]
 
 

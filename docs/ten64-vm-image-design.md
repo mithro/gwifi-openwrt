@@ -221,7 +221,7 @@ tenvm-image/
     etc/config/wireless                # new (minimal mesh0 template)
     etc/uci-defaults/99-tenvm-bootstrap# new (eth0 trunk + bat0 + cron + radio-id)
   verify-tenvm-image.py                # new (rootfs asserts)
-  qemu-smoke-boot.sh                   # new (headless boot test, KVM/TCG auto)
+  qemu-smoke-boot.py                   # new (headless boot test, KVM/TCG auto; uv-run)
   README.md                            # new (build + smoke-boot instructions)
 docs/
   ten64-vm-image-design.md             # this file
