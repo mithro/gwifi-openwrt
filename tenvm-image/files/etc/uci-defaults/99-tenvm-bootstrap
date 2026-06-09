@@ -65,6 +65,12 @@ mkdir -p /etc/crontabs
 # --- radios: assign mesh/band roles by driver (no-op until passthrough exists) ---
 [ -x /usr/sbin/gwifi-radio-setup ] && /usr/sbin/gwifi-radio-setup || true
 
-# Completion marker (visible on the boot serial console; observed by qemu-smoke-boot.py).
-echo "TENVM-BOOTSTRAP-COMPLETE uplink=$UPLINK"
+# First-boot completion marker. uci-defaults stdout is captured by logd, NOT shown on
+# the serial console, so write it to /dev/console explicitly — visible to an operator
+# watching the console and observable by qemu-smoke-boot.py. Fall back to stdout.
+if [ -w /dev/console ]; then
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=$UPLINK" > /dev/console
+else
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=$UPLINK"
+fi
 exit 0
