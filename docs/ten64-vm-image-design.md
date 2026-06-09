@@ -27,9 +27,9 @@ openwisp-config attempts controller registration.* No radio is required to valid
 - **G3** Driver + firmware for **both** of ten64's PCIe radios baked in:
   `kmod-ath11k-pci` + `ath11k-firmware-qcn9074` (QCN6024/9074), and
   `kmod-ath10k` + `ath10k-firmware-qca9377` (QCA9377).
-- **G4** Reuse the DRY `fleet-files/` overlay (the OpenWISP UCI + `gwifi-backhaul-gate`
-  + hotplug hook) verbatim — the VM joins the same fleet behaviour with zero overlay
-  divergence.
+- **G4** Reuse the DRY `fleet-files/` overlay (`gwifi-backhaul-gate` + hotplug hook)
+  verbatim — the VM joins the same fleet behaviour with zero overlay divergence. (The
+  OpenWISP UCI is a *per-image* file, like gale/om2p — see R3/§7.5.)
 - **G5** First-boot bootstrap establishes the same VLAN map, `bat0`, per-VLAN bridges
   and backhaul-gating cron as gale, adapted to a **virtio trunk NIC (`eth0`)** instead
   of the gale DSA `wan` port.
@@ -76,8 +76,10 @@ openwisp-config attempts controller registration.* No radio is required to valid
   carries 2.4 GHz client APs. The VM runs `batctl gw server` (it has a wired uplink to
   ten64) and anchors the RF mesh. The fleet overlay stays 100% uniform.
 - **R2 (validation depth):** verify script **and** headless QEMU smoke-boot.
-- **R3 (DRY):** the OpenWISP UCI + `gwifi-backhaul-gate` + hotplug hook are the shared
-  `fleet-files/` source, merged at build time — not copied/forked into `tenvm-image/`.
+- **R3 (DRY):** `gwifi-backhaul-gate` + the hotplug hook are the shared `fleet-files/`
+  source, merged at build time — not copied/forked into `tenvm-image/`. The OpenWISP UCI
+  (`etc/config/openwisp`) is per-image: each of gale/om2p ships its own, and so does
+  tenvm (the controller stanza is identical apart from build-time secret substitution).
 - **R4 (no secrets / no sensitive data):** placeholders only in committed overlay; real
   secrets substituted at build from `fleet-secrets.conf`; no SSIDs/MACs in the repo.
 
@@ -163,8 +165,10 @@ completed at first boot by §7.3 once phys exist. (Rationale: guest PCI paths ar
 unknown until the libvirt XML pins them; capability/driver matching is path-independent.)
 
 ### 7.5 OpenWISP config & secrets
-Reused verbatim from `fleet-files/` (the `etc/config/openwisp` controller stanza with
-`management_interface 'br-mgmt'`) and the shared secret substitution. No change.
+tenvm ships its **own** `files/etc/config/openwisp` (per-image, like gale/om2p) — the
+controller stanza with `management_interface 'br-mgmt'` and `__OPENWISP_*__` placeholders
+substituted at build time. It is **not** in `fleet-files/` (which holds only the gate +
+hook). tenvm also ships its own `files/etc/config/usteer`, mirroring gale.
 
 ## 8. VM/network integration model (image-side only)
 
@@ -212,6 +216,8 @@ tenvm-image/
   build-tenvm-image.sh                 # new (sibling of build-gale-image.sh)
   tenvm.config                         # new (target/rootfs + packages + radio stacks)
   files/
+    etc/config/openwisp                # new (controller stanza, per-image like gale/om2p)
+    etc/config/usteer                  # new (steering config, mirrors gale)
     etc/config/wireless                # new (minimal mesh0 template)
     etc/uci-defaults/99-tenvm-bootstrap# new (eth0 trunk + bat0 + cron + radio-id)
   verify-tenvm-image.py                # new (rootfs asserts)
@@ -220,6 +226,6 @@ tenvm-image/
 docs/
   ten64-vm-image-design.md             # this file
   ten64-vm-image-plan.md               # implementation plan (next)
-# REUSED (no change): fleet-files/etc/config/openwisp, fleet-files/usr/sbin/
-#   gwifi-backhaul-gate, fleet-files/etc/hotplug.d/net/30-gwifi-backhaul
+# REUSED from fleet-files/ (no change): usr/sbin/gwifi-backhaul-gate,
+#   etc/hotplug.d/net/30-gwifi-backhaul
 ```
