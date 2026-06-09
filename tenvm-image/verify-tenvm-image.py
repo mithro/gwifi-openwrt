@@ -64,21 +64,23 @@ def read_rootfs(image_dir):
                   "etc/uci-defaults/99-tenvm-bootstrap"] + OVERLAY_EXEC[1:])
     tarballs = glob.glob(os.path.join(image_dir, "*rootfs.tar.gz"))
     if tarballs:
+        tarball = max(tarballs, key=os.path.getmtime)   # newest, in case a stale one lingers
         files, modes = {}, {}
-        with tarfile.open(tarballs[0], "r:gz") as tf:
+        with tarfile.open(tarball, "r:gz") as tf:
             for m in tf.getmembers():
                 rel = m.name.lstrip("./")
                 if rel in want and m.isfile():
                     files[rel] = tf.extractfile(m).read().decode(errors="replace")
                     modes[rel] = m.mode
-        return files, modes, "tarball %s" % os.path.basename(tarballs[0])
+        return files, modes, "tarball %s" % os.path.basename(tarball)
     roots = glob.glob(os.path.join(OWRT, "build_dir", "target-*", "root-*"))
     if roots:
         files, modes = {}, {}
         for rel in want:
             p = os.path.join(roots[0], rel)
             if os.path.isfile(p):
-                files[rel] = open(p, errors="replace").read()
+                with open(p, errors="replace") as fh:
+                    files[rel] = fh.read()
                 modes[rel] = os.stat(p).st_mode
         return files, modes, "staging %s" % roots[0]
     return None, None, None
@@ -87,7 +89,8 @@ def read_rootfs(image_dir):
 def find_manifest(image_dir):
     for name in sorted(os.listdir(image_dir)):
         if name.endswith(".manifest"):
-            return open(os.path.join(image_dir, name)).read()
+            with open(os.path.join(image_dir, name)) as fh:
+                return fh.read()
     return None
 
 
