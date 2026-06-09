@@ -1,0 +1,4 @@
+config usteer
+	option syslog '1'
+	option network 'br-int br-roam'
+	option load_kick_enabled '0'
