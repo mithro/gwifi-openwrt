@@ -11,6 +11,7 @@ eq() { if [ "$2" = "$3" ]; then printf '  PASS %s\n' "$1";
 # Build a fake /sys/class/ieee80211. Real sysfs models phyN/device as a SYMLINK to the
 # PCI <BDF> dir, and <BDF>/driver as a symlink to the bus driver — mirror that exactly.
 SB=$(mktemp -d ./tmp/radio-test.XXXXXX)
+trap 'rm -rf "$SB"' EXIT INT TERM   # clean up even if an assertion path exits early
 mkdir -p "$SB/phy0" "$SB/phy1" \
          "$SB/bus/ath11k_pci" "$SB/bus/ath10k_pci" \
          "$SB/devices/0000:00:03.0" "$SB/devices/0000:00:02.0"
@@ -26,9 +27,13 @@ eq "ath10k phy"        "phy0" "$(phy_for_driver ath10k_pci)"
 eq "missing driver"    ""     "$(phy_for_driver rtw88_pci)"
 eq "bdf of mesh phy"   "0000:00:02.0" "$(bdf_of_phy phy1)"
 
+# Empty sysfs dir (exists, no phy* entries): the glob stays literal -> empty, exit 0.
+mkdir -p "$SB/empty"
+GWIFI_RADIO_SYSFS="$SB/empty"
+eq "empty sysfs -> empty" "" "$(phy_for_driver ath11k_pci)"
+
 # No-sysfs case: empty result, exit 0 (image-first no-op).
 GWIFI_RADIO_SYSFS="$SB/nonexistent"
 eq "no sysfs -> empty" "" "$(phy_for_driver ath11k_pci)"
 
-rm -rf "$SB"
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
