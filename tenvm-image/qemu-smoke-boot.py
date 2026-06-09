@@ -12,6 +12,7 @@ import glob
 import gzip
 import os
 import platform
+import select
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,10 @@ def main():
     os.makedirs(TMP, exist_ok=True)
     disk = os.path.join(TMP, "smoke-disk.img")
     shutil.copyfile(img, disk)           # writable copy (UEFI/grub may write vars/state)
+    cleanup = [disk]
+    # if find_image decompressed a .gz into ./tmp, remove that scratch copy too
+    if os.path.abspath(img).startswith(os.path.abspath(TMP) + os.sep):
+        cleanup.append(img)
 
     use_kvm = platform.machine() == "aarch64" and os.path.exists("/dev/kvm")
     cmd = [qemu, "-M", "virt", "-m", "512", "-no-reboot", "-nographic",
@@ -85,15 +90,23 @@ def main():
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL, text=True, bufsize=1)
     deadline = time.time() + TIMEOUT
-    captured, ok, booted = [], False, False
+    ok, booted = False, False
     try:
         while time.time() < deadline:
+            # select with a rolling slice so the deadline is honoured even if qemu
+            # emits NO serial output (the OQ3 console-mismatch case) — a bare
+            # blocking readline() would hang here forever.
+            remaining = max(0.0, min(deadline - time.time(), 5.0))
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not ready:
+                if proc.poll() is not None:
+                    break
+                continue                  # poll slice expired; re-check deadline
             line = proc.stdout.readline()
             if not line:
                 if proc.poll() is not None:
                     break
                 continue
-            captured.append(line)
             sys.stdout.write("  | " + line)
             if MARKER in line:
                 ok = True
@@ -106,8 +119,9 @@ def main():
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-        if os.path.isfile(disk):
-            os.remove(disk)
+        for _f in cleanup:
+            if os.path.isfile(_f):
+                os.remove(_f)
 
     print()
     if ok:
