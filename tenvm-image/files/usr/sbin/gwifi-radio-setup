@@ -1,0 +1,75 @@
+#!/bin/sh
+# gwifi-radio-setup — assign mesh + band roles to the host's passed-through radios by
+# DRIVER (path-independent: a VM gets guest-assigned PCI slots). The WiFi-6 ath11k radio
+# anchors the 802.11s mesh + 5 GHz; the ath10k radio serves 2.4 GHz. Client APs come from
+# OpenWISP. No-op when no radio/phy is present (image-first / pre-passthrough).
+# Sourceable for tests via GWIFI_RADIO_SOURCED=1. See docs/ten64-vm-image-design.md §7.3.
+set -u
+LOG_TAG=gwifi-radio-setup
+
+# ---- pure helpers (unit-tested) -------------------------------------------
+# Each helper reads GWIFI_RADIO_SYSFS *live* (not a top-level snapshot) so tests can point
+# it at a fake sysfs tree after sourcing.
+# phy_for_driver DRIVER -> first phy whose device/driver basename == DRIVER ("" if none).
+phy_for_driver() {
+	_drv=$1; _sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	[ -d "$_sysfs" ] || return 0
+	for _p in "$_sysfs"/phy*; do
+		[ -e "$_p/device/driver" ] || continue
+		_l=$(readlink "$_p/device/driver") || continue
+		case "${_l##*/}" in "$_drv") echo "${_p##*/}"; return 0 ;; esac
+	done
+}
+# bdf_of_phy PHY -> the PCI BDF (basename of the resolved device dir), e.g. 0000:00:02.0.
+bdf_of_phy() {
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	_t=$(readlink -f "$_sysfs/$1/device") || return 0
+	echo "${_t##*/}"
+}
+
+# ---- runtime wiring (hardware; no-op without phys; bench-validated, OQ1) ---
+# radio_with_bdf BDF -> the uci wifi-device section whose 'path' contains BDF ("" if none).
+radio_with_bdf() {
+	_bdf=$1
+	for _s in $(uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'); do
+		case "$(uci -q get "wireless.$_s.path")" in
+			*"$_bdf"*) echo "$_s"; return 0 ;;
+		esac
+	done
+}
+
+main() {
+	_mesh_phy=$(phy_for_driver ath11k_pci)
+	_ap24_phy=$(phy_for_driver ath10k_pci)
+	if [ -z "$_mesh_phy$_ap24_phy" ]; then
+		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
+		return 0
+	fi
+	wifi config                                   # let OpenWrt derive correct radioN+path
+	if [ -n "$_mesh_phy" ]; then
+		_r=$(radio_with_bdf "$(bdf_of_phy "$_mesh_phy")")
+		if [ -n "$_r" ]; then
+			uci set "wireless.$_r.band=5g"
+			uci set "wireless.$_r.channel=auto"
+			uci set "wireless.$_r.disabled=0"
+			uci set wireless.mesh0.device="$_r"   # bind the mesh to the WiFi-6 radio
+			logger -t "$LOG_TAG" "mesh + 5GHz -> $_r ($_mesh_phy)"
+		fi
+	fi
+	if [ -n "$_ap24_phy" ]; then
+		_r=$(radio_with_bdf "$(bdf_of_phy "$_ap24_phy")")
+		if [ -n "$_r" ]; then
+			uci set "wireless.$_r.band=2g"
+			uci set "wireless.$_r.channel=auto"
+			uci set "wireless.$_r.disabled=0"
+			logger -t "$LOG_TAG" "2.4GHz -> $_r ($_ap24_phy)"
+		fi
+	fi
+	uci commit wireless
+	wifi reload
+}
+
+case "${GWIFI_RADIO_SOURCED:-}" in
+	1) : ;;            # sourced (tests) — do not run
+	*) main "$@" ;;
+esac
