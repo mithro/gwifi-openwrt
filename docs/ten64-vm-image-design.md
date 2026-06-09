@@ -10,8 +10,8 @@
 Produce an OpenWISP-managed OpenWrt **aarch64 VM image** that will run as a KVM guest
 on **ten64** and own ten64's two PCIe Wi-Fi radios once they are passed through. The
 image is built by the same overlay+secret-substitution pattern as `gale-image` and
-`om2p-image`, reuses the DRY shared `fleet-files/` overlay (OpenWISP config + the
-backhaul-gate), and is a **full mesh sibling of gale**: the WiFi-6 radio carries the
+`om2p-image`, reuses the DRY shared `fleet-files/` overlay (the
+backhaul-gate + hotplug hook), and is a **full mesh sibling of gale**: the WiFi-6 radio carries the
 802.11s + batman-adv mesh in addition to client APs, so the core node is both a wired
 batman gateway and an RF mesh anchor.
 
