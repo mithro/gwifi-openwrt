@@ -229,3 +229,31 @@ docs/
 # REUSED from fleet-files/ (no change): usr/sbin/gwifi-backhaul-gate,
 #   etc/hotplug.d/net/30-gwifi-backhaul
 ```
+
+## 12. Implementation & validation results (2026-06-09)
+
+Built and validated on branch `ten64-vm-image` (subagent-driven; one fresh implementer +
+two-stage review per task). All three acceptance gates green:
+
+- **Build:** `armsr/armv8` from a tree that previously only built ipq40xx/ath79, so a fresh
+  **aarch64 toolchain** was compiled (~the long pole). Output: `…-generic-ext4-combined-efi.img`
+  (raw, bootable) + `…-generic-rootfs.tar.gz` + `…-generic.manifest` (plus squashfs variants).
+- **Verify** (`verify-tenvm-image.py`): **PASS, 25/25** — openwisp + wireless rendered with
+  no leftover placeholders, all four overlay files present+executable, all 10 packages
+  (incl. `ath11k-firmware-qcn9074` / `ath10k-firmware-qca9377`), combined-efi artifact present.
+- **Smoke-boot** (`qemu-smoke-boot.py`, TCG on the x86 dev host): **PASS** — UEFI(QEMU_EFI.fd)
+  → GRUB → our aarch64 kernel → procd → `99-tenvm-bootstrap` ran and brought up `bat0` +
+  `br-mgmt/int/roam/iot/guest` (each `eth0.<vid>`+`bat0.<vid>` forwarding); `virtio-net`
+  (`eth0`) + `virtio-blk` enumerated — confirming §8's zero-extra-package VM model.
+
+**OQ3 finding (corrects the "console-mismatch" framing):** the first smoke-boot reached the
+bootstrap (bridges came up) but never showed the marker, because **uci-defaults stdout is
+captured by logd, not the serial console** — *not* a console mismatch (the kernel console
+is correctly `ttyAMA0`, which `-nographic` captures). Fix: the bootstrap writes
+`TENVM-BOOTSTRAP-COMPLETE` to `/dev/console` explicitly (also useful to an operator), with a
+stdout fallback; the marker then appears at ~20 s kernel-time and the smoke-boot PASSes.
+
+**OQ1 remains the only deferred-validation item:** `gwifi-radio-setup`'s real-radio path
+(driver→radioN binding via `wifi config` + `radio_with_bdf`) is exercised live only once the
+radios are passed through; the final review confirmed it correct by construction against the
+tree's `mac80211.uc` detector, and it is a no-op without phys.
