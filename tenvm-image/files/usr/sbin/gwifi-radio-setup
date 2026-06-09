@@ -29,6 +29,9 @@ bdf_of_phy() {
 
 # ---- runtime wiring (hardware; no-op without phys; bench-validated, OQ1) ---
 # radio_with_bdf BDF -> the uci wifi-device section whose 'path' contains BDF ("" if none).
+# `wifi config` writes radioN.path as the OpenWrt phy path (e.g. pci.../<BDF>), so the BDF
+# is its trailing component; a substring test maps a phy back to its radioN section. Keep
+# it a substring match (not equality) — the path carries a bus prefix the BDF lacks.
 radio_with_bdf() {
 	_bdf=$1
 	for _s in $(uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'); do
@@ -45,7 +48,10 @@ main() {
 		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
 		return 0
 	fi
-	wifi config                                   # let OpenWrt derive correct radioN+path
+	# Derive radioN sections + correct PCI paths from the detected phys. wifi config also
+	# emits a disabled default AP (mode=ap network=lan ssid=OpenWrt) per radio; those never
+	# broadcast and OpenWISP overwrites the client wifi-ifaces, so they are harmless stubs.
+	wifi config
 	if [ -n "$_mesh_phy" ]; then
 		_r=$(radio_with_bdf "$(bdf_of_phy "$_mesh_phy")")
 		if [ -n "$_r" ]; then
