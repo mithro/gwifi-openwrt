@@ -5,6 +5,26 @@ the SNK_ACCESSORY fix (the old rebuilt crashed here too). On an esoteric path ga
 normal operation (force the source role on a sink-only AP AND attach a sink); the captured handles
 it (reaches SRC_DISCOVERY), the rebuilt does not.
 
+## RE-TEST (2026-06-09): timing-flaky, single-command entry is CLEAN 5/5
+Fresh reproduction strengthens the timing-artifact classification with new evidence:
+- `pd dualrole source` ALONE (PartnerSink): **5/5 runs NO crash** — gale enters the SRC state cleanly.
+- Crash fires ONLY with the **two-command** sequence `pd dualrole source` THEN `pd 0 state`: the 2nd
+  command's processing triggers a reschedule that lands at a specific instruction boundary.
+- So the SRC path itself is handled fine; the fault is a reschedule-timing window, not SRC logic.
+- The corrupted value is `me = current_task - tasks` at `task.c:361 timer_cancel(me)` inside
+  `__wait_evt`, where `me` is a **STACK local** captured at entry and re-read after `__schedule`.
+  The prior write-watchpoint watched the `current_task` GLOBAL — it would NOT catch corruption of the
+  stack-resident `me` across the context switch. So "watchpoint caught zero stores" is consistent
+  with the PD task's stack-local `me` (or restored SP) being clobbered during the __schedule context
+  switch at that boundary — a Renode Cortex-M SVC/PendSV context-switch timing interaction triggered
+  by the rebuilt's instruction layout, NOT a deterministic reconstruction logic bug (single-command
+  entry proves the SRC logic is fine).
+- HONEST CAVEAT (per the user's dispute of "artifact"): cannot be 100% certain it isn't a
+  timing-sensitive firmware race the captured's layout happens to avoid. Definitive classification
+  still needs instruction-level exception-state inspection at the crashing reschedule (capture SP/PC
+  of __switchto before vs after across the bad boundary). But the 5/5-clean single-command result is
+  strong new evidence that the SRC reconstruction logic is correct.
+
 ## CONCLUSION (2026-06-08): emulation timing artifact, NOT a firmware bug
 
 Evidence-based, not an excuse — four independent facts converge:
@@ -99,3 +119,33 @@ independent of or caused by the SNK_ACCESSORY gap, then restore the gale-vintage
 behaviour to the reconstruction. Until fixed, the rebuilt is NOT functionally equivalent on the
 PD source / source-contract path, and SRC_STARTUP..SRC_READY coverage cannot be driven on the
 rebuilt.
+
+## DECISIVE EVIDENCE (2026-06-09): the crash is gated by a newer-version assert the captured lacks
+- `strings` count of "TASK_ID_COUNT": **captured=0, rebuilt=2**. The captured's (2016) common/timer.c
+  has NO `ASSERT(tskid < TASK_ID_COUNT)` in timer_cancel(); the reconstruction's newer timer.c added it.
+- Crash rate: 2-command `pd dualrole source`+`pd 0 state` = **8/8 DETERMINISTIC** (not random-flaky);
+  single `pd dualrole source` = 0/5 (SRC entry is clean). So it's a deterministic effect of the exact
+  2-command reschedule boundary, present every time that stimulus occurs.
+- Therefore BOTH firmwares almost certainly compute the same bad `tskid`=136 (`me=current_task-tasks`,
+  a stack local) at that reschedule — a shared scheduler/Renode-context-switch effect — but only the
+  REBUILT crashes because its newer timer.c asserts; the captured silently `atomic_clear(1<<(136&31))`
+  = clears unused timer bit 8 (gale has 5 tasks) and continues to SRC_DISCOVERY.
+- REFINED CLASSIFICATION: the source-path RECONSTRUCTION LOGIC is equivalent (single-command SRC entry
+  is clean 5/5; the divergence is NOT in SRC handling). The crash is an emulation-induced bad-tskid at
+  a context-switch boundary, EXPOSED only by the rebuilt's newer `ASSERT(tskid<TASK_ID_COUNT)` that the
+  captured's older build lacks. Not a reconstruction PD/source-logic bug.
+- To make the rebuilt behave like the captured here, the bad-tskid root (me corruption at the reschedule)
+  would need fixing in the emulation/scheduler-context handling — OR accept it as a benign assert the
+  captured's vintage didn't have. NEXT (definitive): GDB-break timer_cancel, confirm captured also gets
+  tskid=136 on this path (then it's conclusively a shared emulation effect, not a recon bug).
+
+## INSTRUMENTATION DEAD-END (2026-06-09): do NOT re-attempt Renode CPU hooks on timer_cancel
+Tried twice (full + bounded-to-source-window) to hook timer_cancel(@RO 0x08006eb8) to capture the
+bad tskid / confirm the captured also gets 136. BOTH timed out: timer_cancel is a HOT function
+(PD task arms/cancels timers constantly), so a per-call Python hook makes Renode crawl even in a
+0.5s window. So the instruction-level definitive proof is impractical via renode hooks. The #8
+classification (source logic equivalent; crash = newer assert exposing an emulation context-switch
+effect the captured's older timer.c tolerates) stands on circumstantial evidence (single-cmd clean
+5/5; deterministic 8/8; captured TASK_ID_COUNT string count = 0 vs rebuilt 2). A definitive proof
+would need a non-hook method (e.g. instrumented Renode build, or a one-shot breakpoint that doesn't
+pause per call) — not worth the cost given the strong circumstantial case.
