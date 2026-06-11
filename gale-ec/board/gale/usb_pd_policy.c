@@ -4,6 +4,7 @@
  */
 
 #include "adc.h"
+#include "charge_manager.h"
 #include "common.h"
 #include "console.h"
 #include "gpio.h"
@@ -64,6 +65,25 @@ void pd_set_input_current_limit(int port, uint32_t max_ma,
 	 */
 	if (supply_voltage == 5000 && max_ma > 2499)
 		set_ap_power(1);
+}
+
+/*
+ * Case-Closed-Debug glue. The CCD SRC_ACCESSORY path in usb_pd_protocol.c calls
+ * these two charge_manager-era hooks unconditionally. gale runs no charge manager
+ * (sink-only, no battery/charger IC), so they are sink-only board stubs:
+ * typec_set_input_current_limit reuses the existing 5V/AP-power policy above;
+ * charge_manager_update_dualrole has nothing to track (no multi-supplier charging).
+ * Keeping them here confines the CCD reconstruction to board/gale.
+ */
+void typec_set_input_current_limit(int port, uint32_t max_ma,
+				   uint32_t supply_voltage)
+{
+	pd_set_input_current_limit(port, max_ma, supply_voltage);
+}
+
+void charge_manager_update_dualrole(int port, enum dualrole_capabilities cap)
+{
+	/* No charge manager on gale; nothing to update. */
 }
 
 int pd_snk_is_vbus_provided(int port)
