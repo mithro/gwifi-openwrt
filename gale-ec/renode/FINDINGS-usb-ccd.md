@@ -271,3 +271,43 @@ reappears in the rebuilt symbol table and the CNTR/ISTR/BTABLE literal counts ma
 the original. Once present, the SNK→SRC→SRC_ACCESSORY→`ccd_set_mode`→`usb_init` path
 is compiled in, and the `GaleAdc.cs` faithful dynamic-CC model (added alongside this
 finding) drives the debug-accessory detection that brings USB up.
+
+## ROOT CAUSE of the EP3-vs-EP4 endpoint divergence (#7, found 2026-06-09)
+The reconstruction's `board/gale/board.h` inserts a RESERVED interface+endpoint at index 2/3:
+```
+USB_IFACE_CONSOLE 0, USB_IFACE_AP_STREAM 1, USB_IFACE_UNUSED 2 (reserved), USB_IFACE_SPI 3, COUNT 4
+USB_EP_CONTROL 0, USB_EP_CONSOLE 1, USB_EP_AP_STREAM 2, USB_EP_UNUSED 3 (reserved), USB_EP_SPI 4, COUNT 5
+```
+That `USB_EP_UNUSED 3 (reserved)` pushes `USB_EP_SPI` to **4**, whereas the captured original puts
+the raiden/SPI endpoint at **3** (live EPnR map via usb_host.py). So a host raiden_debug_spi driver
+expecting EP3 talks to the wrong endpoint on the reconstruction -> the usb_spi/CCD divergence.
+
+### Fix direction (DO NOT apply blindly — verify captured layout first, per the #10 lesson)
+Likely fix: remove the reserved `USB_IFACE_UNUSED`/`USB_EP_UNUSED` slot so `USB_EP_SPI`=3 /
+`USB_EP_COUNT`=4, matching the captured. BUT must FIRST confirm the captured's full endpoint count
+(does it have 4 endpoints {0,1,2,3=SPI} or 5 with the unused elsewhere?) by reading the captured's
+live config descriptor / EPnR map (usb_host.py) — the reconstruction author added the reserved slot
+for some reason, and the captured is ground truth. Only after confirming the captured has SPI at EP3
+with no reserved EP3 should the reserved slot be removed + EC rebuilt + re-verified. This is a REAL
+reconstruction config divergence (not an emulation artifact): the endpoint address is in the static
+USB descriptor the host enumerates.
+
+## VERIFIED FIX (2026-06-09): apples-to-apples descriptor comparison
+Both firmwares under ForceAccessory enumerate IDENTICALLY except the raiden endpoint:
+  captured: wTotalLength=78 bNumInterfaces=4 raiden=EP3
+  rebuilt : wTotalLength=78 bNumInterfaces=4 raiden=EP4
+Same descriptor size + interface count => the reserved USB_EP_UNUSED=3 does NOT emit a descriptor;
+it only bumps the SPI hardware endpoint to 4. So the captured fits raiden into EP3 (AP_STREAM=2,
+SPI=3) with no reserved endpoint. FIX (board/gale/board.h): drop USB_EP_UNUSED, set USB_EP_SPI=3,
+USB_EP_COUNT=4. Keeps the 4 interfaces (bNumInterfaces matches) and moves raiden to EP3 to match the
+captured. Then rebuild EC + re-verify raiden=EP3 via usb_host.py.
+
+## ✅ #7 FIXED + VERIFIED (2026-06-09)
+Applied to ec/board/gale/board.h: removed `USB_EP_UNUSED 3 (reserved)`, set `USB_EP_SPI 3`,
+`USB_EP_COUNT 4`. Rebuilt gale EC (2016q3 toolchain, `make BOARD=gale build/gale/ec.bin`) ->
+ec-rebuilt-ep3fix.bin. Verified via usb_host.py under ForceAccessory: rebuilt now enumerates
+raiden on EP3 with buffer addresses (EP0 0x40006040/0x40006080, EP1 0x400060C0, raiden
+rx=0x40006180 tx=0x40006140) BYTE-IDENTICAL to the captured, wTotalLength=78 bNumInterfaces=4,
+raiden JEDEC ef4017 PASS. The reconstruction's USB descriptor/endpoint layout now matches the
+captured exactly. (New binary kept as ec-rebuilt-ep3fix.bin; the original ec-rebuilt.bin remains the
+coverage-campaign reference until the fix is promoted.)
