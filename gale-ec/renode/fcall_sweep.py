@@ -29,6 +29,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=CAPTURED)
     ap.add_argument("--max", type=int, default=80)
+    ap.add_argument("--start", type=int, default=0,
+                    help="index offset into the address-sorted function list (RW funcs begin ~index 500)")
     ap.add_argument("--per-session", type=int, default=40)
     args = ap.parse_args()
     binp = os.path.abspath(args.bin)
@@ -39,6 +41,9 @@ def main():
     allfuncs = set(calls) | rda.ptr_targets(binp)
     funcs = sorted(f for f in allfuncs
                    if (0x08000000 <= f < 0x0800b744) or (0x08010000 <= f < 0x0801b744))
+    # address-sorted, so RO funcs occupy the low indices and RW funcs the high indices; --start lets
+    # us reach the RW bank (the default --max 80 alone only ever sweeps the lowest RO functions).
+    funcs = funcs[args.start:]
     if args.max:
         funcs = funcs[:args.max]
     print("sweeping %d functions x %d vectors via direct invocation" % (len(funcs), len(VECTORS)))
@@ -53,13 +58,33 @@ def main():
         with open(trace) as f:
             for ln in f:
                 ln = ln.strip()
-                if not ln.startswith("0x"):
+                if not ln.startswith("0x") or len(ln) < 4:
                     prev = None; continue
-                pc = int(ln, 16); executed.add(pc)
+                try:
+                    pc = int(ln, 16)
+                except ValueError:
+                    prev = None; continue       # truncated/partial trace line
+                executed.add(pc)
                 if prev is not None:
                     edges.add((prev, pc))
                 prev = pc
         os.remove(trace)
+
+    import pickle
+    outp = os.path.join(TMP, "sweep_edges.pkl")
+
+    def checkpoint():
+        # durable accumulate: union in-memory progress with on-disk pkl and rewrite, so a SIGTERM
+        # (timeout) mid-sweep still saves everything swept so far. Called at every session refresh.
+        ex, ed = set(executed), set(edges)
+        if os.path.exists(outp):
+            try:
+                pe, pd = pickle.load(open(outp, "rb"))
+                ex |= set(pe); ed |= set(pd)
+            except Exception:
+                pass
+        with open(outp, "wb") as f:
+            pickle.dump((ex, ed), f)
 
     i = 0
     calls_this_session = 0
@@ -67,7 +92,7 @@ def main():
     def fresh():
         nonlocal s, calls_this_session
         if s is not None:
-            s.close(); fold()
+            s.close(); fold(); checkpoint()
         s = fcall.Session(binp, boot="1.5", trace=trace)
         try:
             s.rsp.writemem(0x20002000, b"\x00" * 64)
@@ -94,6 +119,7 @@ def main():
             print("  ...%d/%d functions swept, %d edges so far" % (i, len(funcs), len(edges)))
     if s is not None:
         s.close(); fold()
+    checkpoint()                                      # final durable save (accumulated with on-disk)
 
     # measure both-dirs over the rda denominator
     taken = set(a for a in cond if (a, cond[a][1]) in edges)
@@ -102,10 +128,7 @@ def main():
     reached = [a for a in cond if a in executed]
     print("\nsweep-only coverage: %d reached, %d both-dirs (of %d rda branches)" %
           (len(reached), len(both), len(cond)))
-    import pickle
-    with open(os.path.join(TMP, "sweep_edges.pkl"), "wb") as f:
-        pickle.dump((executed, edges), f)
-    print("saved executed/edges -> tmp/sweep_edges.pkl (union with campaign for total)")
+    print("saved executed/edges -> tmp/sweep_edges.pkl (accumulated; union with campaign for total)")
 
 
 if __name__ == "__main__":
