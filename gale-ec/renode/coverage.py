@@ -25,10 +25,10 @@ import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
-TOOLCHAIN = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
-OBJDUMP = os.path.join(TOOLCHAIN, "arm-none-eabi-objdump")
-RW_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RW/ec.RW.elf"
-RO_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RO/ec.RO.elf"
+OBJDUMP = "arm-none-eabi-objdump"   # system cross-binutils on PATH
+# Vendored rebuilt firmware refs (in-repo, committed); override via GALE_REBUILT_R{O,W}_ELF.
+RW_ELF = os.environ.get("GALE_REBUILT_RW_ELF", os.path.join(HERE, "data", "rebuilt-RW.elf"))
+RO_ELF = os.environ.get("GALE_REBUILT_RO_ELF", os.path.join(HERE, "data", "rebuilt-RO.elf"))
 TRACE = os.path.join(HERE, "cov_trace.txt")
 
 # Thumb conditional branches + compare-and-branch (the branch points for coverage).

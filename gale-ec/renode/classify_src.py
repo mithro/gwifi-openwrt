@@ -16,11 +16,12 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
-A2L = os.path.join(TC, "arm-none-eabi-addr2line")
-RO_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RO/ec.RO.elf"
-RW_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RW/ec.RW.elf"
-SRC = "/home/tim/local/gwifi/ec-rebuild/ec"
+A2L = "arm-none-eabi-addr2line"   # system cross-binutils on PATH
+# Vendored rebuilt firmware refs (in-repo, committed); override via GALE_REBUILT_R{O,W}_ELF.
+RO_ELF = os.environ.get("GALE_REBUILT_RO_ELF", os.path.join(HERE, "data", "rebuilt-RO.elf"))
+RW_ELF = os.environ.get("GALE_REBUILT_RW_ELF", os.path.join(HERE, "data", "rebuilt-RW.elf"))
+# Optional platform/ec source tree (outside this repo) for source-line context. Set GALE_EC_SRCROOT.
+SRC = os.environ.get("GALE_EC_SRCROOT", "")
 
 
 def load_uncovered(img):

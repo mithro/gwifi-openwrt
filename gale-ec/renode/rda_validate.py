@@ -13,10 +13,11 @@ import subprocess
 
 import rda
 
-TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
-OBJDUMP = os.path.join(TC, "arm-none-eabi-objdump")
-RW_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RW/ec.RW.elf"
-RO_ELF = "/home/tim/local/gwifi/ec-rebuild/ec/build/gale/RO/ec.RO.elf"
+HERE = os.path.dirname(os.path.abspath(__file__))
+OBJDUMP = "arm-none-eabi-objdump"   # system cross-binutils on PATH
+# Vendored rebuilt firmware refs (in-repo, committed); override via GALE_REBUILT_R{O,W}_ELF.
+RW_ELF = os.environ.get("GALE_REBUILT_RW_ELF", os.path.join(HERE, "data", "rebuilt-RW.elf"))
+RO_ELF = os.environ.get("GALE_REBUILT_RO_ELF", os.path.join(HERE, "data", "rebuilt-RO.elf"))
 REBUILT = "ec-rebuilt.bin"
 COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|cbnz)(\.[nw])?\b')
 
