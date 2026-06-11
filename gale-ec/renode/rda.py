@@ -39,9 +39,16 @@ import capstone
 # Two images packed into one 128 KiB dump: RO at 0x08000000, RW at 0x08010000.
 RO_BASE = 0x08000000
 RW_BASE = 0x08010000
-# .text spans measured from the rebuilt ELF (.text size 0xb744 per image); used only to bound the
-# vector-table handler test and the pointer-table scan, never to gate the recursive descent itself.
-TEXT_RANGES = [(0x08000000, 0x0800b744), (0x08010000, 0x0801b744)]
+# .text end measured FROM THE CAPTURED IMAGE, not the rebuilt ELF. The captured code is larger than
+# the (not-yet-size-identical) rebuilt .text: the last function command_typec ends at 0x0800ba18
+# (a `pop {r4-r7,pc}` + nop), after which lie its literal pool and a small u16 table up to the
+# __cmds console-command table at 0x0800ba54. The old bound 0x0800b744 (= rebuilt .text size) wrongly
+# excluded 13 real functions — tcpm_get_cc/tcpm_get_message/tcpc_alert, mutex_unlock, usb_mux_set/get,
+# __gnu_thumb1_case_uhi and command_typec — from disassembly AND from the branch denominator, because
+# _in_text() gates the recursive descent (a `bl mutex_unlock` past the bound was refused). Empirically
+# verified: extending to 0x0800ba18 adds exactly 56 reachable conditional branches (28 per image) and
+# removes none; extending further to 0x0800ba54 adds nothing (the gap is literal-pool/table data).
+TEXT_RANGES = [(0x08000000, 0x0800ba18), (0x08010000, 0x0801ba18)]
 
 
 def _in_text(a):

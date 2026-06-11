@@ -101,6 +101,28 @@ class Rsp:
         self.cmd("z0,%x,2" % SPIN)
         return self.readreg(0)
 
+    def call_stepped(self, func, args=(), max_steps=200000, step_timeout=20):
+        """Invoke func(args...) by SINGLE-STEPPING, returning the ordered list of executed PCs.
+        Robust alternative to CreateExecutionTracing for sessions where a machine modification
+        (LoadPlatformDescriptionFromString) disrupts the execution tracer. Stops when PC reaches the
+        spin trap (function returned) or max_steps is hit."""
+        for i, a in enumerate(args[:4]):
+            self.setreg(i, a & 0xFFFFFFFF)
+        self.setreg(14, SPIN | 1)
+        self.setreg(15, func & ~1)
+        pcs = []
+        old = self.sk.gettimeout(); self.sk.settimeout(step_timeout)
+        try:
+            for _ in range(max_steps):
+                pc = self.readreg(15)
+                pcs.append(pc)
+                if (pc & ~1) == (SPIN & ~1):
+                    break
+                self.cmd("s")             # single-step one instruction
+        finally:
+            self.sk.settimeout(old)
+        return pcs
+
 
 _next_port = [3333]
 
@@ -108,7 +130,7 @@ _next_port = [3333]
 class Session:
     """A booted firmware + GDB stub; supports many calls, optionally with execution tracing.
     Each session uses a FRESH port so a torn-down session never collides with the next one."""
-    def __init__(self, binpath, boot="1.5", mon=None, trace=None, port=None):
+    def __init__(self, binpath, boot="1.5", mon=None, trace=None, port=None, post_mon=None):
         self.trace = trace
         if port is None:
             port = _next_port[0]
@@ -117,8 +139,13 @@ class Session:
         c = ['$h=@%s' % HERE, '$bin=@%s' % os.path.abspath(binpath), '$name="fc"',
              'include @%s' % BASE] + list(mon or [])
         c += ['emulation RunFor "%s"' % boot, 'sysbus WriteWord 0x%X 0xE7FE' % SPIN]
+        # Create the execution tracer BEFORE post_mon so a post_mon machine modification
+        # (e.g. LoadPlatformDescriptionFromString swapping a peripheral) does not prevent the tracer
+        # from attaching to the CPU. post_mon then runs AFTER boot (so a non-bridging swapped peripheral
+        # is absent during the firmware's boot-time init) but before the GDB server starts.
         if trace:
             c += ['cpu CreateExecutionTracing "t" @%s PC' % trace]
+        c += list(post_mon or [])
         c += ['machine StartGdbServer %d' % port]
         # Own process group + memory-capped cgroup so close() can kill the WHOLE tree (the renode
         # bash wrapper AND its dotnet child) — orphaned dotnet children were the memory leak that

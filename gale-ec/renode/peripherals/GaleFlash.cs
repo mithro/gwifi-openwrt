@@ -47,6 +47,11 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public bool InjectWriteProtErr { get; set; }
         public bool InjectProgErr { get; set; }
         public bool StuckBusy { get; set; }
+        // FLASH_WRPR value (1 bit per write-protect group; 1=unprotected). Default 0xFFFFFFFF (nothing
+        // protected, matches the dev unit at boot, so flash_pre_init reconciliation stays a no-op).
+        // A coverage scenario sets it AFTER boot to a value with some groups protected (bits clear) so
+        // command_flashinfo's per-bank protect arms + RO_NOW/ALL_NOW flag arms run both ways.
+        public uint WrpValue { get; set; } = 0xFFFFFFFF;
 
         public void Reset()
         {
@@ -56,6 +61,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             ar = 0x00000000;
             unlockState = 0;
             optUnlockState = 0;
+            WrpValue = 0xFFFFFFFF;
         }
 
         public uint ReadDoubleWord(long offset)
@@ -66,7 +72,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 case SR:   return sr | (StuckBusy ? SR_BSY : 0u); // BSY=0 normally (instant op)
                 case CR:   return cr;
                 case OBR:  return OBR_LEVEL0;    // RDP level 0, not protected
-                case WRPR: return 0xFFFFFFFF;    // no sector write-protected
+                case WRPR: return WrpValue;     // write-protect groups (default 0xFFFFFFFF = none)
                 default:   return 0;
             }
         }

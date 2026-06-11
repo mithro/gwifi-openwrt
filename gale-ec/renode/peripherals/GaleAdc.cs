@@ -61,12 +61,33 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // has different RAM addresses than the recreation). gale's force-sink board policy keeps
         // it sinking, so a constant CC1 source level drives SNK_DISCONNECTED -> SNK_DISCOVERY.
         public bool ForceSourceCc { get; set; }
+        public int ForceRaw { get; set; } = -1;   // -1 = off; else raw 12-bit value for non-CC channels
 
         // Address-independent DEBUG ACCESSORY: present BOTH CC lines in the Rd band so that when
         // gale sources (DRP toggle) it detects a Type-C debug accessory -> SRC_ACCESSORY ->
         // ccd_set_mode -> usb_init/CCD. Covers the source-accessory + CCD bring-up branches on
         // any image without the per-firmware cc_pull RAM address.
         public bool ForceAccessory { get; set; }
+
+        // Address-independent STABLE SOURCE partner (the correct sink-attach stimulus): present a constant
+        // >= PD_SRC_VNC (1600mV) on CC1. While gale SINKS (cc_pull=RD) this reads SNK_3_0 (a 3A source
+        // attached) -> SNK_DISCONNECTED_DEBOUNCE -> SNK_DISCOVERY -> contract -> SNK_READY. While gale
+        // SOURCES (cc_pull=RP) the same level reads >= VNC = OPEN/NC -> no sink -> gale does NOT
+        // source-attach and toggles back to sink. Unlike ForceSourceCc (800mV, which a SOURCE classifies
+        // as an Rd debug accessory -> gale latches SRC_ACCESSORY at boot and never sink-contracts), this
+        // value is unambiguous in BOTH roles, so set BEFORE boot it makes gale's first detection sink-attach.
+        public bool ForcePartnerSrc { get; set; }
+
+        // Address-independent AUDIO ACCESSORY: present BOTH CC lines in the Ra band (both tied to GND
+        // through Ra, < 400 mV) so that when gale sources it detects a Type-C analog-audio adapter ->
+        // the cc1==RA && cc2==RA arm (usb_pd_protocol.c:1584) + its debounce/cc_state handling. This
+        // models a real audio accessory the prior knobs could not present (they only do Rd/open bands).
+        public bool ForceAudioAccessory { get; set; }
+
+        // Address-independent POWERED-CABLE termination: Ra on CC1, Rd on CC2. Drives the
+        // cc1==RA && cc2!=RA fall-through of the audio-accessory test (usb_pd_protocol.c:1584) that
+        // neither both-Ra nor both-Rd can reach. Models a real e-marked cable + sink.
+        public bool ForceCableRa { get; set; }
 
         // Address-independent NORMAL SINK partner attached to gale-as-SOURCE: present ONE CC in the
         // Rd band (sink on CC1) and the other OPEN (>= VNC). When gale is forced to source
@@ -162,6 +183,27 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 {
                     return CC_RD_BAND_RAW;
                 }
+                if(ForcePartnerSrc)  // address-independent stable SOURCE on CC1 (>= VNC: sink sees SNK_3_0,
+                {                    // source sees OPEN) -> gale sink-attaches at boot, never SRC_ACCESSORY.
+                    return chselr == (1u << AIN_CC1) ? CC_OPEN_RAW : 0u;
+                }
+                if(ForceAudioAccessory)  // address-independent: both CC in Ra band (audio accessory)
+                {
+                    // A real Type-C analog-audio adapter ties both CC lines to GND through Ra.
+                    // While gale SOURCES (cc_pull==RP) both lines read < PD_SRC_1_5_RD_THRESH_MV
+                    // (400 mV) so cc_voltage_to_status classifies them TYPEC_CC_VOLT_RA on both,
+                    // driving pd_task's audio-accessory arm (usb_pd_protocol.c:1584 cc1==RA && cc2==RA).
+                    return CC_RA_BAND_RAW;
+                }
+                if(ForceCableRa)    // powered (e-marked) cable, no sink: Ra on CC1 (cable VCONN), CC2 open
+                {
+                    // A real e-marked cable with nothing plugged through it presents Ra on one CC line
+                    // (its VCONN tap) and leaves the other OPEN. While gale SOURCES this reads cc1==RA,
+                    // cc2==OPEN. In the captured classifier that means: cc1!=RD and cc2!=RD (skip debug),
+                    // cc1==RA but cc2!=RA -> the FALL-THROUGH of the audio-accessory test
+                    // (usb_pd_protocol.c:1584). Asymmetric; unreachable via the both-Ra/both-Rd knobs.
+                    return chselr == (1u << AIN_CC1) ? CC_RA_BAND_RAW : CC_OPEN_RAW;
+                }
                 if(PartnerSink)     // normal sink on CC1, CC2 open -> gale-as-source attaches a sink
                 {
                     return chselr == (1u << AIN_CC1) ? CC_RD_BAND_RAW : CC_OPEN_RAW;
@@ -185,7 +227,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     return CC_RD_BAND_RAW;
                 return 0;                    // sinking / open: no pull-up
             }
-            return 0;
+            // Non-CC channels (VBUS / CURRENT): normally 0. ForceRaw lets the harness drive extreme
+            // analog values to exercise OVP/OCP/vbus-present validation branches (the error edge of
+            // checks whose success edge the normal campaign already covers).
+            return ForceRaw >= 0 ? (uint)(ForceRaw & 0xFFF) : 0u;
         }
 
         private uint isr, ier, cr, cfgr1, cfgr2, smpr, tr, chselr, ccr, dr;
@@ -230,5 +275,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const uint CC_RD_BAND_RAW = 993;
         // ~1800 mV >= PD_SRC_1_5_VNC_MV (1600) -> CC_NC (open) for a source: the unused CC line.
         private const uint CC_OPEN_RAW = 2234;
+        // ~100 mV < PD_SRC_1_5_RD_THRESH_MV (400) -> CC_RA for a source (cc_pull==RP): an Ra-only
+        // termination. 100*4096/3300 = 124. Used by ForceAudioAccessory on both CC lines.
+        private const uint CC_RA_BAND_RAW = 124;
     }
 }

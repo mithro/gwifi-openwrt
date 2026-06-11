@@ -48,8 +48,14 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }
             regs[CR >> 2]  = 0x00000083; // HSION + HSIRDY + HSITRIM reset (0x10<<3)
             regs[CR2 >> 2] = 0x00000080; // HSI14TRIM reset (0x10<<3)
-            resetFlags = POR_RSTF | PIN_RSTF; // deterministic power-on + pin reset cause
+            // ResetFlags (the CSR reset cause) keeps its property value across Reset so a
+            // scenario-set cause survives; default is POR|PIN (cold boot).
         }
+
+        // Settable RCC_CSR reset-cause flags. Default POR|PIN (matches a cold boot). A coverage
+        // scenario sets this BEFORE boot to a different cause (software / watchdog / low-power) so
+        // system_pre_init's and other reset-flag-dependent branches run for each reset reason.
+        public uint ResetFlags { get; set; } = POR_RSTF | PIN_RSTF;
 
         public uint ReadDoubleWord(long offset)
         {
@@ -77,7 +83,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 case CSR:  // LSI ready follows enable; present sticky reset cause
                     v &= ~(1u << 1);
                     if((v & (1u << 0)) != 0) v |= (1u << 1);
-                    v |= resetFlags;
+                    v |= ResetFlags;
                     break;
                 case CR2:  // HSI14/HSI48 ready follow enables
                     v &= ~((1u << 1) | (1u << 17));
@@ -97,14 +103,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             }
             if((offset & 0xFF) == CSR && (value & RMVF) != 0)
             {
-                resetFlags = 0; // RMVF clears the sticky reset cause
+                ResetFlags = 0; // RMVF clears the sticky reset cause
             }
             // READY bits are read-only; store enables/config verbatim (derived on read).
             regs[idx] = value;
         }
 
         private uint[] regs = new uint[0x40]; // 0x100 bytes of register space (covers 0x00..0x34)
-        private uint resetFlags;
         private readonly long size;
 
         // Register offsets (RM0091)

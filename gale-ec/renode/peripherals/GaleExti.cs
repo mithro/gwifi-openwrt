@@ -30,16 +30,26 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             this.size = size;
             IRQ = new GPIO();
+            GpioIrq01 = new GPIO();    // EXTI lines 0-1   -> NVIC IRQ 5
+            GpioIrq23 = new GPIO();    // EXTI lines 2-3   -> NVIC IRQ 6
+            GpioIrq415 = new GPIO();   // EXTI lines 4-15  -> NVIC IRQ 7
             Reset();
         }
 
         public long Size => size;
         public GPIO IRQ { get; }
+        // GPIO-pin EXTI interrupt lines (RM0091): a configured GPIO edge raises EXTI0_1/2_3/4_15. The
+        // original model only played the COMP lines (21/22 -> ADC_COMP IRQ12); these model the GPIO-pin
+        // EXTI path so the firmware's gpio_interrupt() (switch/WP/power-button GPIOs) runs.
+        public GPIO GpioIrq01 { get; }
+        public GPIO GpioIrq23 { get; }
+        public GPIO GpioIrq415 { get; }
 
         public void Reset()
         {
             imr = emr = rtsr = ftsr = swier = pr = 0;
             IRQ.Unset();
+            GpioIrq01.Unset(); GpioIrq23.Unset(); GpioIrq415.Unset();
         }
 
         // Play the COMP comparator: register a CC edge on EXTI `line` (21=COMP1, 22=COMP2)
@@ -49,6 +59,16 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             pr |= (1u << line);
             IRQ.Set(true);
             IRQ.Set(false);
+        }
+
+        // Play a GPIO-pin EXTI edge on `line` (0-15): set PR and pulse the matching GPIO EXTI NVIC line,
+        // so the firmware's gpio_interrupt() reads PR and dispatches the registered GPIO IRQ handler.
+        public void FireGpio(int line)
+        {
+            pr |= (1u << (line & 31));
+            var g = line <= 1 ? GpioIrq01 : (line <= 3 ? GpioIrq23 : GpioIrq415);
+            g.Set(true);
+            g.Set(false);
         }
 
         public uint ReadDoubleWord(long offset)

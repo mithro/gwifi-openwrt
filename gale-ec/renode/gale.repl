@@ -19,6 +19,9 @@ flashif: Miscellaneous.GaleFlash @ sysbus 0x40022000
 // (Enables DMA-driven UART console TX output.)
 dma1: Miscellaneous.GaleDma @ sysbus 0x40020000
     size: 0x400
+    IrqCh1 -> nvic@9
+    IrqCh23 -> nvic@10
+    IrqCh47 -> nvic@11
 
 // STM32F0 12-bit ADC with faithful dynamic USB-PD CC (RM0091). Replaces the stock
 // Analog.STM32F0_ADC so CC1 (AIN1) / CC2 (AIN3) follow the EC's live termination —
@@ -61,6 +64,9 @@ timer2: Timers.STM32_Timer @ sysbus 0x40000000
 exti: Miscellaneous.GaleExti @ sysbus 0x40010400
     size: 0x400
     IRQ -> nvic@12
+    GpioIrq01 -> nvic@5
+    GpioIrq23 -> nvic@6
+    GpioIrq415 -> nvic@7
 
 // STM32F0 I2C1 = the AP host-command slave (OAR1=0x803C/addr 0x3C). GaleI2c emulates the AP
 // master writing a host-command packet via `sysbus.i2c1 HostCmd "<hex>"`, driving the real

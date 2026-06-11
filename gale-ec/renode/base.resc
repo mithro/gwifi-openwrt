@@ -19,6 +19,7 @@ include $h/peripherals/GaleUsb.cs
 include $h/peripherals/GaleAdc.cs
 include $h/peripherals/GaleExti.cs
 include $h/peripherals/GaleI2c.cs
+include $h/peripherals/GaleSpi.cs
 
 # Stock STM32F072 platform (CPU, NVIC, GPIO, USART, SPI, I2C, timers, ADC, EXTI...)
 machine LoadPlatformDescription @platforms/cpus/stm32f072.repl

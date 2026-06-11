@@ -80,7 +80,64 @@ def battery():
         _pkt(0xb6, 0, 3, _le32(0)),                        # ENTERING_MODE {vtm}
         _pkt(0xd3, 0, 3, []),                              # GET_PANIC_INFO
         _pkt(0xdb, 0, 3, []),                              # RESEND_RESPONSE
+        # the 4 registered __hcmds whose handlers were still never driven (256/282/488/640)
+        _pkt(0x100, 0, 3, []), _pkt(0x100, 0, 3, [0] * 8),
+        _pkt(0x11a, 0, 3, []), _pkt(0x11a, 0, 3, [0] * 8),
+        _pkt(0x1e8, 0, 3, []), _pkt(0x1e8, 0, 3, [0] * 8),
+        _pkt(0x280, 0, 3, []), _pkt(0x280, 0, 3, [0] * 8),
     ]
+    # DEEP PARAM VARIATIONS for the handlers with the most uncovered arms (dispatch + validation),
+    # the host-command analog of the console battery: vary sub-command / flags / size / port so each
+    # arm of the handler's switch + arg-checks runs.
+    def _fw(dev, cmd, port, size, data=None):
+        return [dev & 0xFF, (dev >> 8) & 0xFF, cmd & 0xFF, port & 0xFF] + _le32(size) + list(data or [])
+    # 0x110 USB_PD_FW_UPDATE / hc_remote_flash: every switch case x port/size/data validation
+    for dev in (0, 1):
+        for cmd in (0, 1, 2, 3, 4, 5, 99):                 # REBOOT/FLASH_ERASE/WRITE/ERASE_SIG/.../default
+            cmds += [_pkt(0x110, 0, 3, _fw(dev, cmd, 0, 0))]
+    cmds += [_pkt(0x110, 0, 3, _fw(0, 2, 0, 4, [0xDE, 0xAD, 0xBE, 0xEF])),   # write 4B valid
+             _pkt(0x110, 0, 3, _fw(0, 2, 0, 3, [1, 2, 3])),                  # write size%4 -> INVAL
+             _pkt(0x110, 0, 3, _fw(0, 2, 9, 4, [0, 0, 0, 0])),               # bad port
+             _pkt(0x110, 0, 3, _fw(0, 2, 0, 0x10000))]                       # size overflow
+    # 0x2a VBOOT_HASH {u8 cmd, hash_type, nonce_size, rsvd, u32 offset, u32 size, nonce[]}
+    for hcmd in (0, 1, 2, 3, 99):                          # GET/ABORT/START/RECALC/bad
+        cmds += [_pkt(0x2a, 0, 3, [hcmd, 1, 0, 0] + _le32(0) + _le32(0x10000))]
+    cmds += [_pkt(0x2a, 0, 3, [2, 0, 0, 0] + _le32(0) + _le32(0x1000)),      # bad hash_type
+             _pkt(0x2a, 0, 3, [2, 1, 4, 0] + _le32(0) + _le32(0x1000) + [1, 2, 3, 4])]  # with nonce
+    # 0xd2 REBOOT_EC {u8 cmd, u8 flags}
+    for rcmd in (0, 1, 2, 3, 4, 5, 6, 99):                 # CANCEL/JUMP_RO/JUMP_RW/COLD/DISABLE/HIBERNATE/...
+        for fl in (0, 1, 2):
+            cmds += [_pkt(0xd2, 0, 3, [rcmd, fl])]
+    # 0x101 USB_PD_CONTROL {u8 port, u8 role, u8 mux, u8 swap} (role/mux/swap dispatch)
+    for role in (0, 1, 2, 3):
+        for mux in (0, 1, 2):
+            cmds += [_pkt(0x101, 0, 3, [0, role, mux, 0])]
+    cmds += [_pkt(0x101, 0, 3, [9, 0, 0, 0])]              # bad port
+    # 0x93 GPIO_GET sub-commands {u8 subcmd, ...}; 0x8 GET_CMD_VERSIONS for various cmds
+    gpio_name = list(b"EC_INT_L") + [0] * 24
+    for sub in (0, 1, 2):
+        cmds += [_pkt(0x93, 1, 3, gpio_name + [sub])]
+    for q in (0x01, 0x08, 0x2a, 0x110, 0xff):
+        cmds += [_pkt(0x08, 0, 3, _le32(q))]
+    # 0x17 VBNV_CONTEXT read+write ; 0x111 RW_HASH_ENTRY ; 0x16 FLASH_REGION_INFO regions
+    cmds += [_pkt(0x17, 0, 3, _le32(0) + [0] * 16), _pkt(0x17, 0, 3, _le32(1) + [0xAA] * 16),
+             _pkt(0x111, 0, 3, [0, 0] + [0] * 22), _pkt(0x111, 0, 3, [1, 0] + [0x11] * 22),
+             _pkt(0x16, 0, 3, _le32(0)), _pkt(0x16, 0, 3, _le32(1)), _pkt(0x16, 0, 3, _le32(2)),
+             _pkt(0x16, 0, 3, _le32(99))]                   # bad region
+    # SEQUENCE: register PD devices (0x111 RW_HASH_ENTRY) so 0x110's device-iteration loop runs over
+    # populated entries, then FW_UPDATE ops that walk them. {u16 dev_id, u8 hash[20], reserved}
+    for dev in (1, 2, 3, 4):
+        cmds += [_pkt(0x111, 0, 3, [dev, 0] + [(dev * 0x11 + i) & 0xFF for i in range(20)] + [0, 0])]
+    cmds += [_pkt(0x112, 0, 3, [0, 0]), _pkt(0x112, 0, 3, [1, 0])]   # DEV_INFO per port
+    for cmd in (0, 1, 2, 3):
+        cmds += [_pkt(0x110, 0, 3, _fw(1, cmd, 0, 0)), _pkt(0x110, 0, 3, _fw(2, cmd, 0, 4, [1, 2, 3, 4]))]
+    # 0x93 GPIO_GET sub-commands (BY_NAME=0 / COUNT=1 / INFO=2 with index)
+    gname = list(b"EC_INT_L") + [0] * 24
+    for sub, idx in ((0, 0), (1, 0), (2, 0), (2, 1), (2, 5)):
+        cmds += [_pkt(0x93, 1, 3, gname + [sub] + _le32(idx))]
+    # 0x101 USB_PD_CONTROL more combos (swap field too) {port, role, mux, swap}
+    for sw in (0, 1, 2, 3, 4):
+        cmds += [_pkt(0x101, 0, 3, [0, 1, 1, sw])]
     # Error cases (ported from test/host_command.c)
     cmds += [_pkt(0x1234, 0, 3, []),                       # invalid command -> INVALID_COMMAND
              _pkt(0x01, 1, 3, _le32(0)),                   # wrong cmd version -> INVALID_VERSION

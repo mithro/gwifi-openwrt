@@ -53,14 +53,47 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 data[i] = System.Convert.ToByte(hex.Substring(i * 2, 2), 16);
             }
             script.Clear();
+            // opt-in bus-error step (ARLO/BERR handler arm, i2c-stm32f0.c:287) before the transaction
+            if(InjectBusErr) { script.Add(new Step { Isr = ARLO | BERR }); }
             script.Add(new Step { Isr = ADDR | ADDR_CODE });               // addressed for write
             foreach(var b in data) { script.Add(new Step { Isr = RXNE, Data = b }); }
             script.Add(new Step { Isr = ADDR | ADDR_CODE | DIR });         // repeated start, read
-            script.Add(new Step { Isr = TXIS });                          // read turnaround -> process
+            // several TXIS steps so the response-TX loop (tx_index < tx_end) iterates, not just one byte
+            for(var t = 0; t < 6; t++) { script.Add(new Step { Isr = TXIS }); }
+            // opt-in master-NACK of a response byte (NACK handler arm, i2c-stm32f0.c:350)
+            if(InjectNack) { script.Add(new Step { Isr = NACKF }); }
             script.Add(new Step { Isr = STOP });                          // stop condition
             step = 0;
             IRQ.Set(true);                                                // level-held: ISR re-runs per step
         }
+
+        // The AP addressing gale AS A TCPC (CONFIG_USB_PD_TCPC: OAR2 = 0x9c). ADDCODE = 0x9c so the ISR's
+        // ADDR_IS_TCPC(addr) arms run: a WRITE (set register offset) then STOP while rx_pending is the
+        // "write-only to set offset" path (i2c-stm32f0.c:329); a WRITE+repeated-READ is a register read
+        // (:389). `read`=false -> offset-write+STOP; true -> offset-write then read-back.
+        public void TcpcCmd(string hex, bool read)
+        {
+            var data = new byte[hex.Length / 2];
+            for(var i = 0; i < data.Length; i++)
+            {
+                data[i] = System.Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            }
+            script.Clear();
+            script.Add(new Step { Isr = ADDR | TCPC_CODE });               // addressed (write) as TCPC
+            foreach(var b in data) { script.Add(new Step { Isr = RXNE, Data = b }); }
+            if(read)
+            {
+                script.Add(new Step { Isr = ADDR | TCPC_CODE | DIR });      // repeated start, read register
+                for(var t = 0; t < 4; t++) { script.Add(new Step { Isr = TXIS }); }
+            }
+            script.Add(new Step { Isr = STOP });                           // STOP (rx_pending + TCPC addr -> :329)
+            step = 0;
+            IRQ.Set(true);
+        }
+
+        // opt-in I2C-slave fault injection (default off): bus error (ARLO|BERR) / master NACK steps.
+        public bool InjectBusErr { get; set; }
+        public bool InjectNack { get; set; }
 
         public uint ReadDoubleWord(long offset)
         {
@@ -98,6 +131,15 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                     }
                     // Clearing STOPCF ends the STOP step.
                     if((value & ICR_STOPCF) != 0 && InScript() && (script[step].Isr & STOP) != 0)
+                    {
+                        Advance();
+                    }
+                    // Clearing the error/NACK flags acknowledges an injected error/NACK step -> advance.
+                    if((value & (ICR_BERRCF | ICR_ARLOCF)) != 0 && InScript() && (script[step].Isr & (BERR | ARLO)) != 0)
+                    {
+                        Advance();
+                    }
+                    if((value & ICR_NACKCF) != 0 && InScript() && (script[step].Isr & NACKF) != 0)
                     {
                         Advance();
                     }
@@ -143,8 +185,10 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const long ISR = 0x18, ICR = 0x1C, RXDR = 0x24, TXDR = 0x28;
 
         private const uint ISR_TXE = 1u << 0, TXIS = 1u << 1, RXNE = 1u << 2, ADDR = 1u << 3;
-        private const uint STOP = 1u << 5, DIR = 1u << 16;
+        private const uint NACKF = 1u << 4, STOP = 1u << 5, BERR = 1u << 8, ARLO = 1u << 9, DIR = 1u << 16;
         private const uint ADDR_CODE = 0x3Cu << 16;   // ADDCODE=(isr>>16)&0xfe -> 0x3C (host addr)
-        private const uint ICR_ADDRCF = 1u << 3, ICR_STOPCF = 1u << 5;
+        private const uint TCPC_CODE = 0x9Cu << 16;   // ADDCODE 0x9c -> gale-as-TCPC (OAR2, ADDR_IS_TCPC)
+        private const uint ICR_ADDRCF = 1u << 3, ICR_NACKCF = 1u << 4, ICR_STOPCF = 1u << 5,
+                           ICR_BERRCF = 1u << 8, ICR_ARLOCF = 1u << 9;
     }
 }

@@ -25,8 +25,8 @@ import rda       # validated recursive-descent disassembler -> honest branch den
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = os.path.join(HERE, "base.resc")
-TC = "/home/tim/local/gwifi/ec-rebuild/gcc-arm-none-eabi-5_4-2016q3/bin"
-OBJDUMP = os.path.join(TC, "arm-none-eabi-objdump")
+# System cross-binutils (arm-none-eabi-* on PATH); no external toolchain dir needed.
+OBJDUMP = "arm-none-eabi-objdump"
 CAPTURED = os.path.join(HERE, "..", "..", "gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin")
 TMP = os.path.join(HERE, "tmp")
 COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|cbnz)(\.[nw])?\b')
@@ -119,8 +119,17 @@ def _pd_contract_post():
     # gale's pd_rx_start pops the auto-GoodCRC then the reactive reply.
     def cc(scmd):
         return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
-    for action in ("pd 0 swap data", "pd 0 swap power", "pd 0 vdm vers", "pd 0 soft"):
-        c += cc(action) + ['emulation RunFor "0.05"'] + fire("0.15") + fire("0.15")
+    # FIX: fire WITHOUT ExpectContractMsg for gale-initiated swaps so the RX window delivers the
+    # pendingGoodCrc(GoodCRC) then replyQueue(Accept) the handshake needs (ExpectContractMsg would
+    # force a queued contract msg into the slot and break the swap). Also fix vdm vers->version.
+    def fire_swap(t):
+        f = []
+        for _ in range(4):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000008"']
+        return f + ['emulation RunFor "%s"' % t]
+    for action in ("pd 0 swap data", "pd 0 swap power", "pd 0 swap vconn",
+                   "pd 0 vdm version", "pd 0 soft"):
+        c += cc(action) + ['emulation RunFor "0.05"'] + fire_swap("0.15") + fire_swap("0.15")
     # SNK_READY: inject a broad set of message TYPES the EC dispatches -> handle_ctrl_request /
     # handle_data_request / pd_svdm branches. ctrl types: GOTO_MIN2 ACCEPT3 REJECT4 PING5 PS_RDY6
     # GET_SRC_CAP7 GET_SNK_CAP8 DR_SWAP9 PR_SWAP10 VCONN_SWAP11 WAIT12 SOFT_RESET13.
@@ -385,11 +394,19 @@ def main():
     ap.add_argument("--reuse", action="store_true",
                     help="reuse cached executed/edges from the last run (skip renode) — for fast "
                          "re-analysis after denominator/reporting changes")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated scenario names to (re)run; ACCUMULATES into the cache "
+                         "(loads existing, unions new coverage) instead of overwriting it")
     args = ap.parse_args()
     os.makedirs(TMP, exist_ok=True)
     binpath = os.path.abspath(args.bin)
     scns = scenarios(args.boot)
-    cache = os.path.join(TMP, "cap_trace_cache.pkl")
+    only = set(args.only.split(",")) if args.only else None
+    if only:
+        scns = [t for t in scns if t[0] in only]
+    # bin-specific cache so running on the rebuilt firmware can't clobber the captured campaign cache
+    cache = os.path.join(TMP, "rebuilt_trace_cache.pkl" if "rebuilt" in os.path.basename(binpath)
+                         else "cap_trace_cache.pkl")
     print("CAPTURED firmware coverage: %s (%d scenarios)" % (os.path.basename(binpath), len(scns)))
 
     # Pass 1: run every scenario, collecting executed PCs + control-flow edges (or reuse the cache).
@@ -400,12 +417,18 @@ def main():
             executed, edges = pickle.load(f)
         print("  reusing cached trace: %d executed PCs, %d edges" % (len(executed), len(edges)))
     else:
+        import pickle
+        # --only ACCUMULATES: seed from the existing cache so a partial re-run unions new coverage
+        # instead of discarding the other scenarios' 949-both-dirs contribution.
+        if only and os.path.exists(cache):
+            with open(cache, "rb") as f:
+                executed, edges = pickle.load(f)
+            print("  accumulating into cache: %d executed PCs, %d edges" % (len(executed), len(edges)))
         # SERIAL: one renode at a time (keeps peak memory low — no concurrent VM instances). Each
         # renode process is additionally memory-capped (see run_scenario).
         for (n, m, c, b, p) in scns:
             print("  scenario: %-16s" % n)
             fold_edges(run_scenario(n, m, c, b, p, binpath), executed, edges)
-        import pickle
         with open(cache, "wb") as f:
             pickle.dump((executed, edges), f)
 

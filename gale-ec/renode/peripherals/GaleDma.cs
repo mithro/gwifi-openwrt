@@ -37,10 +37,40 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         {
             this.size = size;
             this.sysbus = machine.GetSystemBus(this);
+            IrqCh1 = new GPIO();      // DMA1 channel 1   -> NVIC IRQ 9
+            IrqCh23 = new GPIO();     // DMA1 channels 2,3 -> NVIC IRQ 10
+            IrqCh47 = new GPIO();     // DMA1 channels 4-7 -> NVIC IRQ 11
             Reset();
         }
 
         public long Size => size;
+
+        // Per-IRQ-line DMA transfer-complete interrupt outputs (RM0091): a channel with CCR.TCIE set
+        // asserts its NVIC line when its TCIF latches. The model was originally polling-only (dma_wait
+        // polls CNDTR/TCIF); this models the real TC-interrupt path so dma_event_interrupt_channel_* run.
+        public GPIO IrqCh1 { get; }
+        public GPIO IrqCh23 { get; }
+        public GPIO IrqCh47 { get; }
+        // Opt-in (default off): fire the DMA TC interrupt on completion. Off = original polling behavior
+        // (existing coverage/equivalence runs unaffected); a lever sets it true to exercise the DMA ISR.
+        public bool DmaTcIrqEnabled { get; set; }
+
+        // Opt-in (default off): ISR reads report TCIF set for ALL channels, so dma_wait()
+        // (which polls ISR & TCIF(channel)) returns success immediately. A coverage lever sets this so
+        // a direct-called spi_dma_wait gets past dma_wait() and into the SR busy-wait loop (paired with
+        // GaleSpi ForceBusy). Additive: default off leaves the real polling/transfer behavior unchanged.
+        public bool ForceAllTcif { get; set; }
+        private const uint ALL_TCIF = 0x02222222u;   // TCIF (bit 1) of each channel nibble, channels 1-7
+
+        // Recompute the three DMA IRQ lines from the latched TCIF flags gated by each channel's TCIE.
+        private void UpdateDmaIrqs()
+        {
+            if(!DmaTcIrqEnabled) { IrqCh1.Set(false); IrqCh23.Set(false); IrqCh47.Set(false); return; }
+            System.Func<int, bool> pend = ch => (isr & (TCIF << ((ch - 1) * 4))) != 0 && (ccr[ch] & CCR_TCIE) != 0;
+            IrqCh1.Set(pend(1));
+            IrqCh23.Set(pend(2) || pend(3));
+            IrqCh47.Set(pend(4) || pend(5) || pend(6) || pend(7));
+        }
 
         // USB-PD RX capture: number of TIM1-input-capture sample bytes the CC partner has
         // pre-staged into the channel's memory buffer (pd_phy.raw_samples). When the firmware
@@ -62,8 +92,37 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             pdQueue.Enqueue(Unhex(hex));
         }
 
-        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; lastTx.Clear(); replyQueue.Clear(); reactedCount = 0; replyMsgId = 0; }
+        public void ClearResponses() { pdQueue.Clear(); pendingGoodCrc = false; nextIsContract = false; goodCrcCounter = 0; lastTx.Clear(); replyQueue.Clear(); reactedCount = 0; replyMsgId = 0; vdmReplyIdx = 0; }
         public void ClearTx() { lastTx.Clear(); reactedCount = 0; }
+
+        // Force-deliver the next staged PD message into the CURRENTLY-ARMED TIM1_CCR1 RX channel's
+        // buffer + set CNDTR, independent of the DMA-arm event. Needed for SNK_DISCOVERY where gale
+        // arms RX ONCE at state-entry then waits (no re-arm), so the normal arm-time delivery never
+        // fires for a later-staged Source_Cap. The harness calls this AFTER StageResponse while gale's
+        // RX is armed, then FireComps so gale's pd_dequeue_bits sees dma_bytes_done>0 and decodes.
+        // Returns 1 if delivered, 0 if no armed RX channel / nothing staged (readable for diagnostics).
+        public uint DeliverRx()
+        {
+            for(int c = 1; c <= NumChannels; c++)
+            {
+                if(cpar[c] == TIM1_CCR1 && (ccr[c] & CCR_EN) != 0)
+                {
+                    byte[] resp = null;
+                    if(nextIsContract && pdQueue.Count > 0) { resp = pdQueue.Dequeue(); nextIsContract = false; }
+                    else if(replyQueue.Count > 0) { resp = replyQueue.Dequeue(); }
+                    else if(pdQueue.Count > 0) { resp = pdQueue.Dequeue(); }
+                    if(resp != null)
+                    {
+                        var ma = cmar[c]; var n = cndtr[c];
+                        for(var i = 0; i < resp.Length; i++) { sysbus.WriteByte(ma + (uint)i, resp[i]); }
+                        cndtr[c] = (uint)(n > resp.Length ? n - resp.Length : 0);
+                        return 1;
+                    }
+                    return 0;
+                }
+            }
+            return 0;
+        }
 
         // CONTEXT-AWARE PD CC-PARTNER (for a live explicit contract). Two delivery contexts are
         // distinguished so the FIFO never desyncs against gale's pd_rx_start pattern:
@@ -75,6 +134,8 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         // GoodCRcMsgIdAddress = &pd_protocol[0].msg_id (image-specific; 0 disables auto-GoodCRC).
         public uint GoodCrcMsgIdAddress { get; set; }
         public void SetGoodCrc(int id, string hex) { goodCrcBank[id & 7] = Unhex(hex); }
+        // opt-in GoodCRC-timeout fault: when true, gale's TX never gets its ACK -> pd_send error path.
+        public bool SuppressGoodCrc { get; set; }
         public void ExpectContractMsg() { nextIsContract = true; }
 
         // Reactive-PD-partner groundwork: gale's last PD TX (the raw CC-line level bytes clocked
@@ -96,6 +157,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         //   slot 0..7 = Accept with partner msg_id 0..7 ; slot 8 = Sink_Cap.
         public void SetReply(int slot, string hex) { replyBank[slot & 0xF] = Unhex(hex); }
         public bool ReactiveEnabled { get; set; }
+        public bool RxPollDeliver { get; set; }   // opt-in: deliver staged RX msg on CNDTR poll (DISCOVERY)
         public int LastTxType { get; private set; } = -1;   // for test/inspection
 
         private void BuildPdTables()
@@ -177,6 +239,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             {
                 reply = replyBank[8];                          // Get_Sink_Cap -> Sink_Cap
             }
+            else if(cnt >= 1 && type == 15)
+            {
+                // gale sent a VDM (DFP query): deliver staged ACKs from slots 9..12 in sequence so
+                // its DFP VDM state machine walks Disc-Identity -> SVIDs -> Modes -> Enter.
+                reply = replyBank[9 + (vdmReplyIdx & 3)];
+                vdmReplyIdx++;
+            }
             if(reply != null) { replyQueue.Enqueue(reply); }
         }
 
@@ -202,13 +271,33 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
 
         public uint ReadDoubleWord(long offset)
         {
-            if(offset == ISR)  { return isr; }
+            if(offset == ISR)  { return isr | (ForceAllTcif ? ALL_TCIF : 0u); }
             if(offset == IFCR) { return 0; }
             if(!Decode(offset, out var c, out var reg)) { return 0; }
             switch(reg)
             {
                 case 0x0: return ccr[c];
-                case 0x4: return cndtr[c];
+                case 0x4:
+                    // Opt-in deliver-on-poll: in SNK_DISCOVERY gale arms the RX DMA ONCE (one EN-rising
+                    // edge, before the harness stages a msg) then busy-waits polling CNDTR, so the normal
+                    // arm-time Transfer never delivers a later-staged Source_Cap. When RxPollDeliver is on,
+                    // deliver the next staged msg into the armed TIM1_CCR1 channel the first time gale polls
+                    // its CNDTR, so dma_bytes_done becomes >0 and the decode runs. Default off (other
+                    // scenarios + equivalence runs unaffected).
+                    if(RxPollDeliver && cpar[c] == TIM1_CCR1 && (ccr[c] & CCR_EN) != 0)
+                    {
+                        byte[] resp = null;
+                        if(nextIsContract && pdQueue.Count > 0) { resp = pdQueue.Dequeue(); nextIsContract = false; }
+                        else if(replyQueue.Count > 0) { resp = replyQueue.Dequeue(); }
+                        else if(pdQueue.Count > 0) { resp = pdQueue.Dequeue(); }
+                        if(resp != null)
+                        {
+                            var ma = cmar[c]; var n = cndtr[c];
+                            for(var i = 0; i < resp.Length; i++) { sysbus.WriteByte(ma + (uint)i, resp[i]); }
+                            cndtr[c] = (uint)(n > resp.Length ? n - resp.Length : 0);
+                        }
+                    }
+                    return cndtr[c];
                 case 0x8: return cpar[c];
                 case 0xC: return cmar[c];
             }
@@ -218,7 +307,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         public void WriteDoubleWord(long offset, uint value)
         {
             if(offset == ISR)  { return; }           // ISR is read-only
-            if(offset == IFCR) { isr &= ~value; return; } // write-1-to-clear
+            if(offset == IFCR) { isr &= ~value; UpdateDmaIrqs(); return; } // write-1-to-clear (+ deassert IRQ)
             if(!Decode(offset, out var c, out var reg)) { return; }
             switch(reg)
             {
@@ -264,6 +353,13 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
                 {
                     resp = pdQueue.Dequeue();
                     nextIsContract = false;
+                }
+                else if(SuppressGoodCrc && pendingGoodCrc)
+                {
+                    // Model a GoodCRC TIMEOUT: the partner fails to ACK gale's TX, so deliver NOTHING.
+                    // gale's send_validate_message exhausts PD_RETRY_COUNT and pd_send returns error —
+                    // the only way to reach the send-failure branches (genuine protocol fault, opt-in).
+                    pendingGoodCrc = false;
                 }
                 else if(pendingGoodCrc && goodCrcBank[0] != null)
                 {
@@ -373,6 +469,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             cpar[c] = pa;
             cndtr[c] = 0;                       // transfer complete
             isr |= (TCIF | GIF) << ((c - 1) * 4); // latch Transfer-Complete + Global flags
+            UpdateDmaIrqs();                     // assert the NVIC DMA IRQ if this channel has TCIE set
         }
 
         private static bool IsSpiDr(uint addr)
@@ -444,6 +541,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private System.Collections.Generic.Dictionary<int, int> dec4b5b;
         private int reactedCount;
         private int replyMsgId;
+        private int vdmReplyIdx;
         private bool pendingGoodCrc;
         private bool nextIsContract;
         private int goodCrcCounter;
@@ -458,6 +556,7 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
         private const long IFCR = 0x04;
 
         private const uint CCR_EN      = 1u << 0;
+        private const uint CCR_TCIE    = 1u << 1; // transfer-complete interrupt enable
         private const uint CCR_DIR     = 1u << 4;
         private const uint CCR_PINC    = 1u << 6;
         private const uint CCR_MINC    = 1u << 7;
