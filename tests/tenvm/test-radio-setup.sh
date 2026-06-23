@@ -24,18 +24,17 @@ ln -s ../../bus/ath10k_pci "$SB/devices/0000:00:03.0/driver"
 ln -s ../../bus/ath11k_pci "$SB/devices/0000:00:02.0/driver"
 GWIFI_RADIO_SYSFS="$SB"
 
-eq "ath11k phy"        "phy1" "$(phy_for_driver ath11k_pci)"
-eq "ath10k phy"        "phy0" "$(phy_for_driver ath10k_pci)"
-eq "missing driver"    ""     "$(phy_for_driver rtw88_pci)"
-eq "bdf of mesh phy"   "0000:00:02.0" "$(bdf_of_phy phy1)"
+eq "phys present"      "1" "$(any_phy_present)"
+eq "bdf of phy1"       "0000:00:02.0" "$(bdf_of_phy phy1)"
+eq "bdf of phy0"       "0000:00:03.0" "$(bdf_of_phy phy0)"
 
 # Empty sysfs dir (exists, no phy* entries): the glob stays literal -> empty, exit 0.
 mkdir -p "$SB/empty"
 GWIFI_RADIO_SYSFS="$SB/empty"
-eq "empty sysfs -> empty" "" "$(phy_for_driver ath11k_pci)"
+eq "empty sysfs -> none" "" "$(any_phy_present)"
 
 # No-sysfs case: empty result, exit 0 (image-first no-op).
 GWIFI_RADIO_SYSFS="$SB/nonexistent"
-eq "no sysfs -> empty" "" "$(phy_for_driver ath11k_pci)"
+eq "no sysfs -> none" "" "$(any_phy_present)"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

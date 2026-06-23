@@ -1,24 +1,20 @@
 #!/bin/sh
-# gwifi-radio-setup — assign mesh + band roles to the host's passed-through radios by
-# DRIVER (path-independent: a VM gets guest-assigned PCI slots). The WiFi-6 ath11k radio
-# anchors the 802.11s mesh + 5 GHz; the ath10k radio serves 2.4 GHz. Client APs come from
-# OpenWISP. No-op when no radio/phy is present (image-first / pre-passthrough).
-# Sourceable for tests via GWIFI_RADIO_SOURCED=1. See docs/ten64-vm-image-design.md §7.3.
+# gwifi-radio-setup — enable the host's passed-through Wi-Fi radio(s) and anchor the
+# 802.11s mesh, DRIVER-AGNOSTIC: works for whatever PCIe card is passed through
+# (ath9k/ath10k/ath11k/ath12k, mt76, rtw88/rtw89, ...). Bands are auto-detected by
+# `wifi config`; the mesh anchors on a 5/6 GHz radio when one exists (else any radio).
+# Client APs come from OpenWISP. No-op when no phy is present (image-first /
+# pre-passthrough). Sourceable for tests via GWIFI_RADIO_SOURCED=1.
+# See docs/ten64-vm-image-design.md §7.3.
 set -u
 LOG_TAG=gwifi-radio-setup
 
-# ---- pure helpers (unit-tested) -------------------------------------------
-# Each helper reads GWIFI_RADIO_SYSFS *live* (not a top-level snapshot) so tests can point
-# it at a fake sysfs tree after sourcing.
-# phy_for_driver DRIVER -> first phy whose device/driver basename == DRIVER ("" if none).
-phy_for_driver() {
-	_drv=$1; _sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
-	[ -d "$_sysfs" ] || return 0
-	for _p in "$_sysfs"/phy*; do
-		[ -e "$_p/device/driver" ] || continue
-		_l=$(readlink "$_p/device/driver") || continue
-		case "${_l##*/}" in "$_drv") echo "${_p##*/}"; return 0 ;; esac
-	done
+# ---- generic sysfs phy helpers (unit-tested in tests/tenvm/) ----------------
+# Read GWIFI_RADIO_SYSFS live (not a top-level snapshot) so tests can repoint it.
+# any_phy_present -> "1" if at least one phy exists under the sysfs root, else "".
+any_phy_present() {
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	for _p in "$_sysfs"/phy*; do [ -e "$_p" ] && { echo 1; return 0; }; done
 }
 # bdf_of_phy PHY -> the PCI BDF (basename of the resolved device dir), e.g. 0000:00:02.0.
 bdf_of_phy() {
@@ -26,50 +22,44 @@ bdf_of_phy() {
 	_t=$(readlink -f "$_sysfs/$1/device") || return 0
 	echo "${_t##*/}"
 }
-
-# ---- runtime wiring (hardware; no-op without phys; bench-validated, OQ1) ---
-# radio_with_bdf BDF -> the uci wifi-device section whose 'path' contains BDF ("" if none).
-# `wifi config` writes radioN.path as the OpenWrt phy path (e.g. pci.../<BDF>), so the BDF
-# is its trailing component; a substring test maps a phy back to its radioN section. Keep
-# it a substring match (not equality) — the path carries a bus prefix the BDF lacks.
-radio_with_bdf() {
-	_bdf=$1
-	for _s in $(uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'); do
-		case "$(uci -q get "wireless.$_s.path")" in
-			*"$_bdf"*) echo "$_s"; return 0 ;;
-		esac
-	done
+# wifi_devices -> the uci wifi-device section names, one per line.
+wifi_devices() {
+	uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'
 }
 
 main() {
-	_mesh_phy=$(phy_for_driver ath11k_pci)
-	_ap24_phy=$(phy_for_driver ath10k_pci)
-	if [ -z "$_mesh_phy$_ap24_phy" ]; then
+	if [ -z "$(any_phy_present)" ]; then
 		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
 		return 0
 	fi
-	# Derive radioN sections + correct PCI paths from the detected phys. wifi config also
-	# emits a disabled default AP (mode=ap network=lan ssid=OpenWrt) per radio; those never
-	# broadcast and OpenWISP overwrites the client wifi-ifaces, so they are harmless stubs.
+	# Diagnostic: log each present phy's driver + BDF (helps debug passthrough).
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	for _p in "$_sysfs"/phy*; do
+		[ -e "$_p/device" ] || continue
+		_pn=${_p##*/}
+		if [ -e "$_p/device/driver" ]; then _drv=$(readlink "$_p/device/driver"); _drv=${_drv##*/}; else _drv="(unbound)"; fi
+		logger -t "$LOG_TAG" "present: $_pn driver=$_drv bdf=$(bdf_of_phy "$_pn")"
+	done
+	# Generate radioN sections (+ correct PCI paths + auto-detected band) for whatever
+	# card(s) are present. wifi config also emits a disabled default AP per radio
+	# (mode=ap network=lan ssid=OpenWrt); harmless stubs that OpenWISP overwrites.
 	wifi config
-	if [ -n "$_mesh_phy" ]; then
-		_r=$(radio_with_bdf "$(bdf_of_phy "$_mesh_phy")")
-		if [ -n "$_r" ]; then
-			uci set "wireless.$_r.band=5g"
-			uci set "wireless.$_r.channel=auto"
-			uci set "wireless.$_r.disabled=0"
-			uci set wireless.mesh0.device="$_r"   # bind the mesh to the WiFi-6 radio
-			logger -t "$LOG_TAG" "mesh + 5GHz -> $_r ($_mesh_phy)"
-		fi
-	fi
-	if [ -n "$_ap24_phy" ]; then
-		_r=$(radio_with_bdf "$(bdf_of_phy "$_ap24_phy")")
-		if [ -n "$_r" ]; then
-			uci set "wireless.$_r.band=2g"
-			uci set "wireless.$_r.channel=auto"
-			uci set "wireless.$_r.disabled=0"
-			logger -t "$LOG_TAG" "2.4GHz -> $_r ($_ap24_phy)"
-		fi
+	_mesh=""        # preferred 5/6 GHz radio to anchor the mesh
+	_first=""       # fallback: first radio of any band
+	for _r in $(wifi_devices); do
+		[ -n "$_first" ] || _first=$_r
+		uci set "wireless.$_r.channel=auto"
+		uci set "wireless.$_r.disabled=0"
+		_band=$(uci -q get "wireless.$_r.band")
+		case "$_band" in
+			6g|5g) [ -n "$_mesh" ] || _mesh=$_r ;;
+		esac
+		logger -t "$LOG_TAG" "enabled $_r (band=${_band:-?})"
+	done
+	[ -n "$_mesh" ] || _mesh=$_first   # no 5/6 GHz radio -> anchor mesh on whatever exists
+	if [ -n "$_mesh" ]; then
+		uci set wireless.mesh0.device="$_mesh"
+		logger -t "$LOG_TAG" "mesh0 -> $_mesh"
 	fi
 	uci commit wireless
 	wifi reload
