@@ -7,7 +7,7 @@ or the build staging root-* dir as fallback):
   - /etc/config/wireless   : mesh mode + real MESH_ID + SAE key, no placeholders
   - /etc/uci-defaults/99-tenvm-bootstrap : executable; eth0 trunk; cron line; no placeholders
   - /usr/sbin/gwifi-radio-setup, gwifi-backhaul-gate, hotplug hook : present + executable
-  - package manifest       : required packages incl. ath11k/ath10k driver+firmware
+  - package manifest       : required packages incl. all in-tree PCIe Wi-Fi drivers+firmware
   - a bootable combined-efi.img artifact exists
 
 Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS). Never
@@ -29,8 +29,17 @@ FLEET_SECRETS = os.environ.get(
 REQUIRED_PACKAGES = [
     "openwisp-config", "openwisp-monitoring", "kmod-batman-adv",
     "wpad-mesh-mbedtls", "usteer", "batctl-default",
-    "kmod-ath11k-pci", "ath11k-firmware-qcn9074",
-    "kmod-ath10k", "ath10k-firmware-qca9377",
+    # PCIe Wi-Fi drivers — all in-tree families (any card that may be passed through)
+    "kmod-ath9k", "kmod-ath10k", "kmod-ath11k-pci", "kmod-ath12k",
+    "kmod-mt76x0e", "kmod-mt76x2", "kmod-mt7615e", "kmod-mt7915e",
+    "kmod-mt7921e", "kmod-mt7925e", "kmod-mt7996e",
+    "kmod-rtw88-8723de", "kmod-rtw88-8814ae", "kmod-rtw88-8821ce",
+    "kmod-rtw88-8822be", "kmod-rtw88-8822ce",
+    "kmod-rtw89-pci", "kmod-rtw89-8851be", "kmod-rtw89-8852ae",
+    "kmod-rtw89-8852be", "kmod-rtw89-8852ce", "kmod-rtw89-8922ae",
+    # Representative firmware (ath explicit; mt76 bundled in kmod; rtw auto per-chip)
+    "ath10k-firmware-qca9377", "ath11k-firmware-qcn9074",
+    "ath12k-firmware-qcn9274", "rtl8852ce-firmware",
 ]
 OVERLAY_EXEC = [
     "etc/uci-defaults/99-tenvm-bootstrap",
