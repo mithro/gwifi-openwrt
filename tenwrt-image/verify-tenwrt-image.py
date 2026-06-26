@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""verify-tenvm-image.py — validate the built ten64 Wi-Fi VM image.
+"""verify-tenwrt-image.py — validate the built ten64 Wi-Fi VM image.
 
 Checks, against the rootfs (the *-rootfs.tar.gz emitted by CONFIG_TARGET_ROOTFS_TARGZ,
 or the build staging root-* dir as fallback):
   - /etc/config/openwisp   : real URL + shared_secret, no placeholders
   - /etc/config/wireless   : mesh mode + real MESH_ID + SAE key, no placeholders
-  - /etc/uci-defaults/99-tenvm-bootstrap : executable; eth0 trunk; cron line; no placeholders
+  - /etc/uci-defaults/99-tenwrt-bootstrap : executable; eth0 trunk; cron line; no placeholders
   - /usr/sbin/gwifi-radio-setup, gwifi-backhaul-gate, hotplug hook : present + executable
   - package manifest       : required packages incl. all in-tree PCIe Wi-Fi drivers+firmware
   - a bootable combined-efi.img artifact exists
 
 Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS). Never
-prints secrets. Usage: uv run python tenvm-image/verify-tenvm-image.py
+prints secrets. Usage: uv run python tenwrt-image/verify-tenwrt-image.py
 """
 import glob
 import os
@@ -42,7 +42,7 @@ REQUIRED_PACKAGES = [
     "ath12k-firmware-qcn9274", "rtl8852ce-firmware",
 ]
 OVERLAY_EXEC = [
-    "etc/uci-defaults/99-tenvm-bootstrap",
+    "etc/uci-defaults/99-tenwrt-bootstrap",
     "usr/sbin/gwifi-radio-setup",
     "usr/sbin/gwifi-backhaul-gate",
     "etc/hotplug.d/net/30-gwifi-backhaul",
@@ -70,7 +70,7 @@ def read_rootfs(image_dir):
     """Return ({relpath: text}, {relpath: mode}, label) from the rootfs tarball
     (preferred) or the build staging root-* dir (fallback)."""
     want = tuple(["etc/config/openwisp", "etc/config/wireless",
-                  "etc/uci-defaults/99-tenvm-bootstrap"] + OVERLAY_EXEC[1:])
+                  "etc/uci-defaults/99-tenwrt-bootstrap"] + OVERLAY_EXEC[1:])
     tarballs = glob.glob(os.path.join(image_dir, "*rootfs.tar.gz"))
     if tarballs:
         tarball = max(tarballs, key=os.path.getmtime)   # newest, in case a stale one lingers
@@ -114,7 +114,7 @@ def main():
     files, modes, src = read_rootfs(IMAGE_DIR)
     if not files:
         sys.exit("ERROR: no rootfs tarball or staging dir found; build with "
-                 "CONFIG_TARGET_ROOTFS_TARGZ=y (in tenvm.config)")
+                 "CONFIG_TARGET_ROOTFS_TARGZ=y (in tenwrt.config)")
     print("Rootfs source: %s\n" % src)
 
     def check_value(content, key, label):
@@ -153,7 +153,7 @@ def main():
         check_value(wl, "MESH_SAE_KEY", "wireless")
         check_no_ph(wl, "wireless")
 
-    bs = files.get("etc/uci-defaults/99-tenvm-bootstrap")
+    bs = files.get("etc/uci-defaults/99-tenwrt-bootstrap")
     if bs is None:
         failures.append("FAIL bootstrap: not in rootfs")
     else:

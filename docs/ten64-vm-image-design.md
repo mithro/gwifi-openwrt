@@ -20,7 +20,7 @@ openwisp-config attempts controller registration.* No radio is required to valid
 
 ## 2. Goals
 
-- **G1** A new `tenvm-image/` sibling that builds a bootable aarch64 OpenWrt image for
+- **G1** A new `tenwrt-image/` sibling that builds a bootable aarch64 OpenWrt image for
   the `armsr/armv8` target, as a `combined-efi.img` directly bootable under QEMU/KVM.
 - **G2** Same managed feature set as gale: `openwisp-config` + `openwisp-monitoring`,
   batman-adv mesh, 802.11s SAE (`wpad-mesh-mbedtls`), `usteer`, LuCI.
@@ -36,7 +36,7 @@ openwisp-config attempts controller registration.* No radio is required to valid
 - **G6** Radios identified at first boot **by driver/capability**, not by hardcoded
   path (a VM gets guest-assigned PCI slots), and the bootstrap is a no-op when no radio
   is attached — so the image boots and provisions before passthrough exists.
-- **G7** Validation: a `verify-tenvm-image.py` rootfs check (packages + overlay + cron),
+- **G7** Validation: a `verify-tenwrt-image.py` rootfs check (packages + overlay + cron),
   **plus** a headless QEMU smoke-boot that confirms the image reaches first-boot.
 
 ## 3. Non-goals (deferred to follow-on deliverables)
@@ -77,9 +77,9 @@ openwisp-config attempts controller registration.* No radio is required to valid
   ten64) and anchors the RF mesh. The fleet overlay stays 100% uniform.
 - **R2 (validation depth):** verify script **and** headless QEMU smoke-boot.
 - **R3 (DRY):** `gwifi-backhaul-gate` + the hotplug hook are the shared `fleet-files/`
-  source, merged at build time — not copied/forked into `tenvm-image/`. The OpenWISP UCI
+  source, merged at build time — not copied/forked into `tenwrt-image/`. The OpenWISP UCI
   (`etc/config/openwisp`) is per-image: each of gale/om2p ships its own, and so does
-  tenvm (the controller stanza is identical apart from build-time secret substitution).
+  tenwrt (the controller stanza is identical apart from build-time secret substitution).
 - **R4 (no secrets / no sensitive data):** placeholders only in committed overlay; real
   secrets substituted at build from `fleet-secrets.conf`; no SSIDs/MACs in the repo.
 
@@ -95,7 +95,7 @@ openwisp-config attempts controller registration.* No radio is required to valid
 
 ### 6.2 Boot/provisioning flow (radio-independent)
 1. UEFI → grub → kernel → procd userspace.
-2. `uci-defaults/99-tenvm-bootstrap` runs once: builds `bat0` + the VLAN trunk on
+2. `uci-defaults/99-tenwrt-bootstrap` runs once: builds `bat0` + the VLAN trunk on
    `eth0` + per-VLAN bridges, installs the backhaul-gating cron, then runs the
    radio-identification step (no-op if no phy present).
 3. `openwisp-config` starts and registers with the controller over `br-mgmt`.
@@ -108,7 +108,7 @@ completed only once the deferred passthrough work attaches the real hardware.
 
 ## 7. Component design
 
-### 7.1 Package fragment — `tenvm-image/tenvm.config`
+### 7.1 Package fragment — `tenwrt-image/tenwrt.config`
 Mirrors `gale.config` plus the two radio stacks and the VM target/rootfs lines:
 ```
 CONFIG_TARGET_ROOTFS_EXT4FS=y
@@ -133,17 +133,17 @@ CONFIG_PACKAGE_ath10k-firmware-qca9377=y
 The target lines themselves (`CONFIG_TARGET_armsr*`) are prepended by the build script
 (mirroring how `build-gale-image.sh` prepends the ipq40xx target lines).
 
-### 7.2 Build script — `tenvm-image/build-tenvm-image.sh`
+### 7.2 Build script — `tenwrt-image/build-tenwrt-image.sh`
 Structurally identical to `build-gale-image.sh`:
-1. Render `tenvm-image/files` + the shared `fleet-files/.` into `$OWRT/files`,
+1. Render `tenwrt-image/files` + the shared `fleet-files/.` into `$OWRT/files`,
    substituting the four secrets (`__OPENWISP_*__`, `__MESH_*__`) with the same
    metacharacter-escaping `esc()`.
 2. `chmod 0755` the bootstrap, the gate, and the hotplug hook.
-3. Seed `.config` with the armsr/armv8 target lines + `tenvm.config`, `make defconfig`,
+3. Seed `.config` with the armsr/armv8 target lines + `tenwrt.config`, `make defconfig`,
    `make -j"${JOBS:-6}"`.
 4. Output dir: `$OWRT/bin/targets/armsr/armv8/`. `RENDER_ONLY=1` short-circuits as in gale.
 
-### 7.3 First-boot bootstrap — `tenvm-image/files/etc/uci-defaults/99-tenvm-bootstrap`
+### 7.3 First-boot bootstrap — `tenwrt-image/files/etc/uci-defaults/99-tenwrt-bootstrap`
 Same logic as `99-gale-bootstrap` with two adaptations:
 - **Trunk port:** a single variable `UPLINK=eth0` replaces gale's `wan`. The per-VLAN
   tagged sub-ifaces become `eth0.<vid>`; bridges still pair `eth0.<vid>` + `bat0.<vid>`;
@@ -157,7 +157,7 @@ Same logic as `99-gale-bootstrap` with two adaptations:
   radio gets 2.4 GHz band defaults. **No-op when no radio/phy is present** (image-first /
   pre-passthrough). Client SSIDs are *not* created here — OpenWISP owns them.
 
-### 7.4 Wireless seed — `tenvm-image/files/etc/config/wireless`
+### 7.4 Wireless seed — `tenwrt-image/files/etc/config/wireless`
 Unlike gale (fixed SoC `path`), the VM ships a **minimal** `wireless` defining only the
 `mesh0` wifi-iface template (mesh_id/key placeholders, `network 'mesh_hardif'`,
 `mesh_fwding '0'`); the `wifi-device radioN` stanzas and the mesh0 `device` binding are
@@ -165,10 +165,10 @@ completed at first boot by §7.3 once phys exist. (Rationale: guest PCI paths ar
 unknown until the libvirt XML pins them; capability/driver matching is path-independent.)
 
 ### 7.5 OpenWISP config & secrets
-tenvm ships its **own** `files/etc/config/openwisp` (per-image, like gale/om2p) — the
+tenwrt ships its **own** `files/etc/config/openwisp` (per-image, like gale/om2p) — the
 controller stanza with `management_interface 'br-mgmt'` and `__OPENWISP_*__` placeholders
 substituted at build time. It is **not** in `fleet-files/` (which holds only the gate +
-hook). tenvm also ships its own `files/etc/config/usteer`, mirroring gale.
+hook). tenwrt also ships its own `files/etc/config/usteer`, mirroring gale.
 
 ## 8. VM/network integration model (image-side only)
 
@@ -181,7 +181,7 @@ mirror, and complicates the shared bootstrap.)
 
 ## 9. Validation & testing
 
-- **Unit/structure:** `verify-tenvm-image.py` (sibling of `verify-gale-image.py`):
+- **Unit/structure:** `verify-tenwrt-image.py` (sibling of `verify-gale-image.py`):
   unsquashfs/ext4-extract the rootfs from the built image and assert (a) required
   packages present (`openwisp-config`, `openwisp-monitoring`, batman, `wpad-mesh-mbedtls`,
   `kmod-ath11k-pci`, `ath11k-firmware-qcn9074`, `kmod-ath10k`, `ath10k-firmware-qca9377`),
@@ -189,7 +189,7 @@ mirror, and complicates the shared bootstrap.)
   bootstrap contains the backhaul cron line, (d) the openwisp controller stanza present.
 - **QEMU smoke-boot:** boot `combined-efi.img` headless on `qemu-system-aarch64 -M virt`
   with UEFI firmware and a user-mode NIC; assert via serial console that the kernel boots
-  to userspace, `99-tenvm-bootstrap` ran (bat0 + `eth0.5`/`br-mgmt` devices exist), and
+  to userspace, `99-tenwrt-bootstrap` ran (bat0 + `eth0.5`/`br-mgmt` devices exist), and
   `openwisp-config` is running/attempting registration. Successful controller
   registration is **not** required (controller may be unreachable from the test host);
   the bar is "reaches and completes first-boot." Runs on ten64 (KVM, fast) or locally
@@ -212,15 +212,15 @@ mirror, and complicates the shared bootstrap.)
 ## 11. File inventory (delta)
 
 ```
-tenvm-image/
-  build-tenvm-image.sh                 # new (sibling of build-gale-image.sh)
-  tenvm.config                         # new (target/rootfs + packages + radio stacks)
+tenwrt-image/
+  build-tenwrt-image.sh                 # new (sibling of build-gale-image.sh)
+  tenwrt.config                         # new (target/rootfs + packages + radio stacks)
   files/
     etc/config/openwisp                # new (controller stanza, per-image like gale/om2p)
     etc/config/usteer                  # new (steering config, mirrors gale)
     etc/config/wireless                # new (minimal mesh0 template)
-    etc/uci-defaults/99-tenvm-bootstrap# new (eth0 trunk + bat0 + cron + radio-id)
-  verify-tenvm-image.py                # new (rootfs asserts)
+    etc/uci-defaults/99-tenwrt-bootstrap# new (eth0 trunk + bat0 + cron + radio-id)
+  verify-tenwrt-image.py                # new (rootfs asserts)
   qemu-smoke-boot.py                   # new (headless boot test, KVM/TCG auto; uv-run)
   README.md                            # new (build + smoke-boot instructions)
 docs/
@@ -238,11 +238,11 @@ two-stage review per task). All three acceptance gates green:
 - **Build:** `armsr/armv8` from a tree that previously only built ipq40xx/ath79, so a fresh
   **aarch64 toolchain** was compiled (~the long pole). Output: `…-generic-ext4-combined-efi.img`
   (raw, bootable) + `…-generic-rootfs.tar.gz` + `…-generic.manifest` (plus squashfs variants).
-- **Verify** (`verify-tenvm-image.py`): **PASS, 25/25** — openwisp + wireless rendered with
+- **Verify** (`verify-tenwrt-image.py`): **PASS, 25/25** — openwisp + wireless rendered with
   no leftover placeholders, all four overlay files present+executable, all 10 packages
   (incl. `ath11k-firmware-qcn9074` / `ath10k-firmware-qca9377`), combined-efi artifact present.
 - **Smoke-boot** (`qemu-smoke-boot.py`, TCG on the x86 dev host): **PASS** — UEFI(QEMU_EFI.fd)
-  → GRUB → our aarch64 kernel → procd → `99-tenvm-bootstrap` ran and brought up `bat0` +
+  → GRUB → our aarch64 kernel → procd → `99-tenwrt-bootstrap` ran and brought up `bat0` +
   `br-mgmt/int/roam/iot/guest` (each `eth0.<vid>`+`bat0.<vid>` forwarding); `virtio-net`
   (`eth0`) + `virtio-blk` enumerated — confirming §8's zero-extra-package VM model.
 

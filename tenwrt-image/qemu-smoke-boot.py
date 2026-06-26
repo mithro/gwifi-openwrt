@@ -2,11 +2,11 @@
 """qemu-smoke-boot.py — headless boot test for the ten64 Wi-Fi VM image.
 
 Boots the built combined-efi.img under qemu-system-aarch64 (-M virt) and asserts the
-image reaches first-boot: the kernel boots to userspace and 99-tenvm-bootstrap prints its
+image reaches first-boot: the kernel boots to userspace and 99-tenwrt-bootstrap prints its
 completion marker on the serial console. No radio is required. KVM is used on aarch64
 hosts; TCG otherwise. SKIPs (exit 0) if qemu or UEFI firmware is unavailable.
 
-Usage: uv run python tenvm-image/qemu-smoke-boot.py [path/to/combined-efi.img]
+Usage: uv run python tenwrt-image/qemu-smoke-boot.py [path/to/combined-efi.img]
 """
 import glob
 import gzip
@@ -129,7 +129,7 @@ def main():
         sys.exit(0)
     if booted:
         print("RESULT: FAIL — kernel booted but %s not seen (bootstrap did not "
-              "complete). Check 99-tenvm-bootstrap." % MARKER)
+              "complete). Check 99-tenwrt-bootstrap." % MARKER)
         sys.exit(1)
     print("RESULT: FAIL — no boot output recognised within %ds. Likely a serial-console "
           "mismatch; try adding 'console=ttyAMA0,115200' to the image grub cmdline, or "

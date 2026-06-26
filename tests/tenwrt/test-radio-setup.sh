@@ -2,7 +2,7 @@
 # Unit tests for gwifi-radio-setup pure functions against a fake sysfs tree.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-GWIFI_RADIO_SOURCED=1 . "$HERE/../../tenvm-image/files/usr/sbin/gwifi-radio-setup"
+GWIFI_RADIO_SOURCED=1 . "$HERE/../../tenwrt-image/files/usr/sbin/gwifi-radio-setup"
 
 fails=0
 eq() { if [ "$2" = "$3" ]; then printf '  PASS %s\n' "$1";

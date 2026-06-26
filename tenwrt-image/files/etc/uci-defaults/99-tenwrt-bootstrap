@@ -1,5 +1,5 @@
 #!/bin/sh
-# 99-tenvm-bootstrap — first-boot network/mesh setup for the ten64 Wi-Fi VM.
+# 99-tenwrt-bootstrap — first-boot network/mesh setup for the ten64 Wi-Fi VM.
 # Idempotent: fixed UCI section names so re-runs overwrite, not duplicate.
 # VLAN map: NAME=VID. mgmt(5) gets DHCP; the rest are L2-only (APs attach later).
 # Uplink is a single virtio TRUNK NIC (eth0) carrying all VLANs (cf. gale's DSA 'wan').

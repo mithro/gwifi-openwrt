@@ -8,8 +8,8 @@
 `combined-efi.img`) that boots under QEMU/KVM and will own ten64's two PCIe radios once
 they are passed through — a sibling of `gale-image`/`om2p-image`.
 
-**Architecture:** New `tenvm-image/` directory mirroring `gale-image/`: a package
-fragment (`tenvm.config`), per-image overlay configs, a first-boot bootstrap adapted to a
+**Architecture:** New `tenwrt-image/` directory mirroring `gale-image/`: a package
+fragment (`tenwrt.config`), per-image overlay configs, a first-boot bootstrap adapted to a
 virtio trunk NIC (`eth0`), the DRY shared `fleet-files/` overlay (backhaul-gate + hook), a
 build script, a Python rootfs verifier, and a headless QEMU smoke-boot. Radios are
 identified at first boot **by driver** (ath11k_pci → 5 GHz mesh anchor; ath10k_pci → 2.4
@@ -56,19 +56,19 @@ task; never American date formats; never print/commit secret *values*.
 ## File Structure (decomposition — locked here)
 
 ```
-tenvm-image/
-  tenvm.config                          # T1  target/rootfs + packages + radio stacks
+tenwrt-image/
+  tenwrt.config                          # T1  target/rootfs + packages + radio stacks
   files/
     etc/config/openwisp                 # T2  controller stanza (placeholders)
     etc/config/usteer                   # T2  copy of gale's
     etc/config/wireless                 # T2  minimal mesh0 template (no fixed radio paths)
     usr/sbin/gwifi-radio-setup          # T3  driver-based radio role assignment (+unit test)
-    etc/uci-defaults/99-tenvm-bootstrap # T4  eth0 trunk + bat0 + bridges + cron + radio-setup
-  build-tenvm-image.sh                  # T5  render overlay + seed .config + make
-  verify-tenvm-image.py                 # T6  rootfs.tar.gz asserts (mirror om2p verify)
+    etc/uci-defaults/99-tenwrt-bootstrap # T4  eth0 trunk + bat0 + bridges + cron + radio-setup
+  build-tenwrt-image.sh                  # T5  render overlay + seed .config + make
+  verify-tenwrt-image.py                 # T6  rootfs.tar.gz asserts (mirror om2p verify)
   qemu-smoke-boot.py                    # T7  headless boot of combined-efi.img
   README.md                             # T8  build + verify + smoke-boot instructions
-tests/tenvm/
+tests/tenwrt/
   test-radio-setup.sh                   # T3  unit tests for phy_for_driver (fake sysfs)
 docs/
   ten64-vm-image-design.md              # (done) spec
@@ -77,15 +77,15 @@ docs/
 
 ---
 
-## Task 1: Package/target fragment `tenvm-image/tenvm.config`
+## Task 1: Package/target fragment `tenwrt-image/tenwrt.config`
 
-**Files:** Create `tenvm-image/tenvm.config`
+**Files:** Create `tenwrt-image/tenwrt.config`
 
 - [ ] **Step 1: Write the fragment** (exact content):
 
 ```
-# tenvm.config — package + rootfs fragment for the ten64 Wi-Fi VM image.
-# The armsr/armv8 TARGET lines are prepended by build-tenvm-image.sh (mirroring gale).
+# tenwrt.config — package + rootfs fragment for the ten64 Wi-Fi VM image.
+# The armsr/armv8 TARGET lines are prepended by build-tenwrt-image.sh (mirroring gale).
 CONFIG_TARGET_ROOTFS_EXT4FS=y
 CONFIG_TARGET_ROOTFS_PARTSIZE=256
 CONFIG_TARGET_ROOTFS_TARGZ=y
@@ -113,15 +113,15 @@ CONFIG_PACKAGE_ath10k-firmware-qca9377=y
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tenvm-image/tenvm.config
-git commit -m "feat(tenvm): package/target fragment for armsr/armv8 VM image"
+git add tenwrt-image/tenwrt.config
+git commit -m "feat(tenwrt): package/target fragment for armsr/armv8 VM image"
 ```
 
 ---
 
 ## Task 2: Per-image overlay configs
 
-**Files:** Create `tenvm-image/files/etc/config/{openwisp,usteer,wireless}`
+**Files:** Create `tenwrt-image/files/etc/config/{openwisp,usteer,wireless}`
 
 - [ ] **Step 1: openwisp** — copy `gale-image/files/etc/config/openwisp` **verbatim**
   (it already has `management_interface 'br-mgmt'` and the `__OPENWISP_*__` placeholders).
@@ -149,16 +149,16 @@ config wifi-iface 'mesh0'
 - [ ] **Step 4: Commit**
 
 ```bash
-git add tenvm-image/files/etc/config
-git commit -m "feat(tenvm): per-image openwisp/usteer/wireless overlay configs"
+git add tenwrt-image/files/etc/config
+git commit -m "feat(tenwrt): per-image openwisp/usteer/wireless overlay configs"
 ```
 
 ---
 
 ## Task 3: `gwifi-radio-setup` — driver-based radio roles (TDD)
 
-**Files:** Create `tenvm-image/files/usr/sbin/gwifi-radio-setup`,
-`tests/tenvm/test-radio-setup.sh`
+**Files:** Create `tenwrt-image/files/usr/sbin/gwifi-radio-setup`,
+`tests/tenwrt/test-radio-setup.sh`
 
 The only non-declarative logic in this image is "which detected phy is the WiFi-6 radio
 that should anchor the mesh." Isolate it as the pure, unit-tested function `phy_for_driver`
@@ -166,14 +166,14 @@ that should anchor the mesh." Isolate it as the pure, unit-tested function `phy_
 **no-op without phys** (so the image-first smoke-boot passes); its live validation is
 deferred to passthrough bring-up (design OQ1).
 
-- [ ] **Step 1: Write the failing test** `tests/tenvm/test-radio-setup.sh`:
+- [ ] **Step 1: Write the failing test** `tests/tenwrt/test-radio-setup.sh`:
 
 ```sh
 #!/bin/sh
 # Unit tests for gwifi-radio-setup pure functions against a fake sysfs tree.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-GWIFI_RADIO_SOURCED=1 . "$HERE/../../tenvm-image/files/usr/sbin/gwifi-radio-setup"
+GWIFI_RADIO_SOURCED=1 . "$HERE/../../tenwrt-image/files/usr/sbin/gwifi-radio-setup"
 
 fails=0
 eq() { if [ "$2" = "$3" ]; then printf '  PASS %s\n' "$1";
@@ -208,12 +208,12 @@ rm -rf "$SB"
 - [ ] **Step 2: Run it to confirm it fails** (script doesn't exist yet):
 
 ```bash
-mkdir -p ./tmp tests/tenvm
-sh tests/tenvm/test-radio-setup.sh
+mkdir -p ./tmp tests/tenwrt
+sh tests/tenwrt/test-radio-setup.sh
 ```
 Expected: error sourcing the missing script (FAIL).
 
-- [ ] **Step 3: Write `tenvm-image/files/usr/sbin/gwifi-radio-setup`:**
+- [ ] **Step 3: Write `tenwrt-image/files/usr/sbin/gwifi-radio-setup`:**
 
 ```sh
 #!/bin/sh
@@ -296,22 +296,22 @@ esac
 - [ ] **Step 4: Run the test to verify it passes:**
 
 ```bash
-sh tests/tenvm/test-radio-setup.sh
+sh tests/tenwrt/test-radio-setup.sh
 ```
 Expected: `ALL PASS`. (Also run with gawk/dash if available; it is plain POSIX sh.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add tenvm-image/files/usr/sbin/gwifi-radio-setup tests/tenvm/test-radio-setup.sh
-git commit -m "feat(tenvm): driver-based radio role assignment + unit test"
+git add tenwrt-image/files/usr/sbin/gwifi-radio-setup tests/tenwrt/test-radio-setup.sh
+git commit -m "feat(tenwrt): driver-based radio role assignment + unit test"
 ```
 
 ---
 
-## Task 4: First-boot bootstrap `99-tenvm-bootstrap`
+## Task 4: First-boot bootstrap `99-tenwrt-bootstrap`
 
-**Files:** Create `tenvm-image/files/etc/uci-defaults/99-tenvm-bootstrap`
+**Files:** Create `tenwrt-image/files/etc/uci-defaults/99-tenwrt-bootstrap`
 
 Mirror `gale-image/files/etc/uci-defaults/99-gale-bootstrap` exactly, with three changes:
 (a) trunk port `eth0` instead of `wan`; (b) call `/usr/sbin/gwifi-radio-setup` after the
@@ -321,7 +321,7 @@ network is committed; (c) a final completion echo the smoke-boot can observe.
 
 ```sh
 #!/bin/sh
-# 99-tenvm-bootstrap — first-boot network/mesh setup for the ten64 Wi-Fi VM.
+# 99-tenwrt-bootstrap — first-boot network/mesh setup for the ten64 Wi-Fi VM.
 # Idempotent: fixed UCI section names so re-runs overwrite, not duplicate.
 # VLAN map: NAME=VID. mgmt(5) gets DHCP; the rest are L2-only (APs attach later).
 # Uplink is a single virtio TRUNK NIC (eth0) carrying all VLANs (cf. gale's DSA 'wan').
@@ -393,15 +393,15 @@ so no gate change is needed.
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tenvm-image/files/etc/uci-defaults/99-tenvm-bootstrap
-git commit -m "feat(tenvm): first-boot bootstrap (eth0 trunk + bat0 + cron + radio-setup)"
+git add tenwrt-image/files/etc/uci-defaults/99-tenwrt-bootstrap
+git commit -m "feat(tenwrt): first-boot bootstrap (eth0 trunk + bat0 + cron + radio-setup)"
 ```
 
 ---
 
-## Task 5: Build script `build-tenvm-image.sh`
+## Task 5: Build script `build-tenwrt-image.sh`
 
-**Files:** Create `tenvm-image/build-tenvm-image.sh`
+**Files:** Create `tenwrt-image/build-tenwrt-image.sh`
 
 Mirror `gale-image/build-gale-image.sh`; differences: armsr/armv8 target lines, chmod the
 extra `gwifi-radio-setup`, output path.
@@ -433,7 +433,7 @@ find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__MESH_SAE_KEY__|$mk|g" \
 	-e "s|__MESH_ID__|$mi|g" \
 	-e "s|__OPENWISP_URL__|$ou|g" {} +
-chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenvm-bootstrap" \
+chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenwrt-bootstrap" \
            "$OWRT/files/usr/sbin/gwifi-radio-setup" \
            "$OWRT/files/usr/sbin/gwifi-backhaul-gate" \
            "$OWRT/files/etc/hotplug.d/net/30-gwifi-backhaul"
@@ -442,7 +442,7 @@ chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenvm-bootstrap" \
 
 # 2) seed config: armsr/armv8 target + our fragment
 { printf 'CONFIG_TARGET_armsr=y\nCONFIG_TARGET_armsr_armv8=y\nCONFIG_TARGET_armsr_armv8_DEVICE_generic=y\n';
-	cat "$HERE/tenvm.config"; } > "$OWRT/.config"
+	cat "$HERE/tenwrt.config"; } > "$OWRT/.config"
 ( cd "$OWRT" && make defconfig )
 
 # 3) build
@@ -454,7 +454,7 @@ echo "images: $OWRT/bin/targets/armsr/armv8/"
 
 ```bash
 RENDER_ONLY=1 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
-  ./tenvm-image/build-tenvm-image.sh
+  ./tenwrt-image/build-tenwrt-image.sh
 # confirm overlay rendered + no leftover placeholders + radio-setup executable
 test -x /home/tim/local/gwifi/openwrt/files/usr/sbin/gwifi-radio-setup && echo "radio-setup +x OK"
 grep -RIl '__[A-Z_]*__' /home/tim/local/gwifi/openwrt/files && echo "PLACEHOLDERS LEFT (bad)" || echo "no placeholders OK"
@@ -464,40 +464,40 @@ Expected: `radio-setup +x OK` and `no placeholders OK`.
 - [ ] **Step 3: Commit**
 
 ```bash
-chmod +x tenvm-image/build-tenvm-image.sh
-git add tenvm-image/build-tenvm-image.sh
-git commit -m "feat(tenvm): build script (armsr/armv8 target + DRY fleet overlay merge)"
+chmod +x tenwrt-image/build-tenwrt-image.sh
+git add tenwrt-image/build-tenwrt-image.sh
+git commit -m "feat(tenwrt): build script (armsr/armv8 target + DRY fleet overlay merge)"
 ```
 
 ---
 
-## Task 6: Verifier `verify-tenvm-image.py`
+## Task 6: Verifier `verify-tenwrt-image.py`
 
-**Files:** Create `tenvm-image/verify-tenvm-image.py`
+**Files:** Create `tenwrt-image/verify-tenwrt-image.py`
 
 Start from `om2p-image/verify-om2p-image.py` (it reads `fleet-secrets.conf` and extracts
 from `*rootfs.tar.gz`). Changes: image dir `armsr/armv8`; drop the OM2P per-profile
 fit-size gate; add a `combined-efi.img` existence check; add the ath11k/ath10k packages and
 the radio-setup helper to the asserted set; assert mesh creds in `/etc/config/wireless`
-(tenvm bakes a wireless seed) rather than in the bootstrap.
+(tenwrt bakes a wireless seed) rather than in the bootstrap.
 
 - [ ] **Step 1: Write the verifier** (exact content):
 
 ```python
 #!/usr/bin/env python3
-"""verify-tenvm-image.py — validate the built ten64 Wi-Fi VM image.
+"""verify-tenwrt-image.py — validate the built ten64 Wi-Fi VM image.
 
 Checks, against the rootfs (the *-rootfs.tar.gz emitted by CONFIG_TARGET_ROOTFS_TARGZ,
 or the build staging root-* dir as fallback):
   - /etc/config/openwisp   : real URL + shared_secret, no placeholders
   - /etc/config/wireless   : mesh mode + real MESH_ID + SAE key, no placeholders
-  - /etc/uci-defaults/99-tenvm-bootstrap : executable; eth0 trunk; cron line; no placeholders
+  - /etc/uci-defaults/99-tenwrt-bootstrap : executable; eth0 trunk; cron line; no placeholders
   - /usr/sbin/gwifi-radio-setup, gwifi-backhaul-gate, hotplug hook : present + executable
   - package manifest       : required packages incl. ath11k/ath10k driver+firmware
   - a bootable combined-efi.img artifact exists
 
 Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS). Never
-prints secrets. Usage: uv run python tenvm-image/verify-tenvm-image.py
+prints secrets. Usage: uv run python tenwrt-image/verify-tenwrt-image.py
 """
 import glob
 import os
@@ -519,7 +519,7 @@ REQUIRED_PACKAGES = [
     "kmod-ath10k", "ath10k-firmware-qca9377",
 ]
 OVERLAY_EXEC = [
-    "etc/uci-defaults/99-tenvm-bootstrap",
+    "etc/uci-defaults/99-tenwrt-bootstrap",
     "usr/sbin/gwifi-radio-setup",
     "usr/sbin/gwifi-backhaul-gate",
     "etc/hotplug.d/net/30-gwifi-backhaul",
@@ -547,7 +547,7 @@ def read_rootfs(image_dir):
     """Return ({relpath: text}, {relpath: mode}, label) from the rootfs tarball
     (preferred) or the build staging root-* dir (fallback)."""
     want = tuple(["etc/config/openwisp", "etc/config/wireless",
-                  "etc/uci-defaults/99-tenvm-bootstrap"] + OVERLAY_EXEC[1:])
+                  "etc/uci-defaults/99-tenwrt-bootstrap"] + OVERLAY_EXEC[1:])
     tarballs = glob.glob(os.path.join(image_dir, "*rootfs.tar.gz"))
     if tarballs:
         files, modes = {}, {}
@@ -588,7 +588,7 @@ def main():
     files, modes, src = read_rootfs(IMAGE_DIR)
     if not files:
         sys.exit("ERROR: no rootfs tarball or staging dir found; build with "
-                 "CONFIG_TARGET_ROOTFS_TARGZ=y (in tenvm.config)")
+                 "CONFIG_TARGET_ROOTFS_TARGZ=y (in tenwrt.config)")
     print("Rootfs source: %s\n" % src)
 
     def check_value(content, key, label):
@@ -627,7 +627,7 @@ def main():
         check_value(wl, "MESH_SAE_KEY", "wireless")
         check_no_ph(wl, "wireless")
 
-    bs = files.get("etc/uci-defaults/99-tenvm-bootstrap")
+    bs = files.get("etc/uci-defaults/99-tenwrt-bootstrap")
     if bs is None:
         failures.append("FAIL bootstrap: not in rootfs")
     else:
@@ -683,8 +683,8 @@ if __name__ == "__main__":
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tenvm-image/verify-tenvm-image.py
-git commit -m "feat(tenvm): rootfs verifier (packages + overlay + combined-efi artifact)"
+git add tenwrt-image/verify-tenwrt-image.py
+git commit -m "feat(tenwrt): rootfs verifier (packages + overlay + combined-efi artifact)"
 ```
 
 (The verifier is exercised against a real build in Task 9.)
@@ -693,10 +693,10 @@ git commit -m "feat(tenvm): rootfs verifier (packages + overlay + combined-efi a
 
 ## Task 7: Headless QEMU smoke-boot `qemu-smoke-boot.py`
 
-**Files:** Create `tenvm-image/qemu-smoke-boot.py`
+**Files:** Create `tenwrt-image/qemu-smoke-boot.py`
 
 Boot the raw `combined-efi.img` on `qemu-system-aarch64 -M virt`, capture the serial
-console, and assert the kernel reaches userspace and `99-tenvm-bootstrap` runs to
+console, and assert the kernel reaches userspace and `99-tenwrt-bootstrap` runs to
 completion (the `TENVM-BOOTSTRAP-COMPLETE` marker). KVM is used automatically on an aarch64
 host (ten64); otherwise TCG emulation. If qemu or UEFI firmware is absent, SKIP loudly
 (exit 0) with install hints — do not hard-fail the pipeline on a missing optional tool.
@@ -708,11 +708,11 @@ host (ten64); otherwise TCG emulation. If qemu or UEFI firmware is absent, SKIP 
 """qemu-smoke-boot.py — headless boot test for the ten64 Wi-Fi VM image.
 
 Boots the built combined-efi.img under qemu-system-aarch64 (-M virt) and asserts the
-image reaches first-boot: the kernel boots to userspace and 99-tenvm-bootstrap prints its
+image reaches first-boot: the kernel boots to userspace and 99-tenwrt-bootstrap prints its
 completion marker on the serial console. No radio is required. KVM is used on aarch64
 hosts; TCG otherwise. SKIPs (exit 0) if qemu or UEFI firmware is unavailable.
 
-Usage: uv run python tenvm-image/qemu-smoke-boot.py [path/to/combined-efi.img]
+Usage: uv run python tenwrt-image/qemu-smoke-boot.py [path/to/combined-efi.img]
 """
 import glob
 import gzip
@@ -821,7 +821,7 @@ def main():
         sys.exit(0)
     if booted:
         print("RESULT: FAIL — kernel booted but %s not seen (bootstrap did not "
-              "complete). Check 99-tenvm-bootstrap." % MARKER)
+              "complete). Check 99-tenwrt-bootstrap." % MARKER)
         sys.exit(1)
     print("RESULT: FAIL — no boot output recognised within %ds. Likely a serial-console "
           "mismatch; try adding 'console=ttyAMA0,115200' to the image grub cmdline, or "
@@ -836,8 +836,8 @@ if __name__ == "__main__":
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tenvm-image/qemu-smoke-boot.py
-git commit -m "feat(tenvm): headless QEMU smoke-boot (asserts first-boot completion)"
+git add tenwrt-image/qemu-smoke-boot.py
+git commit -m "feat(tenwrt): headless QEMU smoke-boot (asserts first-boot completion)"
 ```
 
 (Exercised against a real build in Task 9.)
@@ -846,7 +846,7 @@ git commit -m "feat(tenvm): headless QEMU smoke-boot (asserts first-boot complet
 
 ## Task 8: README
 
-**Files:** Create `tenvm-image/README.md`
+**Files:** Create `tenwrt-image/README.md`
 
 - [ ] **Step 1: Write a README** mirroring `gale-image/README.md`: purpose (aarch64 VM for
   ten64's radios, sibling of gale), prerequisites (OpenWrt tree + feeds; `qemu-system-arm`
@@ -857,8 +857,8 @@ git commit -m "feat(tenvm): headless QEMU smoke-boot (asserts first-boot complet
 - [ ] **Step 2: Commit**
 
 ```bash
-git add tenvm-image/README.md
-git commit -m "docs(tenvm): build + verify + smoke-boot README"
+git add tenwrt-image/README.md
+git commit -m "docs(tenwrt): build + verify + smoke-boot README"
 ```
 
 ---
@@ -871,7 +871,7 @@ git commit -m "docs(tenvm): build + verify + smoke-boot README"
 
 ```bash
 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf JOBS=6 \
-  ./tenvm-image/build-tenvm-image.sh
+  ./tenwrt-image/build-tenwrt-image.sh
 ```
 Expected: ends with `images: .../bin/targets/armsr/armv8/`. If a package is missing, run
 `cd /home/tim/local/gwifi/openwrt && ./scripts/feeds update -a && ./scripts/feeds install -a`
@@ -885,15 +885,15 @@ ls -l /home/tim/local/gwifi/openwrt/bin/targets/armsr/armv8/ | grep -E 'combined
 
 ```bash
 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf \
-  uv run python tenvm-image/verify-tenvm-image.py
+  uv run python tenwrt-image/verify-tenwrt-image.py
 ```
-Expected: `RESULT: PASS`. Fix any FAIL (missing package → add to `tenvm.config`; missing
+Expected: `RESULT: PASS`. Fix any FAIL (missing package → add to `tenwrt.config`; missing
 overlay file → check the build merge) and re-run from Step 1.
 
 - [ ] **Step 3: Smoke-boot:**
 
 ```bash
-uv run python tenvm-image/qemu-smoke-boot.py
+uv run python tenwrt-image/qemu-smoke-boot.py
 ```
 Expected: `RESULT: PASS (saw TENVM-BOOTSTRAP-COMPLETE)`. If `SKIP` (no qemu/firmware on
 this host): `sudo apt install qemu-system-arm qemu-efi-aarch64` and retry, or run the same
@@ -904,11 +904,11 @@ command on ten64 (KVM, fast). If it FAILs on a console mismatch, add
 
 ```bash
 rm -rf ./tmp
-git add -A && git commit -m "test(tenvm): build + verify + smoke-boot green (acceptance)" || echo "no fixups needed"
+git add -A && git commit -m "test(tenwrt): build + verify + smoke-boot green (acceptance)" || echo "no fixups needed"
 ```
 
 - [ ] **Step 5: Final whole-feature review** (subagent-driven-development: dispatch the
-  final code reviewer over the whole `tenvm-image/` addition), then use
+  final code reviewer over the whole `tenwrt-image/` addition), then use
   superpowers:finishing-a-development-branch.
 
 ---

@@ -1,4 +1,4 @@
-# tenvm-image — OpenWISP-managed aarch64 OpenWrt VM image for ten64
+# tenwrt-image — OpenWISP-managed aarch64 OpenWrt VM image for ten64
 
 This directory produces an OpenWrt VM image for the `armsr/armv8` target that runs
 as a KVM guest on the **ten64** (LS1088A arm64) host and will own ten64's two PCIe
@@ -38,7 +38,7 @@ any radio attached** — radios are identified at first boot by driver via
 Run from the repo root:
 
 ```sh
-FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf ./tenvm-image/build-tenvm-image.sh
+FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf ./tenwrt-image/build-tenwrt-image.sh
 ```
 
 The script renders secrets into a temporary `files/` tree in the build directory,
@@ -67,7 +67,7 @@ The relevant artifacts are:
 After a successful build, run:
 
 ```sh
-FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf uv run python tenvm-image/verify-tenvm-image.py
+FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf uv run python tenwrt-image/verify-tenwrt-image.py
 ```
 
 This checks packages (including ath11k/ath10k drivers and firmware), the rendered
@@ -76,12 +76,12 @@ overlay with no leftover placeholders, and that a `combined-efi` artifact exists
 ## Smoke-boot
 
 ```sh
-uv run python tenvm-image/qemu-smoke-boot.py
+uv run python tenwrt-image/qemu-smoke-boot.py
 ```
 
 Boots the `combined-efi.img` headlessly under `qemu-system-aarch64 -M virt`. PASS
 when the serial console emits the `TENVM-BOOTSTRAP-COMPLETE` marker from
-`99-tenvm-bootstrap`. SKIPs cleanly if `qemu-system-aarch64` or an aarch64 UEFI
+`99-tenwrt-bootstrap`. SKIPs cleanly if `qemu-system-aarch64` or an aarch64 UEFI
 firmware is not installed. `SMOKE_TIMEOUT=<seconds>` overrides the 360 s default.
 
 ## Secret handling

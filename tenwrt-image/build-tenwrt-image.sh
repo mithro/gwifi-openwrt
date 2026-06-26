@@ -22,7 +22,7 @@ find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__MESH_SAE_KEY__|$mk|g" \
 	-e "s|__MESH_ID__|$mi|g" \
 	-e "s|__OPENWISP_URL__|$ou|g" {} +
-chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenvm-bootstrap" \
+chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenwrt-bootstrap" \
            "$OWRT/files/usr/sbin/gwifi-radio-setup" \
            "$OWRT/files/usr/sbin/gwifi-backhaul-gate" \
            "$OWRT/files/etc/hotplug.d/net/30-gwifi-backhaul"
@@ -31,7 +31,7 @@ chmod 0755 "$OWRT/files/etc/uci-defaults/99-tenvm-bootstrap" \
 
 # 2) seed config: armsr/armv8 target + our fragment
 { printf 'CONFIG_TARGET_armsr=y\nCONFIG_TARGET_armsr_armv8=y\nCONFIG_TARGET_armsr_armv8_DEVICE_generic=y\n';
-	cat "$HERE/tenvm.config"; } > "$OWRT/.config"
+	cat "$HERE/tenwrt.config"; } > "$OWRT/.config"
 ( cd "$OWRT" && make defconfig )
 
 # 3) build

@@ -9,7 +9,7 @@
 set -u
 LOG_TAG=gwifi-radio-setup
 
-# ---- generic sysfs phy helpers (unit-tested in tests/tenvm/) ----------------
+# ---- generic sysfs phy helpers (unit-tested in tests/tenwrt/) ----------------
 # Read GWIFI_RADIO_SYSFS live (not a top-level snapshot) so tests can repoint it.
 # any_phy_present -> "1" if at least one phy exists under the sysfs root, else "".
 any_phy_present() {
