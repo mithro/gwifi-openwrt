@@ -12,7 +12,7 @@ def test_identity_from_g4(stock_g4, tmp_path):
     idv = identity.from_dump(dump)
     assert idv["serial_number"] == "2831HW00VZA"
     assert idv["ethernet_mac0"] == "44070B0187B4"
-    assert idv["ro_frid"].startswith("google_gale")
+    assert idv["ro_frid"].lower().startswith("google_gale")
     assert idv["hwid"]                 # non-empty
     assert idv["is_stock"] is True     # GBB still has Google rootkey
     # privacy: the secret must NOT leak into the curated identity

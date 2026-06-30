@@ -23,10 +23,10 @@ _VPD_FIELDS = (
 
 
 def _ro_frid(buf: bytes) -> str:
-    """Return the RO firmware ID string (normalised to lower-case)."""
+    """Return the RO firmware ID string exactly as stored on-chip."""
     off, size = const.FMAP["RO_FRID"]
     region = buf[off : off + size]
-    return region.split(b"\x00")[0].decode().lower()
+    return region.split(b"\x00")[0].decode()
 
 
 def _hwid(path: Path) -> str:
