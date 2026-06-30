@@ -1,6 +1,23 @@
 from galeflash import vpd, const
 
 
+def test_vpd_truncated_mid_entry_does_not_raise():
+    """vpd.decode on a buffer truncated mid-entry must return a dict, not raise.
+
+    Buffer layout:
+      - 8-byte "gVpdInfo" magic
+      - 5-byte version/size metadata (mimics real header)
+      - 1-byte type 0x01 (string-pair entry)
+      - NO further bytes (truncated before the key-length varint)
+
+    Without the _pad_len bounds guard this triggered IndexError at position 14.
+    """
+    header = b"gVpdInfo" + b"\x04\x0d\x7f\x00\x00"  # 13 bytes: magic + meta
+    buf = header + b"\x01"                            # type byte only, then EOF
+    result = vpd.decode(buf)
+    assert isinstance(result, dict)
+
+
 def test_vpd_decodes_g4_identity(stock_g4):
     off, size = const.FMAP["RO_VPD"]
     kv = vpd.decode(stock_g4[off:off+size])

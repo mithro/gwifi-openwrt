@@ -13,9 +13,18 @@ The VPD 2.0 container format:
 
 
 def _pad_len(buf, i):
-    """Decode a VPD pad-len varint: 7 bits/byte, MSB = more bytes follow."""
+    """Decode a VPD pad-len varint: 7 bits/byte, MSB = more bytes follow.
+
+    Returns (value, new_index).  If the buffer is truncated mid-varint
+    (i >= len(buf)) the function stops early and returns whatever partial
+    value has accumulated so far, keeping new_index at the end of the
+    buffer.  This prevents IndexError on a short partial read from the
+    raiden bridge.
+    """
     v = 0
     while True:
+        if i >= len(buf):
+            return v, i
         b = buf[i]; i += 1
         v = (v << 7) | (b & 0x7f)
         if not (b & 0x80):
