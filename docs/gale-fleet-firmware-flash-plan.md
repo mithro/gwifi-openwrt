@@ -530,7 +530,11 @@ def test_dryrun_plan(stock_g4, tmp_path, monkeypatch):
 
 ### Task 10: Pilot one puck + checkpoint
 
-- [ ] Run `uv run tools/fleet/flash_one_puck.py --expected-serial <S>` (backs up →
+- [ ] **Before the power-on step**: start watching the AP serial console
+  (`/dev/ttygwifi-ap`, 115200) — the §7 exit-criteria block is printed right
+  before power-on, so the console must be open and ready to capture output.
+- [ ] Run `uv run tools/fleet/flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
+  [--rekeyed-ok] [--chunk 0x1000] [--dry-run]` (backs up →
   builds → serial-guards → flashes RO-last → powers on).
 - [ ] **Verify on AP serial** (`/dev/ttygwifi-ap`-equiv, 115200):
   - boots **RW coreboot (Dec 2018) → depthcharge**, *not* immediate recovery
@@ -544,9 +548,10 @@ def test_dryrun_plan(stock_g4, tmp_path, monkeypatch):
 ## Phase 2 — Fleet rollout
 
 ### Task 11: Roll out remaining stock pucks
-- [ ] For each remaining stock puck: `flash_one_puck.py` → light verify (boots
-  dev-keyed slot + netboots). Consider `--chunk 0x4000` now that the pilot
-  validated timing. Record each.
+- [ ] For each remaining stock puck: `uv run tools/fleet/flash_one_puck.py
+  --serial-hint <S> --date <YYYY-MM-DD> [--chunk 0x4000]` → light verify
+  (boots dev-keyed slot + netboots). Consider `--chunk 0x4000` now that the
+  pilot validated timing. Record each.
 
 ### Task 12: Finalize
 - [ ] `uv run tools/fleet/sync_sheet.py --write` once the SA is set up.
