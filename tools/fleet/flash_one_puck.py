@@ -7,7 +7,7 @@
 """Single-puck flash orchestrator for Gale fleet firmware.
 
 Wires together the six-step pipeline for one puck:
-  backup → extract → build → verify → flash → poweron
+  backup → extract → build → flash → poweron → verify (operator boot-check)
 
 Usage:
     uv run flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
@@ -30,7 +30,7 @@ FLEET = Path(__file__).resolve().parent   # tools/fleet/
 TOOLS = FLEET.parent                      # tools/
 sys.path.insert(0, str(FLEET))
 
-from galeflash import identity, imagebuild, orchestrator  # noqa: E402
+from galeflash import imagebuild, orchestrator  # noqa: E402
 
 DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
 
@@ -114,20 +114,28 @@ def _print_dry_run(
     backup: Path,
     rekeyed_ok: bool,
 ) -> None:
-    """Print a dry-run plan summary; reads backup only if it already exists."""
-    image_path = backup.parent / f"gale-{serial_hint}-{date}-fleet.bin"
+    """Print a dry-run plan summary; reads backup only if it already exists.
+
+    When the backup is on disk we run the real ``plan()`` and report its
+    actual fields (image_path, expected_serial, refuse).  When it is not, we
+    synthesize the prospective filenames from the serial hint — there is no
+    dump to read, so refuse cannot yet be determined.
+    """
     print("=== DRY RUN (no hardware access, no build) ===")
     print(f"  backup          : {backup}")
-    print(f"  image           : {image_path}")
-    print(f"  expected_serial : {serial_hint}")
     print(f"  steps           : {orchestrator.STEPS}")
     print(f"  rekeyed_ok      : {rekeyed_ok}")
     if backup.exists():
         p = orchestrator.plan(backup, rekeyed_ok=rekeyed_ok, date=date)
+        print(f"  image           : {p.image_path}")
+        print(f"  expected_serial : {p.expected_serial}")
         print(f"  refuse          : {p.refuse}")
         if p.refuse:
             print(f"  refuse_reason   : {p.refuse_reason}")
     else:
+        image_path = backup.parent / f"gale-{serial_hint}-{date}-fleet.bin"
+        print(f"  image           : {image_path}")
+        print(f"  expected_serial : {serial_hint}")
         print("  refuse          : (unknown — backup not yet on disk)")
 
 
@@ -186,12 +194,9 @@ def main(argv=None) -> None:
     # Step 1: backup (hardware)
     _backup_spi(backup, args.chunk)  # pragma: no cover
 
-    # Step 2: extract identity → inventory JSON
-    idv = identity.from_dump(backup)
-    _write_inventory(idv, inventory_dir)
-
-    # Plan (uses the dump we just read; identity.from_dump is re-called internally)
+    # Step 2: extract identity + plan (one dump read; identity rides on the plan)
     p = orchestrator.plan(backup, rekeyed_ok=args.rekeyed_ok, date=args.date)
+    _write_inventory(p.identity, inventory_dir)
 
     if p.refuse:
         print(f"\nREFUSED: {p.refuse_reason}", file=sys.stderr)
@@ -208,7 +213,8 @@ def main(argv=None) -> None:
     # Step 5: poweron (hardware)
     _poweron()  # pragma: no cover
 
-    # Print serial-console watch criteria for the operator.
+    # Step 6: verify — the operator boot-check (watch the serial console for
+    # the §7 exit criteria printed below).
     print(_EXIT_CRITERIA)
     print(f"Done.  backup: {backup}")
     print(f"       image : {p.image_path}")

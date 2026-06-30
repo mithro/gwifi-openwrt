@@ -15,7 +15,7 @@ def test_plan_for_stock_puck(stock_g4, tmp_path):
     backup = tmp_path / "gale-2831HW00VZA-2026-06-30-pre-flash.bin"
     backup.write_bytes(stock_g4)
     p = orchestrator.plan(backup, date="2026-06-30")
-    assert p.steps == ["backup", "extract", "build", "verify", "flash", "poweron"]
+    assert p.steps == ["backup", "extract", "build", "flash", "poweron", "verify"]
     assert p.expected_serial == "2831HW00VZA"
     assert p.is_stock is True
     assert p.refuse is False
@@ -106,4 +106,30 @@ def test_plan_steps_always_full_sequence(tmp_path, monkeypatch):
         b = tmp_path / "gale-S-2026-07-01-pre-flash.bin"
         b.write_bytes(b"x")
         p = orch.plan(b, date="2026-07-01", rekeyed_ok=True)
-        assert p.steps == ["backup", "extract", "build", "verify", "flash", "poweron"]
+        assert p.steps == ["backup", "extract", "build", "flash", "poweron", "verify"]
+
+
+def test_plan_carries_identity_dict(tmp_path, monkeypatch):
+    """The full identity dict rides on the plan so callers never re-read the dump."""
+    import galeflash.orchestrator as orch
+    idv = {"serial_number": "SN9", "is_stock": True, "hwid": "GALE TEST"}
+    monkeypatch.setattr(orch.identity, "from_dump", lambda p: idv)
+    b = tmp_path / "gale-SN9-2026-07-01-pre-flash.bin"
+    b.write_bytes(b"x")
+    p = orch.plan(b, date="2026-07-01")
+    assert p.identity == idv
+
+
+def test_flashplan_is_frozen(tmp_path, monkeypatch):
+    """FlashPlan is immutable — the refuse interlock cannot be mutated post-gate."""
+    import dataclasses
+
+    import galeflash.orchestrator as orch
+    monkeypatch.setattr(orch.identity, "from_dump",
+                        lambda p: {"serial_number": "SNF", "is_stock": False})
+    b = tmp_path / "gale-SNF-2026-07-01-pre-flash.bin"
+    b.write_bytes(b"x")
+    p = orch.plan(b, date="2026-07-01")
+    assert p.refuse is True
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.refuse = False

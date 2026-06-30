@@ -13,13 +13,18 @@ from pathlib import Path
 
 from galeflash import identity
 
-# The documented full procedure, in order.
-STEPS: list[str] = ["backup", "extract", "build", "verify", "flash", "poweron"]
+# The documented full procedure, in order.  "verify" is the operator boot-check
+# (watching the serial console for the §7 exit criteria) and so comes AFTER
+# "poweron"; the offline futility-verify is internal to imagebuild.build().
+STEPS: list[str] = ["backup", "extract", "build", "flash", "poweron", "verify"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class FlashPlan:
     """Immutable description of what the flash operator should do for one puck.
+
+    Frozen so the ``refuse`` interlock cannot be mutated after the gate
+    decision has been made.
 
     Attributes:
         expected_serial: Serial number read from the backup dump.  The
@@ -31,6 +36,9 @@ class FlashPlan:
             the Chromium OS dev key.
         image_path: Where the built fleet image will be written.  Placed
             alongside the backup in the same directory.
+        identity: The curated identity dict read from the backup dump (exactly
+            what ``identity.from_dump`` returns).  Carried on the plan so
+            callers never re-read the dump — one futility invocation per puck.
         steps: The full six-step procedure (always the same list; included
             for operator display / dry-run output).
         refuse: True when the plan must not proceed.  The operator must
@@ -42,6 +50,7 @@ class FlashPlan:
     expected_serial: str
     is_stock: bool
     image_path: Path
+    identity: dict
     steps: list[str] = field(default_factory=lambda: list(STEPS))
     refuse: bool = False
     refuse_reason: str = ""
@@ -87,6 +96,7 @@ def plan(backup: Path, *, rekeyed_ok: bool = False, date: str) -> FlashPlan:
         expected_serial=serial,
         is_stock=is_stock,
         image_path=image_path,
+        identity=idv,
         steps=list(STEPS),
         refuse=refuse,
         refuse_reason=refuse_reason,
