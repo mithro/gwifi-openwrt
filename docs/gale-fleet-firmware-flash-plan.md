@@ -59,6 +59,14 @@ FMAP = {
     "RW_VPD":       (0x6E0000, 0x008000),
 }
 GBB_ROFRID_SPAN = (0x301000, 0x0DF000)   # GBB + RO_FRID, stops exactly at RO_VPD
+
+# RW_SECTION_A/B are COMPOSITES enclosing their VBLOCK_*+FW_MAIN_* leaves; the
+# offline diff-gate compares LEAVES only (composites would double-report them).
+COMPOSITE_REGIONS = {"RW_SECTION_A", "RW_SECTION_B"}
+LEAF_FMAP = {k: v for k, v in FMAP.items() if k not in COMPOSITE_REGIONS}
+# regions the build is permitted to change (the gate asserts: changed <= this).
+# RO_FRID is allowed-but-unchanged-by-build (the flash step rewrites it identical).
+ALLOWED_CHANGED = {"GBB", "RO_FRID", "FW_MAIN_A", "VBLOCK_A", "FW_MAIN_B", "VBLOCK_B"}
 ```
 
 ## On-disk test fixtures (NOT in git — skip tests if absent)
@@ -83,6 +91,8 @@ tools/fleet/
     identity.py         # dump -> identity dict (vpd + HWID + RO_FRID)
     imagebuild.py       # the combined re-key + payload + mirror + dual-sign build
     serialguard.py      # read live RO_VPD over bridge -> serial (for the flash guard)
+    flashplan.py        # pure: region write-order (RO-last) for the flasher
+    orchestrator.py     # pure: per-puck step plan (backup/extract/build/flash names)
   extract_identity.py   # CLI: dump -> inventory/<serial>.json
   build_gale_fleet_image.py  # CLI: <live.bin> <out.bin>
   flash_gale_fleet.py   # CLI: <out.bin> <expected-serial>  (RO-last, serial-guarded)
@@ -132,6 +142,16 @@ def stock_g4():
 def devkey_proto():
     p = _fx("tmp/gale-devkey-bringup.bin")
     if not p: pytest.skip("devkey prototype fixture absent")
+    return p.read_bytes()
+@pytest.fixture
+def prerekey_live():
+    p = _fx("tmp/gale-live-2026-06-08-pre-devkey.bin")
+    if not p: pytest.skip("pre-devkey live fixture absent")
+    return p.read_bytes()
+@pytest.fixture
+def tftpfirst_proto():
+    p = _fx("tmp/gale-depthcharge-tftpfirst.bin")
+    if not p: pytest.skip("tftp-first prototype fixture absent")
     return p.read_bytes()
 ```
 
@@ -187,9 +207,12 @@ def _pad_len(buf, i):
         v = (v << 7) | (b & 0x7f)
         if not (b & 0x80): return v, i
 def decode(region: bytes) -> dict:
-    # find the VPD 2.0 info block; entries follow the header magic
+    # find the VPD 2.0 info block; entries follow the fixed google_vpd_info header
     start = region.find(b"gVpdInfo")
-    i = region.index(b"\x01", start)  # first string entry type byte
+    if start < 0:
+        return {}                      # erased/empty region (e.g. blank RW_VPD)
+    i = start + 16                     # skip header (magic[8]+size[4]+reserved[4]);
+                                       # adjust if the G4 oracle misaligns
     out = {}
     while i < len(region):
         t = region[i]; i += 1
@@ -205,8 +228,9 @@ def decode(region: bytes) -> dict:
 > (bytes in, dict out) so it's trivially testable.
 
 - [ ] **Step 4: Run → PASS.**
-- [ ] **Step 5:** Add a second test parsing `RW_VPD` (asserts it decodes without
-  raising; may be sparse). Run → PASS.
+- [ ] **Step 5:** Add a second test parsing `RW_VPD` — asserts `decode` returns a
+  dict (possibly `{}` if the region is erased) and never raises. The magic-absent
+  guard in Step 3 handles the erased case. Run → PASS.
 - [ ] **Step 6: Commit** `feat(fleet): Google VPD 2.0 decoder`.
 
 ---
@@ -241,6 +265,9 @@ def test_identity_from_g4(stock_g4, tmp_path):
   - Select/rename the fields we map to the sheet (§8 of spec): `serial_number`,
     `mlb_serial_number`, `region`, `ethernet_mac0`, `ethernet_mac1`,
     `model_name`, `hwid`, `ro_frid`, `is_stock`.
+  - VPD stores MACs as **bare hex** (`44070B0187B4`), matching the Task 2 test;
+    colon-format (`44:07:0B:01:87:B4`) only when writing to the sheet, not in the
+    raw identity dict.
 
 - [ ] **Step 4: Run → PASS.**
 
@@ -263,19 +290,27 @@ Source: port `tmp/diff_regions.py` and `tmp/extend_cbfs_empty.py` (read them fir
   the expected regions changed:
 
 ```python
-from galeflash import fmapdiff
-def test_diff_only_expected_regions(stock_g4, devkey_proto):
-    changed = fmapdiff.changed_regions(stock_g4, devkey_proto)  # set of FMAP names
-    # prototype changed GBB + slot A (+ VBLOCK_B in bring-up); RO_VPD must be clean
-    assert "RO_VPD" not in changed
-    assert "GBB" in changed
-    assert "FW_MAIN_A" in changed and "VBLOCK_A" in changed
+from galeflash import fmapdiff, const
+def test_diff_detects_only_mutated_leaf(stock_g4):
+    # Hermetic: mutate ONE byte inside FW_MAIN_A; the diff must report that leaf
+    # and NOT its enclosing composite RW_SECTION_A, nor untouched regions.
+    a = stock_g4
+    b = bytearray(a); off, _ = const.FMAP["FW_MAIN_A"]; b[off] ^= 0xFF
+    changed = fmapdiff.changed_regions(bytes(a), bytes(b))
+    assert "FW_MAIN_A" in changed
+    assert "RW_SECTION_A" not in changed          # composite excluded (the fix)
+    assert "RO_VPD" not in changed and "GBB" not in changed
 ```
+> Don't diff G4-stock against `devkey_proto` — that's a *different* puck (the
+> bring-up unit), so their RO_VPD differs by identity and would falsely flag
+> RO_VPD. Same-puck before/after is exercised in Task 5 (build from a dump, diff
+> against that same dump).
 
 - [ ] **Step 2: Run → FAIL.**
-- [ ] **Step 3: Implement** `fmapdiff.changed_regions(a, b)` → for each `const.FMAP`
-  region, compare byte slices, return the set whose bytes differ. Add a
-  `print_diff(a, b)` for CLI/diagnostic use.
+- [ ] **Step 3: Implement** `fmapdiff.changed_regions(a, b)` → for each
+  `const.LEAF_FMAP` region (composites `RW_SECTION_A/B` **excluded** so they don't
+  double-report their enclosed leaves), compare byte slices, return the set whose
+  bytes differ. Add a `print_diff(a, b)` for CLI/diagnostic use.
 - [ ] **Step 4: Port `cbfs.extend_fw_main_a(path)`** from `tmp/extend_cbfs_empty.py`
   (grows FW_MAIN_A's CBFS empty trailer to the region size). No new test logic
   yet — it's exercised in Task 5.
@@ -308,7 +343,7 @@ def test_build_from_g4(stock_g4, tmp_path):
     subprocess.run([str(const.FUTILITY), "verify", str(out)], check=True)
     # (b) only the allowed regions changed vs the live input
     changed = fmapdiff.changed_regions(stock_g4, out.read_bytes())
-    assert changed <= {"GBB","RO_FRID","FW_MAIN_A","VBLOCK_A","FW_MAIN_B","VBLOCK_B"}
+    assert changed <= const.ALLOWED_CHANGED          # leaf-only; composites excluded
     assert "RO_VPD" not in changed and "RW_VPD" not in changed
     # (c) both slots carry the identical payload body
     a0,aL = const.FMAP["FW_MAIN_A"]; b0,bL = const.FMAP["FW_MAIN_B"]
@@ -337,8 +372,8 @@ out.write_bytes(buf)
 for slot in ("A","B"):
     sign_slot(out, slot)     # see Step 4
 run(FUTILITY, "verify", out)
-# diff gate
-assert fmapdiff.changed_regions(live.read_bytes(), out.read_bytes()) <= ALLOWED
+# diff gate (leaf regions only; const.ALLOWED_CHANGED)
+assert fmapdiff.changed_regions(live.read_bytes(), out.read_bytes()) <= const.ALLOWED_CHANGED
 ```
 
 - [ ] **Step 4: Implement `sign_slot`** mirroring `build_depthcharge_image_v2.py`'s
@@ -375,8 +410,8 @@ def sign_slot(img, slot):
 
 ### Task 6: Flasher with serial guard + RO-last order (`flash_gale_fleet.py`)
 
-**Files:** Create `galeflash/serialguard.py`, `tools/fleet/flash_gale_fleet.py`,
-`tests/test_serialguard.py`, `tests/test_flash_order.py`.
+**Files:** Create `galeflash/serialguard.py`, `galeflash/flashplan.py`,
+`tools/fleet/flash_gale_fleet.py`, `tests/test_serialguard.py`, `tests/test_flash_order.py`.
 
 - [ ] **Step 1: Failing test for the guard decision** (pure logic, no hardware):
 
@@ -422,7 +457,7 @@ Wires Phase-0 tools into the operator entrypoint: **backup → extract identity 
 build → (gate) → flash → power on**. Verification is observed by the operator on
 serial (the script prints the exact things to watch).
 
-**Files:** Create `tools/fleet/flash_one_puck.py`, `tests/test_orchestrator.py`.
+**Files:** Create `galeflash/orchestrator.py`, `tools/fleet/flash_one_puck.py`, `tests/test_orchestrator.py`.
 
 - [ ] **Step 1: Failing test** — orchestrator in `--dry-run` plans the right steps
   given a fixture as the "backup", and **refuses to flash** if `is_stock` is False
