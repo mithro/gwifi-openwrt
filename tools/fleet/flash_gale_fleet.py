@@ -49,7 +49,7 @@ def _park(label="re-park AP"):  # pragma: no cover
     _run(["python3", str(TOOLS / "ec_console.py"), "gale power off"], label)
 
 
-def main():  # pragma: no cover
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", type=Path, help="Firmware image to flash (out.bin)")
@@ -57,7 +57,7 @@ def main():  # pragma: no cover
     ap.add_argument("--chunk", default="0x1000",
                     help="Chunk size for raiden_write_region (default: 0x1000; "
                          "fleet can opt into 0x4000 for faster writes)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if not args.image.exists():
         sys.exit(f"FATAL: image not found: {args.image}")
