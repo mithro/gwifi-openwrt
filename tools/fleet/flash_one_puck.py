@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
+# SPDX-License-Identifier: Apache-2.0
+"""Single-puck flash orchestrator for Gale fleet firmware.
+
+Wires together the six-step pipeline for one puck:
+  backup → extract → build → verify → flash → poweron
+
+Usage:
+    uv run flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
+                              [--out-dir DIR] [--rekeyed-ok]
+                              [--chunk 0x1000] [--dry-run]
+
+The serial-hint must match the live puck's serial number exactly — the
+flash step's serial-guard re-reads the puck and aborts on any mismatch.
+"""
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Path setup — flash_one_puck.py lives in tools/fleet/
+# ---------------------------------------------------------------------------
+FLEET = Path(__file__).resolve().parent   # tools/fleet/
+TOOLS = FLEET.parent                      # tools/
+sys.path.insert(0, str(FLEET))
+
+from galeflash import identity, imagebuild, orchestrator  # noqa: E402
+
+DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
+
+# Exit-criteria block printed after a successful flash (§7 of the plan doc).
+_EXIT_CRITERIA = """\
+=== WATCH SERIAL CONSOLE FOR THESE EXIT CRITERIA (§7) ===
+  1. Boots RW coreboot (Dec-2018 or later) — NOT an immediate recovery boot.
+  2. Depthcharge starts (not stock u-boot / recovery shim).
+  3a. WITH DHCP/TFTP up  : puck netboots — TFTP kernel fetch visible on console.
+  3b. WITHOUT DHCP/TFTP  : falls through to eMMC / USB recovery as expected.
+  NOTE: dev-signed image; the unit must already be in developer mode for the
+        GBB to accept the dev keyblock.
+"""
+
+
+# ---------------------------------------------------------------------------
+# Hardware subprocess helpers — marked no-cover; touch real hardware
+# ---------------------------------------------------------------------------
+
+def _run_hw(cmd: list, label: str) -> None:  # pragma: no cover
+    """Print a banner, run *cmd*, raise CalledProcessError on failure."""
+    print(f"\n===== {label} =====", flush=True)
+    print(f"$ {' '.join(str(c) for c in cmd)}", flush=True)
+    subprocess.check_call(cmd)
+
+
+def _backup_spi(backup: Path, chunk: str) -> None:  # pragma: no cover
+    """Step 1: read full 8 MiB SPI flash from the live puck."""
+    _run_hw(
+        ["python3", str(TOOLS / "chunk_read.py"), "all", str(backup)],
+        "backup SPI",
+    )
+
+
+def _flash_image(image_path: Path, serial: str, chunk: str) -> None:  # pragma: no cover
+    """Step 4: flash the built image; flash_gale_fleet.py's serial-guard runs here."""
+    _run_hw(
+        [
+            "python3", str(FLEET / "flash_gale_fleet.py"),
+            str(image_path),
+            serial,
+            "--chunk", chunk,
+        ],
+        "flash",
+    )
+
+
+def _poweron() -> None:  # pragma: no cover
+    """Step 5: release AP from park / power the puck on."""
+    _run_hw(
+        ["python3", str(TOOLS / "ec_console.py"), "gale power on"],
+        "poweron",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers (testable, no hardware)
+# ---------------------------------------------------------------------------
+
+def _ensure_dirs(out_dir: Path) -> tuple[Path, Path]:
+    """Create and return (backups_dir, inventory_dir) under *out_dir*."""
+    backups_dir = out_dir / "backups"
+    inventory_dir = out_dir / "inventory"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    inventory_dir.mkdir(parents=True, exist_ok=True)
+    return backups_dir, inventory_dir
+
+
+def _write_inventory(idv: dict, inventory_dir: Path) -> Path:
+    """Write identity dict to <inventory_dir>/<serial>.json; return the path."""
+    serial = idv["serial_number"]
+    out_file = inventory_dir / f"{serial}.json"
+    out_file.write_text(json.dumps(idv, indent=2) + "\n")
+    print(f"Identity written: {out_file}", flush=True)
+    return out_file
+
+
+def _print_dry_run(
+    serial_hint: str,
+    date: str,
+    backup: Path,
+    rekeyed_ok: bool,
+) -> None:
+    """Print a dry-run plan summary; reads backup only if it already exists."""
+    image_path = backup.parent / f"gale-{serial_hint}-{date}-fleet.bin"
+    print("=== DRY RUN (no hardware access, no build) ===")
+    print(f"  backup          : {backup}")
+    print(f"  image           : {image_path}")
+    print(f"  expected_serial : {serial_hint}")
+    print(f"  steps           : {orchestrator.STEPS}")
+    print(f"  rekeyed_ok      : {rekeyed_ok}")
+    if backup.exists():
+        p = orchestrator.plan(backup, rekeyed_ok=rekeyed_ok, date=date)
+        print(f"  refuse          : {p.refuse}")
+        if p.refuse:
+            print(f"  refuse_reason   : {p.refuse_reason}")
+    else:
+        print("  refuse          : (unknown — backup not yet on disk)")
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+def _parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--serial-hint", required=True,
+        help="Expected serial number of the puck to flash",
+    )
+    parser.add_argument(
+        "--date", required=True,
+        help="Date stamp for output filenames (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--out-dir", type=Path, default=DEFAULT_OUT_DIR,
+        help=f"Output root directory (default: {DEFAULT_OUT_DIR})",
+    )
+    parser.add_argument(
+        "--rekeyed-ok", action="store_true",
+        help="Allow flashing a puck whose GBB root key is already dev-keyed",
+    )
+    parser.add_argument(
+        "--chunk", default="0x1000",
+        help="Chunk size passed to raiden_write_region (default: 0x1000; "
+             "fleet can use 0x4000 for faster writes)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Print plan filenames and steps; do NOT touch hardware or build",
+    )
+    return parser.parse_args(argv)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main(argv=None) -> None:
+    args = _parse_args(argv)
+
+    backups_dir, inventory_dir = _ensure_dirs(args.out_dir)
+    backup = backups_dir / f"gale-{args.serial_hint}-{args.date}-pre-flash.bin"
+
+    # --dry-run: show plan without touching hardware or building.
+    if args.dry_run:
+        _print_dry_run(args.serial_hint, args.date, backup, args.rekeyed_ok)
+        return
+
+    # Step 1: backup (hardware)
+    _backup_spi(backup, args.chunk)  # pragma: no cover
+
+    # Step 2: extract identity → inventory JSON
+    idv = identity.from_dump(backup)
+    _write_inventory(idv, inventory_dir)
+
+    # Plan (uses the dump we just read; identity.from_dump is re-called internally)
+    p = orchestrator.plan(backup, rekeyed_ok=args.rekeyed_ok, date=args.date)
+
+    if p.refuse:
+        print(f"\nREFUSED: {p.refuse_reason}", file=sys.stderr)
+        sys.exit(1)
+
+    # Step 3: build (offline — futility + cbfstool, no hardware)
+    print("\n===== build =====", flush=True)
+    imagebuild.build(backup, p.image_path)
+    print(f"  image: {p.image_path}", flush=True)
+
+    # Step 4: flash (hardware); serial-guard runs inside flash_gale_fleet.py
+    _flash_image(p.image_path, p.expected_serial, args.chunk)  # pragma: no cover
+
+    # Step 5: poweron (hardware)
+    _poweron()  # pragma: no cover
+
+    # Print serial-console watch criteria for the operator.
+    print(_EXIT_CRITERIA)
+    print(f"Done.  backup: {backup}")
+    print(f"       image : {p.image_path}")
+
+
+if __name__ == "__main__":
+    main()
