@@ -35,7 +35,10 @@ Full boot chain, SPI map, and signing chain: [`gale-boot-process.md`](gale-boot-
 `depthcharge-ipq4019/depthcharge/build/depthcharge.elf` — the **standard**
 depthcharge payload, with TFTP-first/eMMC-fallback compiled in
 (`CONFIG_TRY_NETBOOT_FIRST=1`; on DHCP/TFTP failure it prints
-`netboot: DHCP failed; falling through to vboot.` and runs the normal
+`netboot: DHCP failed; falling through to vboot.` — the string verified via
+`strings` on the built ELF (the older `gale-openwrt-netboot-install.md` §4 quotes
+`=== Falling back to eMMC kernel partition ===`, which is **stale**; not a
+verification gate either way, see §7) — then runs the normal
 `VbSelectAndLoadKernel()` eMMC path). Built 2026-06-13, after fork HEAD
 `c02e0cd`. This ELF is the *only* shared bit; everything else is per-puck.
 
@@ -108,12 +111,19 @@ into one script. Transformations on a copy of the live dump:
 2. `extend_cbfs_empty.py` — grow FW_MAIN_A's CBFS empty trailer to the region size
    so `body_size` in the new preamble matches coreboot's runtime CBFS bound.
 3. `cbfstool <out> remove/add-payload -r FW_MAIN_A -n fallback/payload -f depthcharge.elf -c lzma`.
-4. **Mirror A→B**: copy the rebuilt `RW_SECTION_A` bytes into `RW_SECTION_B`'s
-   `FW_MAIN_B` so both slots carry the identical TFTP-first payload.
+4. **Mirror the body A→B**: copy the rebuilt **`FW_MAIN_A`** region (1335.8 KiB)
+   verbatim onto **`FW_MAIN_B`** (identical size). Only the `FW_MAIN_B` *body* is
+   overwritten — `RW_FWID_B`, `RW_SHARED`, and the rest of `RW_SECTION_B` are left
+   untouched (keeps the §5.6 diff gate honest). A full-body copy (not a partial
+   splice) is required because stock A and B bodies differ — e.g. tzbsp blob
+   393256 B (A) vs 37928 B (B) per `gale-boot-process.md` §2.
 5. Sign **both** vblocks with the dev keyblock + `dev_firmware_data_key`,
    `--kernelkey kernel_subkey.vbpubk`, `--version 1`, `--flags 0` (drop
    `USE_RO_NORMAL` so the body hash is really checked, offline and at runtime),
-   each over its own slot's full `FW_MAIN_<X>` as the firmware volume.
+   each over its own slot's full `FW_MAIN_<X>` as the firmware volume. This
+   standardizes on the v2 per-slot `vbutil_firmware` + splice method (not the
+   bring-up's whole-image `futility sign` with mixed normal/dev keyblocks); since
+   the mirrored bodies are now identical, a single dev keyblock signs both slots.
 6. **Gate:** `futility verify <out>` passes **and** `diff_regions.py` shows only
    `GBB`, `FW_MAIN_A/B`, `VBLOCK_A/B` differ from the live dump.
 
@@ -128,7 +138,9 @@ Keys: `depthcharge-ipq4019/vboot_reference/tests/devkeys/` (all present).
 - **Serial-match guard (new — the prototypes lacked it):** the flasher reads the
   target's live VPD serial over the bridge and **refuses to write** unless it
   equals the serial the image was built from. Prevents flashing one puck's
-  re-keyed image (with another's VPD assumptions) onto the wrong unit.
+  re-keyed image (with another's VPD assumptions) onto the wrong unit. Read path:
+  a partial bridge read of `RO_VPD` (`0x3E0000:0x20000`) then VPD-parse — one
+  short extra SuzyQ session before the write.
 - **Chunk size:** `0x1000` (4 KiB, proven) for the pilot; evaluate `0x4000`
   (16 KiB, the documented per-session ceiling — 4× fewer SuzyQ sessions) for the
   fleet once the pilot validates timing.
@@ -196,7 +208,9 @@ with the SA. Blocks only the sheet-sync step, not flashing.
 | `docs/gale-fleet-firmware-flash-plan.md` | the step-by-step runbook. |
 
 Reuses existing `gwifi-openwrt/tools/`: `chunk_read.py`, `raiden_write_region.py`,
-`raiden_sr.py`, `ec_console.py`, `fmap_dump.py`. Backups + `inventory/` live
+`raiden_sr.py`, `ec_console.py`, `fmap_dump.py`. Also **ports `extend_cbfs_empty.py`
+and `diff_regions.py` from `tmp/` into `tools/fleet/`** — the build step §5.2 and
+the diff gates (§4, §5.6, §12) depend on them. Backups + `inventory/` live
 **outside git** (per-device VPD/identity).
 
 ## 11. Pre-flight checklist
