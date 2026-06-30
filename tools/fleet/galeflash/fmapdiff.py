@@ -15,6 +15,8 @@ def changed_regions(a: bytes, b: bytes) -> set[str]:
     Composites (RW_SECTION_A, RW_SECTION_B) are intentionally excluded
     from the comparison set — their leaves are compared individually.
     """
+    if len(a) != len(b):
+        raise ValueError(f"size mismatch: {len(a)} vs {len(b)}")
     changed: set[str] = set()
     for name, (off, size) in const.LEAF_FMAP.items():
         if a[off : off + size] != b[off : off + size]:

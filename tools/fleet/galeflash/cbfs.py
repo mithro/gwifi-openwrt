@@ -27,7 +27,6 @@ def extend_fw_main_a(path: Path) -> None:
     CBFS layout (no entries, or last entry is not the empty sentinel).
     """
     fw_off, fw_size = const.FMAP["FW_MAIN_A"]
-    fw_end_abs = fw_off + fw_size   # absolute offset where FW_MAIN_A ends
 
     buf = bytearray(path.read_bytes())
 
@@ -41,7 +40,7 @@ def extend_fw_main_a(path: Path) -> None:
         e_off = idx - fw_off   # offset within FW_MAIN_A
         e_len    = struct.unpack(">I", buf[idx +  8 : idx + 12])[0]
         e_type   = struct.unpack(">I", buf[idx + 12 : idx + 16])[0]
-        e_attrs  = struct.unpack(">I", buf[idx + 16 : idx + 20])[0]
+        # bytes 16-19: attributes offset (unused)
         e_offset = struct.unpack(">I", buf[idx + 20 : idx + 24])[0]  # header size
         entries.append((e_off, e_len, e_type, e_offset))
         # Advance past this entry (data starts at hdr + hdr_size).
