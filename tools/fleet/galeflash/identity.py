@@ -4,6 +4,7 @@
 Only explicitly-listed fields are returned — sensitive VPD keys such as
 ``stable_device_secret_DO_NOT_SHARE`` and ``setup_psk`` are never included.
 """
+import functools
 import re
 import subprocess
 from pathlib import Path
@@ -43,30 +44,44 @@ def _hwid(path: Path) -> str:
 
 
 def _root_key_sha1(path: Path) -> str:
-    """Return the GBB Root Key sha1sum from futility show output."""
+    """Return the GBB Root Key sha1sum from futility show output.
+
+    The relevant block looks like::
+
+        Root Key:
+          ...
+          Key sha1sum:         6d590b00dffc89019f82cc93469b13a737250bf1
+        Recovery Key:
+          ...
+
+    We anchor on the "Root Key:" header's indentation and read the first
+    "Key sha1sum:" within it, stopping if we reach another section header at
+    the same-or-lower indentation (e.g. "Recovery Key:").
+    """
     out = subprocess.check_output(
         [str(const.FUTILITY), "show", str(path)],
         text=True,
     )
     lines = out.splitlines()
     in_root_key = False
+    root_indent = None
     for line in lines:
-        if re.search(r"Root Key:", line):
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if "Root Key:" in stripped:
             in_root_key = True
+            root_indent = indent
             continue
         if in_root_key:
             m = re.search(r"Key sha1sum:\s+([0-9a-f]+)", line)
             if m:
-                return m.group(1).strip()
-            # Stop searching when we hit a section at the same indentation
-            # (Recovery Key, Firmware body, etc.)
-            if re.match(r"\s{0,2}\S", line) and "Key sha1sum" not in line:
-                # A non-indented or minimally-indented line signals section end
-                if re.match(r"\s{0,4}[A-Z]", line) and not line.strip().startswith("Key"):
-                    in_root_key = False
-    raise ValueError(f"Could not find Root Key sha1sum in futility show output")
+                return m.group(1)
+            if indent <= root_indent and stripped and stripped[0].isupper():
+                break  # left the Root Key section without finding a sha1sum
+    raise ValueError("Could not find Root Key sha1sum in futility show output")
 
 
+@functools.lru_cache(maxsize=None)
 def _dev_root_sha1() -> str:
     """Return the sha1sum of the dev-keys root public key."""
     out = subprocess.check_output(
@@ -97,13 +112,13 @@ def from_dump(path: Path) -> dict:
     merged_vpd.update(vpd.decode(buf[rw_off : rw_off + rw_size]))
 
     # Curate: only pluck explicitly-listed fields.
-    identity: dict = {field: merged_vpd.get(field) for field in _VPD_FIELDS}
+    result: dict = {field: merged_vpd.get(field) for field in _VPD_FIELDS}
 
-    identity["ro_frid"] = _ro_frid(buf)
-    identity["hwid"] = _hwid(path)
+    result["ro_frid"] = _ro_frid(buf)
+    result["hwid"] = _hwid(path)
 
     root_sha1 = _root_key_sha1(path)
     dev_sha1 = _dev_root_sha1()
-    identity["is_stock"] = root_sha1 != dev_sha1
+    result["is_stock"] = root_sha1 != dev_sha1
 
-    return identity
+    return result

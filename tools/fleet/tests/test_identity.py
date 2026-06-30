@@ -18,6 +18,12 @@ def test_identity_from_g4(stock_g4, tmp_path):
     # privacy: the secret must NOT leak into the curated identity
     assert "stable_device_secret_DO_NOT_SHARE" not in idv
     assert "setup_psk" not in idv
+    # exact allowlist: guards against silent narrowing or leakage of new keys
+    assert set(idv.keys()) == {
+        "serial_number", "mlb_serial_number", "region",
+        "ethernet_mac0", "ethernet_mac1", "model_name",
+        "hwid", "ro_frid", "is_stock",
+    }
 
 
 def test_cli_writes_inventory_json(stock_g4, tmp_path):

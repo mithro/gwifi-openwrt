@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 # SPDX-License-Identifier: Apache-2.0
 """Extract device identity from a Gale SPI dump and write it to an inventory JSON.
 
