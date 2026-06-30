@@ -30,7 +30,7 @@ FLEET = Path(__file__).resolve().parent   # tools/fleet/
 TOOLS = FLEET.parent                      # tools/
 sys.path.insert(0, str(FLEET))
 
-from galeflash import imagebuild, orchestrator  # noqa: E402
+from galeflash import imagebuild, inventory, orchestrator  # noqa: E402
 
 DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
 
@@ -209,6 +209,12 @@ def main(argv=None) -> None:
 
     # Step 4: flash (hardware); serial-guard runs inside flash_gale_fleet.py
     _flash_image(p.image_path, p.expected_serial, args.chunk)  # pragma: no cover
+
+    # Step 4.5: bookkeeping — merge audit fields into inventory/<serial>.json now
+    # that the flash has completed successfully.  Re-writes the file that was first
+    # written in Step 2 (identity only) with identity + bookkeeping together.
+    bk = inventory.bookkeeping(p.image_path, backup, args.date, "flashed")
+    _write_inventory({**p.identity, **bk}, inventory_dir)
 
     # Step 5: poweron (hardware)
     _poweron()  # pragma: no cover
