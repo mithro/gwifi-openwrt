@@ -61,6 +61,9 @@ def sign_slot(out: Path, slot: str) -> None:
     preamble's ``body_size`` == the FMAP region size (matching coreboot's
     runtime CBFS bound). The dev keyblock is used; ``--flags 0`` drops
     USE_RO_NORMAL so the body hash is actually checked at verify/runtime.
+
+    NOTE: this signs with the Chromium OS DEV test keyblock — the resulting
+    image boots ONLY a developer-mode unit, NOT a production signing key.
     """
     vb_off, vb_size = const.FMAP[f"VBLOCK_{slot}"]
     fw_off, fw_size = const.FMAP[f"FW_MAIN_{slot}"]
@@ -82,16 +85,19 @@ def sign_slot(out: Path, slot: str) -> None:
         buf = out.read_bytes()
         fv.write_bytes(buf[fw_off:fw_off + fw_size])
 
-        _run(
-            const.FUTILITY, "vbutil_firmware",
-            "--vblock", nvb,
-            "--keyblock", const.DEVKEYS / "dev_firmware.keyblock",
-            "--signprivate", const.DEVKEYS / "dev_firmware_data_key.vbprivk",
-            "--version", "1",
-            "--fv", fv,
-            "--kernelkey", const.DEVKEYS / "kernel_subkey.vbpubk",
-            "--flags", "0",
-        )
+        try:
+            _run(
+                const.FUTILITY, "vbutil_firmware",
+                "--vblock", nvb,
+                "--keyblock", const.DEVKEYS / "dev_firmware.keyblock",
+                "--signprivate", const.DEVKEYS / "dev_firmware_data_key.vbprivk",
+                "--version", "1",
+                "--fv", fv,
+                "--kernelkey", const.DEVKEYS / "kernel_subkey.vbpubk",
+                "--flags", "0",
+            )
+        except RuntimeError as e:
+            raise RuntimeError(f"sign_slot {slot}: {e}") from e
 
         # Splice the produced vblock into the image, zero-pad to region size.
         new_vb = nvb.read_bytes()
@@ -117,6 +123,15 @@ def build(live: Path, out: Path) -> None:
     """
     live = Path(live)
     out = Path(out)
+
+    # Guard: live and out MUST differ. If they alias, the diff-gate below would
+    # re-read the already-modified output as the "original" and see no changes —
+    # silently defeating the VPD / ALLOWED_CHANGED protection.
+    if live.resolve() == out.resolve():
+        raise ValueError("build(): live and out must be different paths")
+
+    # Snapshot the original bytes BEFORE any modification, for the diff-gate.
+    live_data = live.read_bytes()
 
     # 1. start from a faithful copy of the live dump
     shutil.copy2(live, out)
@@ -153,12 +168,16 @@ def build(live: Path, out: Path) -> None:
     # 8. offline vboot verify — must pass
     _run(const.FUTILITY, "verify", out)
 
-    # 9. diff-gate — never emit an image that touched disallowed regions or VPD
-    changed = fmapdiff.changed_regions(live.read_bytes(), out.read_bytes())
+    # 9. diff-gate — never emit an image that touched disallowed regions or VPD.
+    #    Compare against the pre-modification snapshot (NOT a re-read of live).
+    changed = fmapdiff.changed_regions(live_data, out.read_bytes())
     if not changed <= const.ALLOWED_CHANGED:
         raise RuntimeError(
             f"diff-gate failed: changed regions {sorted(changed)} not a subset "
             f"of ALLOWED_CHANGED {sorted(const.ALLOWED_CHANGED)}; offending: "
             f"{sorted(changed - const.ALLOWED_CHANGED)}")
+    # Intentional defense-in-depth: ALLOWED_CHANGED already excludes RO_VPD/RW_VPD,
+    # but assert VPD untouched explicitly so a future widening of ALLOWED_CHANGED
+    # can never silently let per-device VPD through. Do NOT remove as "dead code".
     if "RO_VPD" in changed or "RW_VPD" in changed:
         raise RuntimeError(f"diff-gate failed: VPD changed ({sorted(changed)})")

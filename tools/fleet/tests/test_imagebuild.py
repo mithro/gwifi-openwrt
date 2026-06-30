@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from galeflash import imagebuild, fmapdiff, const
 
 
@@ -36,3 +38,12 @@ def test_build_from_prerekey_live(prerekey_live, tmp_path):
     out = tmp_path / "out.bin"
     imagebuild.build(live, out)
     _assert_invariants(prerekey_live, out)
+
+
+def test_build_rejects_live_equals_out(tmp_path):
+    # Aliasing live==out would re-read the modified output as the "original" at
+    # the diff-gate, silently defeating VPD/ALLOWED_CHANGED protection. Guard it.
+    p = tmp_path / "same.bin"
+    p.write_bytes(b"\x00" * 8)
+    with pytest.raises(ValueError):
+        imagebuild.build(p, p)
