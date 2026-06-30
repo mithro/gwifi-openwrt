@@ -160,15 +160,19 @@ def _col_letter(col_idx: int) -> str:
     return result
 
 
-def _a1(title: str, row_idx: int, col_idx: int, is_data_row: bool = True) -> str:
-    """Return A1 notation for a cell.
+def _a1(title: str, row_idx: int, col_idx: int) -> str:
+    """Return A1 notation for a DATA cell.
 
-    *row_idx* is 0-based index into the data rows list (not the header).
-    Sheet row 1 = header; sheet row 2 = data row 0.
-    Pass ``is_data_row=False`` with row_idx=0 to address the header row.
+    *row_idx* is the 0-based index into the data rows list (not the header).
+    Sheet row 1 = header; sheet row 2 = data row 0, so the sheet row is
+    ``row_idx + 2``.
     """
-    sheet_row = row_idx + 2 if is_data_row else 1
-    return f"'{title}'!{_col_letter(col_idx)}{sheet_row}"
+    return f"'{title}'!{_col_letter(col_idx)}{row_idx + 2}"
+
+
+def _a1_header(title: str, col_idx: int) -> str:
+    """Return A1 notation for a HEADER cell (always sheet row 1)."""
+    return f"'{title}'!{_col_letter(col_idx)}1"
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +241,11 @@ def main() -> None:
     title = _sheet_title(token)
     print(f"Sheet: {title!r} (gid={TARGET_GID})  mode={mode}")
 
+    # Read range stops at column Z (26 cols).  We're at ~19 columns today, so
+    # this is fine — but FIELD_TO_HEADER must stay under 26 total columns or the
+    # read/write range would truncate the rightmost new columns.  If the schema
+    # ever grows past Z, widen this range (and the read-back range below) or
+    # compute the last-column letter from get_extended_header(header).
     all_rows = _sheets_get(token, f"'{title}'!A1:Z1000")
     if not all_rows:
         print("ERROR: Sheet appears empty (no rows returned).", file=sys.stderr)
@@ -244,6 +253,9 @@ def main() -> None:
 
     header: list[str] = all_rows[0]
     rows:   list[list[str]] = all_rows[1:]
+
+    # Column index of the "Serial" header — computed once, reused throughout.
+    serial_col_idx = [h.lower() for h in header].index("serial")
 
     print(f"Loaded {len(rows)} data rows, {len(header)} header columns.")
 
@@ -260,9 +272,16 @@ def main() -> None:
     records = prepare_records(records)
 
     # --- Compute updates -----------------------------------------------------
-    updates, conflicts = compute_updates(records, header, rows)
+    updates, conflicts, unmatched = compute_updates(records, header, rows)
     extended_header    = get_extended_header(header)
     new_col_start      = len(header)
+
+    # Surface records whose serial isn't in the sheet (visible, not dropped).
+    for serial in unmatched:
+        print(
+            f"WARNING: serial {serial!r} not found in sheet — skipped",
+            file=sys.stderr,
+        )
 
     # Identify new column headers that need to be written
     new_header_cells: list[tuple[int, str]] = []  # (col_idx, header_name)
@@ -279,7 +298,6 @@ def main() -> None:
         print(f"{'='*60}")
         for c in conflicts:
             col_name = extended_header[c.col] if c.col < len(extended_header) else f"col{c.col}"
-            serial_col_idx = [h.lower() for h in header].index("serial")
             row_data = rows[c.row]
             serial = row_data[serial_col_idx] if serial_col_idx < len(row_data) else "?"
             print(
@@ -291,8 +309,6 @@ def main() -> None:
     # --- Report planned updates ----------------------------------------------
     print(f"\nPlanned updates: {len(updates)} cell(s)")
     if updates:
-        # Identify which serials are affected
-        serial_col_idx = [h.lower() for h in header].index("serial")
         for u in sorted(updates, key=lambda x: (x.row, x.col)):
             col_name = extended_header[u.col] if u.col < len(extended_header) else f"col{u.col}"
             row_data = rows[u.row]
@@ -303,7 +319,7 @@ def main() -> None:
     if new_header_cells:
         print(f"\nNew column headers to write: {len(new_header_cells)}")
         for col_idx, col_name in sorted(new_header_cells):
-            cell_ref = _a1(title, 0, col_idx, is_data_row=False)
+            cell_ref = _a1_header(title, col_idx)
             print(f"  {cell_ref}  <- {col_name!r}")
 
     # --- Exit if conflicts ---------------------------------------------------
@@ -315,7 +331,8 @@ def main() -> None:
         print(f"\nDry run complete ({len(updates)} update(s) pending). Re-run with --write to apply.")
         return
 
-    if not updates and not new_header_cells:
+    # new_header_cells is derived from updates, so "no updates" ⇒ nothing to write.
+    if not updates:
         print("\nNothing to write — sheet is already up to date.")
         return
 
@@ -325,7 +342,7 @@ def main() -> None:
     # New column headers first
     for col_idx, col_name in new_header_cells:
         batch.append({
-            "range":  _a1(title, 0, col_idx, is_data_row=False),
+            "range":  _a1_header(title, col_idx),
             "values": [[col_name]],
         })
 
@@ -342,9 +359,8 @@ def main() -> None:
 
     # --- Verify by reading back ----------------------------------------------
     print("\n=== Verification (read-back) ===")
-    serial_col_idx = [h.lower() for h in header].index("serial")
     affected_rows = sorted({u.row for u in updates})
-    back = _sheets_get(token, f"'{title}'!A1:Z1000")
+    back = _sheets_get(token, f"'{title}'!A1:Z1000")  # Z-column assumption: see read note above
     for row_idx in affected_rows:
         sheet_row = row_idx + 2  # 1-based; header is row 1
         if sheet_row - 1 < len(back):

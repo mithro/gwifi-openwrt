@@ -69,7 +69,7 @@ NEW_COL_THRESHOLD = len(HEADER)  # 11 — new columns start here
 def test_new_columns_produce_updates_for_empty_cells():
     """Fields mapping to empty cells emit an Update per matched row."""
     records = [dict(_BASE_RECORD, serial_number="SER002")]  # eth0/eth1 empty for SER002
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
 
     assert conflicts == [], f"Unexpected conflicts: {conflicts}"
 
@@ -107,7 +107,7 @@ def test_matching_cell_is_skipped():
     """If the current cell value already equals the new value, no Update is emitted."""
     # SER001's eth0 col (col 7) is "AA:BB:CC:DD:EE:FF" — same as ethernet_mac0.
     records = [dict(_BASE_RECORD, serial_number="SER001")]
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
 
     skip_candidates = [u for u in updates if u.row == 0 and u.col == ETH0_COL]
     assert skip_candidates == [], (
@@ -124,7 +124,7 @@ def test_differing_nonempty_cell_is_conflict():
     # SER003's eth0 col is "11:22:33:44:55:66"; record sends a DIFFERENT mac0.
     records = [dict(_BASE_RECORD, serial_number="SER003",
                     ethernet_mac0="FF:EE:DD:CC:BB:AA")]
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
 
     eth0_conflicts = [c for c in conflicts if c.row == 2 and c.col == ETH0_COL]
     assert len(eth0_conflicts) == 1, f"Expected exactly one eth0 conflict, got: {conflicts}"
@@ -145,7 +145,7 @@ def test_generic_mac_column_is_not_touched():
     """The user-label E=MAC column must not be written by any inventory field."""
     mac_col = HEADER.index("MAC")  # col 4
     records = [dict(_BASE_RECORD, serial_number="SER002")]
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
     assert all(u.col != mac_col for u in updates)
     assert all(c.col != mac_col for c in conflicts)
 
@@ -154,12 +154,22 @@ def test_generic_mac_column_is_not_touched():
 # Test: serial not found → skipped (no exception)
 # ---------------------------------------------------------------------------
 
-def test_serial_not_found_is_skipped():
-    """A record whose serial matches no row must be ignored, not raise."""
+def test_serial_not_found_is_reported_not_raised():
+    """A record whose serial matches no row is skipped AND reported in unmatched."""
     records = [dict(_BASE_RECORD, serial_number="SERIAL_THAT_DOES_NOT_EXIST")]
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
     assert updates == []
     assert conflicts == []
+    # The unmatched serial must be surfaced so the operator can see the drop.
+    assert unmatched == ["SERIAL_THAT_DOES_NOT_EXIST"]
+
+
+def test_matched_records_produce_empty_unmatched_list():
+    """When every record matches a row, unmatched is empty."""
+    records = [dict(_BASE_RECORD, serial_number="SER001"),
+               dict(_BASE_RECORD, serial_number="SER002")]
+    _updates, _conflicts, unmatched = compute_updates(records, HEADER, ROWS)
+    assert unmatched == []
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +181,7 @@ def test_multiple_records_mixed_outcomes():
     rec1 = dict(_BASE_RECORD, serial_number="SER001")  # eth0 matches → skip
     rec2 = dict(_BASE_RECORD, serial_number="SER002")  # eth0 empty → Update
     records = [rec1, rec2]
-    updates, conflicts = compute_updates(records, HEADER, ROWS)
+    updates, conflicts, unmatched = compute_updates(records, HEADER, ROWS)
 
     # SER001 row=0: eth0 already "AA:BB:CC:DD:EE:FF", should not be Updated.
     row0_eth0 = [u for u in updates if u.row == 0 and u.col == ETH0_COL]

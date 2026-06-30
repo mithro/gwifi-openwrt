@@ -7,7 +7,7 @@ Usage
 -----
     from galeflash.sheetmap import compute_updates, get_extended_header, Update, Conflict
 
-    updates, conflicts = compute_updates(records, header, rows)
+    updates, conflicts, unmatched = compute_updates(records, header, rows)
 """
 
 import re
@@ -145,7 +145,7 @@ def compute_updates(
     records: list[dict],
     header: list[str],
     rows: list[list[str]],
-) -> tuple[list[Update], list[Conflict]]:
+) -> tuple[list[Update], list[Conflict], list[str]]:
     """Compute per-cell writes and conflicts for a batch of inventory records.
 
     Parameters
@@ -167,6 +167,10 @@ def compute_updates(
         Non-empty cells whose current value differs from the intended new value.
         The caller should print them and exit non-zero; do not apply updates when
         conflicts are present.
+    unmatched:
+        Serial numbers of records that matched no sheet row (in input order).
+        The caller should surface these so a puck whose serial isn't in the
+        sheet is visible rather than silently dropped.
     """
     lower_to_idx: dict[str, int] = {h.lower(): i for i, h in enumerate(header)}
 
@@ -187,12 +191,14 @@ def compute_updates(
 
     updates: list[Update] = []
     conflicts: list[Conflict] = []
+    unmatched: list[str] = []
 
     for record in records:
         serial = record.get("serial_number", "")
         row_idx = serial_to_row.get(serial)
         if row_idx is None:
-            # No matching row — skip silently (caller may log this).
+            # No matching row — record it so the caller can warn the operator.
+            unmatched.append(serial)
             continue
 
         row_data = rows[row_idx]
@@ -219,4 +225,4 @@ def compute_updates(
                     Conflict(row=row_idx, col=col_idx, current=current, new=new_val)
                 )
 
-    return updates, conflicts
+    return updates, conflicts, unmatched
