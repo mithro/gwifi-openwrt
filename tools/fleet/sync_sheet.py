@@ -28,7 +28,16 @@ import requests
 # Allow running directly from tools/fleet/
 sys.path.insert(0, str(Path(__file__).parent))
 
-from galeflash.sheetmap import FIELD_TO_HEADER, compute_updates, get_extended_header
+from galeflash.sheetmap import (
+    FIELD_TO_HEADER,
+    compute_updates,
+    format_mac,
+    get_extended_header,
+)
+
+# Inventory fields whose bare-hex VPD values must be colon-formatted for the
+# sheet's MAC columns (eth0/eth1) before reaching compute_updates.
+MAC_FIELDS = ("ethernet_mac0", "ethernet_mac1")
 
 # ---------------------------------------------------------------------------
 # Sheet constants (same spreadsheet as gwifi_sheets.py / fill_pucks.py)
@@ -182,6 +191,23 @@ def load_inventory(inventory_dir: Path) -> list[dict]:
     return records
 
 
+def prepare_records(records: list[dict]) -> list[dict]:
+    """Format MAC fields for sheet presentation, leaving the inventory JSON alone.
+
+    Returns shallow copies with ``ethernet_mac0``/``ethernet_mac1`` colon-formatted
+    (uppercase) so they match the sheet's eth0/eth1 column convention.  This runs
+    in the CLI/record-prep layer so ``compute_updates`` stays format-agnostic.
+    """
+    prepared: list[dict] = []
+    for rec in records:
+        rec = dict(rec)
+        for field in MAC_FIELDS:
+            if rec.get(field):
+                rec[field] = format_mac(rec[field])
+        prepared.append(rec)
+    return prepared
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -228,6 +254,10 @@ def main() -> None:
     if not records:
         print("Nothing to sync.")
         return
+
+    # Colon-format MAC fields for the sheet's eth0/eth1 columns (inventory JSON
+    # stays bare hex; only the sheet presentation is colon-separated).
+    records = prepare_records(records)
 
     # --- Compute updates -----------------------------------------------------
     updates, conflicts = compute_updates(records, header, rows)

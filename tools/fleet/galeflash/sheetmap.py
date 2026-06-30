@@ -10,6 +10,7 @@ Usage
     updates, conflicts = compute_updates(records, header, rows)
 """
 
+import re
 from typing import NamedTuple
 
 # ---------------------------------------------------------------------------
@@ -22,8 +23,8 @@ from typing import NamedTuple
 FIELD_TO_HEADER: dict[str, str] = {
     "mlb_serial_number": "MLB Serial",
     "region":            "Region",
-    "ethernet_mac0":     "MAC",           # existing col E — fill only if empty/matching
-    "ethernet_mac1":     "MAC1",
+    "ethernet_mac0":     "eth0",          # existing col H — fill only if empty/matching
+    "ethernet_mac1":     "eth1",          # existing col I — fill only if empty/matching
     "hwid":              "HWID",
     "ro_frid":           "RO Firmware",
     "backup_path":       "Backup",
@@ -31,6 +32,11 @@ FIELD_TO_HEADER: dict[str, str] = {
     "flash_date":        "Flash Date",
     "flash_status":      "Flash Status",
 }
+
+# Note: the generic user-label "MAC" column (E) is left untouched — it is
+# already populated with the operator's chosen MAC and is not an inventory
+# field.  The wifi-MAC columns J=wlan0/K=wlan1 stay empty (no wifi MACs in
+# inventory), so they are intentionally absent from FIELD_TO_HEADER.
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +94,28 @@ def _build_col_map(header: list[str]) -> dict[str, int]:
             next_new += 1
 
     return col_map
+
+
+# ---------------------------------------------------------------------------
+# MAC formatting
+# ---------------------------------------------------------------------------
+
+def format_mac(value: str) -> str:
+    """Format a MAC address as colon-separated uppercase hex for the sheet.
+
+    VPD stores bare hex (``44070B0187B4``); the sheet's MAC columns use the
+    colon convention (``44:07:0B:01:87:B4``).  This normalizes either form to
+    colon-separated uppercase so format mismatches don't cause spurious
+    conflicts/clobbers.
+
+    It is idempotent (already-colon-formatted input round-trips) and leaves any
+    string that isn't a 12-hex-digit MAC unchanged.
+    """
+    hex_only = re.sub(r"[^0-9A-Fa-f]", "", value)
+    if len(hex_only) != 12:
+        return value  # not a 12-hex-digit MAC — leave untouched
+    hex_only = hex_only.upper()
+    return ":".join(hex_only[i : i + 2] for i in range(0, 12, 2))
 
 
 # ---------------------------------------------------------------------------
