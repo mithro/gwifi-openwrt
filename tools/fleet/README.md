@@ -20,5 +20,5 @@ uv run pytest
 ## Notes
 
 - Run tests with `uv run pytest -q` from `tools/fleet/`.
-- Binary fixtures (`.bin` files) live under `/home/tim/local/gwifi/` and are optional;
-  tests that need them skip automatically when absent.
+- Binary fixtures (`.bin` files) live under `UMBRELLA` (defined in `galeflash/const.py`)
+  and are optional; tests that need them skip automatically when absent.
