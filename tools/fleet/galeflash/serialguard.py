@@ -4,15 +4,15 @@
 Pure logic is unit-tested.  Hardware I/O is in read_live_serial() (no-cover).
 """
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from galeflash import vpd
 from galeflash.const import FMAP
 
-# Paths to the shared hardware toolkit.
-TOOLS = Path(__file__).resolve().parents[3]   # .../gwifi-openwrt/tools
+# Paths to the shared hardware toolkit.  This file is tools/fleet/galeflash/
+# serialguard.py, so parents are: [0]=galeflash [1]=fleet [2]=tools.
+TOOLS = Path(__file__).resolve().parents[2]   # .../tools
 TMP   = Path(__file__).resolve().parents[1] / "tmp"  # tools/fleet/tmp/
 
 # Read just the first 16 KiB of RO_VPD — well under the ~87 KiB per-raiden-session
@@ -53,15 +53,23 @@ def read_live_serial() -> str:  # pragma: no cover
         subprocess.check_call(cmd)
         print(f"  ok ({time.time() - t0:.1f}s)")
 
+    # Use system "python3" (NOT sys.executable) for the external tools: under
+    # `uv run` sys.executable is the galeflash venv (pytest-only) which lacks
+    # the pyserial/pyusb that ec_console.py and raiden_write_region.py import.
+    # Matches ec_console / flash_gale_fleet.py / tmp/flash_devkey_bringup.py.
+
     # Park the AP — grants EC control of the SPI bus.
     run(["python3", str(TOOLS / "ec_console.py"), "gale power off"],
         "park AP for VPD read")
 
-    # Partial read via the raiden bridge worker.  Each fresh subprocess resets
-    # the raiden session so the ~87 KiB cliff is not an issue for this 16 KiB read.
+    # Partial read via raiden_write_region.py's "_rd" INTERNAL worker subcommand
+    # ("not for direct use" per that tool's docstring).  We use it anyway because
+    # it is the only standalone bridge reader that runs in a FRESH subprocess,
+    # which resets the ~87 KiB per-raiden-session cliff for this 16 KiB read.
+    # If raiden_write_region.py is refactored, update this call site.
     run(
         [
-            sys.executable,
+            "python3",
             str(TOOLS / "raiden_write_region.py"),
             "_rd",
             hex(_RO_VPD_OFF),
@@ -71,6 +79,10 @@ def read_live_serial() -> str:  # pragma: no cover
         f"read RO_VPD partial (0x{_RO_VPD_OFF:x}:0x{_READ_LEN:x})",
     )
 
-    blob = out_path.read_bytes()
-    kv = vpd.decode(blob)
-    return kv["serial_number"]
+    # Clean up the scratch read-back file regardless of decode outcome.
+    try:
+        blob = out_path.read_bytes()
+        kv = vpd.decode(blob)
+        return kv["serial_number"]
+    finally:
+        out_path.unlink(missing_ok=True)
