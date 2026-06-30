@@ -505,10 +505,10 @@ def test_dryrun_plan(stock_g4, tmp_path, monkeypatch):
 > **Separate prep step (not blocking Phase 1).** ✅ DONE 2026-06-30: SA
 > `gale-fleet-sheets@gdoc2netcfg-appscript.iam.gserviceaccount.com` created in
 > project `gdoc2netcfg-appscript` (the real project; "gdoc2netcfg" was the repo
-> name), Sheets API enabled, key at `~/local/gale-fleet-sa.json` (mode 600).
-> **Remaining manual step:** share the sheet (gid `210946497`) with that SA email
-> as **Editor** in the Sheets UI. Then `export GALE_SHEETS_SA_JSON=~/local/gale-fleet-sa.json`
-> for `sync_sheet.py`.
+> name), Sheets API enabled, key at `~/.config/gale-fleet/sheets-sa.json` (mode 600,
+> dir 700). Sheet (gid `210946497`) shared with the SA as **Editor** ✅ and SA
+> read-access verified 2026-06-30. For `sync_sheet.py`:
+> `export GALE_SHEETS_SA_JSON=~/.config/gale-fleet/sheets-sa.json`.
 
 ---
 
