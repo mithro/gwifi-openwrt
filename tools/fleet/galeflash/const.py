@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Verified constants for the gale fleet flash toolkit (see docs/gale-fleet-firmware-flash-plan.md)."""
+from pathlib import Path
+
+UMBRELLA = Path("/home/tim/local/gwifi")
+DC       = UMBRELLA / "depthcharge-ipq4019"
+FUTILITY = DC / "vboot_reference/build/futility/futility"
+CBFSTOOL = DC / "coreboot/util/cbfstool/cbfstool"
+DEVKEYS  = DC / "vboot_reference/tests/devkeys"
+PAYLOAD_ELF = DC / "depthcharge/build/depthcharge.elf"   # TFTP-first standard payload
+
+# FMAP regions (offset, size) — confirmed via fmap_dump.py on a real dump
+FMAP = {
+    "GBB":          (0x301000, 0x0DEF00),
+    "RO_FRID":      (0x3DFF00, 0x000100),
+    "RO_VPD":       (0x3E0000, 0x020000),
+    "VBLOCK_A":     (0x400000, 0x002000),
+    "FW_MAIN_A":    (0x402000, 0x14DF00),
+    "RW_SECTION_A": (0x400000, 0x160000),
+    "VBLOCK_B":     (0x580000, 0x002000),
+    "FW_MAIN_B":    (0x582000, 0x14DF00),
+    "RW_SECTION_B": (0x580000, 0x160000),
+    "RW_VPD":       (0x6E0000, 0x008000),
+}
+GBB_ROFRID_SPAN = (0x301000, 0x0DF000)   # GBB + RO_FRID, stops exactly at RO_VPD
+
+# RW_SECTION_A/B are COMPOSITES enclosing their VBLOCK_*+FW_MAIN_* leaves; the
+# offline diff-gate compares LEAVES only (composites would double-report them).
+COMPOSITE_REGIONS = {"RW_SECTION_A", "RW_SECTION_B"}
+LEAF_FMAP = {k: v for k, v in FMAP.items() if k not in COMPOSITE_REGIONS}
+# regions the build is permitted to change (the gate asserts: changed <= this).
+# RO_FRID is allowed-but-unchanged-by-build (the flash step rewrites it identical).
+ALLOWED_CHANGED = {"GBB", "RO_FRID", "FW_MAIN_A", "VBLOCK_A", "FW_MAIN_B", "VBLOCK_B"}
