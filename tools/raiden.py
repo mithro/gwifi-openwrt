@@ -48,19 +48,46 @@ def a3(addr):
     return [(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF]
 
 
-def ec_park(settle=0.6):
-    """`gale power off` on the EC console: parks the AP and grants the EC the SPI
-    bus. Must precede each fresh raiden session (the grant lapses between sessions)."""
+def ec_park(attempts=5):
+    """`gale power off` on the EC console: park the AP and grant the EC the SPI bus.
+
+    CRITICAL: raiden write ops auto-power-on the AP after each operation, so the AP
+    must be RE-parked before every raiden session. If the (occasionally flaky) EC
+    console drops/garbles the command, the AP stays awake and starts reading the SPI
+    to boot -- then the AP and the EC bridge are two masters on the same SPI bus and
+    the next raiden transfer times out. So don't fire-and-forget: send the command
+    and READ BACK the EC's acknowledgement ("...power...off..."), retrying until it
+    confirms. Raise (fail loud) if it never confirms -- the caller is a fresh worker
+    whose failure triggers the per-chunk retry, which re-parks cleanly."""
     port = os.path.realpath(BYID) if os.path.exists(BYID) else "/dev/ttyUSB0"
+    text = ""
     with serial.Serial(port, 115200, timeout=0.2) as s:
-        time.sleep(0.2)
-        s.reset_input_buffer()
-        s.write(b"gale power off\r\n")
-        s.flush()
-        time.sleep(settle)
-        if s.in_waiting:
-            s.read(s.in_waiting)
-    time.sleep(0.2)
+        for _ in range(attempts):
+            time.sleep(0.15)
+            s.reset_input_buffer()
+            s.write(b"gale power off\r\n")
+            s.flush()
+            # Read until the console falls quiet (or a hard cap), then check the ack.
+            resp = b""
+            t0 = last = time.time()
+            while time.time() - t0 < 2.0:
+                n = s.in_waiting
+                if n:
+                    resp += s.read(n)
+                    last = time.time()
+                elif time.time() - last > 0.3:
+                    break
+                else:
+                    time.sleep(0.02)
+            text = resp.decode("latin1", "replace").lower()
+            # EC acks with e.g. "power off ap" / "power - off"; both contain "off".
+            if "off" in text and "power" in text:
+                time.sleep(0.2)
+                return
+    raise RaidenError(
+        f"ec_park: EC console did not confirm AP parked after {attempts} "
+        f"'gale power off' attempts -- refusing to drive SPI against a possibly "
+        f"awake AP (last response: {text!r})")
 
 
 class Raiden:

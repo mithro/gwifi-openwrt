@@ -30,6 +30,7 @@ import os
 import struct
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # find raiden.py beside us
 from raiden import (Raiden, RaidenError, a3, V1_MAX,            # noqa: E402
@@ -41,6 +42,16 @@ RO_LIMIT = 0x400000             # below this = RO_SECTION/WP_RO -> guarded
 V1_WRITE_MAX = V1_MAX - 4        # usb_spi V1 payload minus (opcode + 3 addr) = 58
 SELF = os.path.abspath(__file__)
 TMP = os.environ.get("GALE_WORK", os.path.dirname(SELF))  # scratch dir for chunk/verify files
+
+# Transient-glitch resilience: the EC/raiden bridge occasionally drops a single
+# USB transaction mid-write (USBTimeoutError, Errno 110), which used to abort the
+# whole multi-MiB flash. Each chunk already runs in a FRESH worker subprocess and
+# erase+program+verify is idempotent (the _pgm worker erases the 4 KiB sector
+# before programming), so re-running a failed chunk is safe: a fresh subprocess
+# re-claims libusb, resetting a wedged transfer. Retry a chunk up to CHUNK_ATTEMPTS
+# times (with a short settle) before giving up.
+CHUNK_ATTEMPTS = int(os.environ.get("GALE_CHUNK_ATTEMPTS", "4"))
+RETRY_BACKOFF = 1.5              # seconds between chunk attempts (let the bridge settle)
 
 
 # ---------- workers (each is its own fresh process == cliff reset) ----------
@@ -199,35 +210,57 @@ def orchestrate(args):
     ro_ok = ["ro_ok"] if allow_ro else []
     cf = f"{TMP}/_wr_chunk.bin"        # scratch: per-chunk source slice
     vf = f"{TMP}/_wr_verify.bin"       # scratch: per-chunk read-back
+
+    def attempt_chunk(a, clen):
+        """Program (and, unless --no-verify, read-back-verify) ONE chunk. Each worker
+        is a fresh subprocess so a transient bridge glitch is cleared by re-claiming
+        libusb. Returns None on success, else a short failure reason (caller retries).
+        Safe to re-run: the _pgm worker erases the sector before programming."""
+        open(cf, "wb").write(image[a:a + clen])
+        p = subprocess.run([sys.executable, SELF, "_pgm", hex(a), cf] + ro_ok,
+                           capture_output=True, text=True)
+        tail = (p.stdout + p.stderr).strip().splitlines()
+        if p.returncode != 0:
+            return f"program worker rc={p.returncode}: {tail[-1] if tail else '(no output)'}"
+        if not do_verify:
+            return None
+        p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), vf],
+                           capture_output=True, text=True)
+        tail = (p.stdout + p.stderr).strip().splitlines()
+        if p.returncode != 0:
+            return f"read-back worker rc={p.returncode}: {tail[-1] if tail else '(no output)'}"
+        if not os.path.exists(vf):
+            return "read-back worker exited 0 but wrote no verify file"
+        got = open(vf, "rb").read()
+        want = image[a:a + clen]
+        if len(got) != clen:
+            return f"read-back is {len(got)} B, expected 0x{clen:x}"
+        if got != want:
+            diff = sum(1 for x, y in zip(got, want) if x != y)
+            first = next(j for j in range(len(want)) if got[j] != want[j])
+            return f"verify MISMATCH ({diff} bytes, first +0x{first:x})"
+        return None
+
     try:
         for idx, (a, clen) in enumerate(chunks):
-            open(cf, "wb").write(image[a:a + clen])
-            print(f"\n[{idx+1}/{len(chunks)}] writing 0x{a:06x} len 0x{clen:x} ...")
-            p = subprocess.run([sys.executable, SELF, "_pgm", hex(a), cf] + ro_ok,
-                               capture_output=True, text=True)
-            print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
-            if p.returncode != 0:
-                raise SystemExit(f"ABORT: program worker failed at 0x{a:06x}")
+            print(f"\n[{idx+1}/{len(chunks)}] writing 0x{a:06x} len 0x{clen:x} ...", flush=True)
+            reason = "not attempted"
+            for attempt in range(1, CHUNK_ATTEMPTS + 1):
+                reason = attempt_chunk(a, clen)
+                if reason is None:
+                    if attempt > 1:
+                        print(f"   recovered on attempt {attempt}/{CHUNK_ATTEMPTS}", flush=True)
+                    break
+                print(f"   attempt {attempt}/{CHUNK_ATTEMPTS} FAILED: {reason}", flush=True)
+                if attempt < CHUNK_ATTEMPTS:
+                    time.sleep(RETRY_BACKOFF)
+            if reason is not None:
+                raise SystemExit(f"ABORT: chunk 0x{a:06x} failed after "
+                                 f"{CHUNK_ATTEMPTS} attempts (last: {reason})")
             if do_verify:
-                p = subprocess.run([sys.executable, SELF, "_rd", hex(a), hex(clen), vf],
-                                   capture_output=True, text=True)
-                print("   " + (p.stdout + p.stderr).strip().replace("\n", "\n   "))
-                if p.returncode != 0:
-                    raise SystemExit(f"ABORT: read-back worker failed at 0x{a:06x}")
-                if not os.path.exists(vf):
-                    raise SystemExit(f"ABORT: read-back worker exited 0 but wrote no "
-                                     f"verify file at 0x{a:06x}")
-                got = open(vf, "rb").read()
-                want = image[a:a + clen]
-                if len(got) != clen:
-                    raise SystemExit(f"ABORT: read-back at 0x{a:06x} is {len(got)} B, "
-                                     f"expected 0x{clen:x}")
-                if got != want:
-                    diff = sum(1 for x, y in zip(got, want) if x != y)
-                    first = next(j for j in range(len(want)) if got[j] != want[j])
-                    raise SystemExit(f"ABORT: verify MISMATCH at 0x{a:06x} "
-                                     f"({diff} bytes, first +0x{first:x})")
-                print(f"   verify OK (0x{clen:x} bytes match source)")
+                print(f"   verify OK (0x{clen:x} bytes match source)", flush=True)
+            else:
+                print(f"   programmed 0x{clen:x} (no verify)", flush=True)
         print(f"\n== DONE: {region} written and verified ({len(chunks)} chunks).")
     finally:
         for tmpf in (cf, vf):
