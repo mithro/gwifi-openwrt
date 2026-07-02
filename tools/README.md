@@ -77,9 +77,12 @@ python3 fleet/flash_one_puck.py --serial-hint <SERIAL> --date $(date +%F)
 # Re-flashing an already-rekeyed puck additionally needs --rekeyed-ok.
 # --skip-verify flashes only and leaves the puck parked.
 ```
-Timing per puck (rpi3b, `--chunk 0x1000`): backup + build + flash + verify is
-roughly an hour, dominated by the per-chunk write cycle (~2.5 s per 4 KiB
-chunk, 927 chunks). `--chunk 0x4000` cuts the write time substantially.
+Timing per puck (rpi3b, `--chunk 0x1000` — the PROVEN session size, default):
+backup + build + flash + verify is roughly an hour, dominated by the
+per-chunk write cycle (~2.5 s per 4 KiB chunk, 927 chunks; slower on days
+the bridge's session budget is degraded). `--chunk 0x4000` is faster on a
+healthy bridge; if the budget is degraded the writer automatically
+downshifts to 0x1000 pieces after the first failed chunk.
 
 ## Usage
 ```sh

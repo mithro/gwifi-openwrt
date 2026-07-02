@@ -316,9 +316,11 @@ def main():
                         "flash over the EC raiden bridge. Dry-run by default.")
         ap.add_argument("src", help="8 MiB source image (must contain a valid FMAP)")
         ap.add_argument("region", help="FMAP region name (e.g. RW_LEGACY) or 0xOFF:0xLEN")
-        ap.add_argument("--chunk", type=lambda x: int(x, 0), default=0x4000, metavar="N",
-                        help="bytes per fresh-session chunk (default 0x4000; larger "
-                             "risks the per-session cliff)")
+        ap.add_argument("--chunk", type=lambda x: int(x, 0), default=0x1000, metavar="N",
+                        help="bytes per fresh-session chunk (default 0x1000 — the "
+                             "proven session size; bigger sizes are faster on a "
+                             "healthy bridge and auto-downshift to 0x1000 when the "
+                             "session budget is degraded)")
         ap.add_argument("--commit", action="store_true",
                         help="actually erase+program (default: dry-run only)")
         ap.add_argument("--allow-ro", action="store_true",

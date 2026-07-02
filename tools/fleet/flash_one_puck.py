@@ -172,10 +172,11 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Allow flashing a puck whose GBB root key is already dev-keyed",
     )
     parser.add_argument(
-        "--chunk", default="0x4000",
-        help="Chunk size passed to raiden_write_region (default: 0x4000; "
-             "the writer downshifts itself to 0x1000 pieces if the bridge's "
-             "session budget is degraded)",
+        "--chunk", default="0x1000",
+        help="Chunk size passed to raiden_write_region (default: 0x1000 — the "
+             "PROVEN session size, used by every successful flash; 0x4000 is "
+             "faster on a healthy bridge but relies on the writer's automatic "
+             "downshift when the session budget is degraded)",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
