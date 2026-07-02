@@ -48,46 +48,53 @@ def a3(addr):
     return [(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF]
 
 
-def ec_park(attempts=5):
-    """`gale power off` on the EC console: park the AP and grant the EC the SPI bus.
+def ec_cmd(s, cmd, timeout=4.0):
+    """Send one EC console command; read the response until the '> ' prompt."""
+    s.reset_input_buffer()
+    s.write((cmd + "\r\n").encode())
+    s.flush()
+    buf = bytearray()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        d = s.read(256)
+        if d:
+            buf.extend(d)
+            if buf.rstrip().endswith(b">"):
+                break
+    return bytes(buf).decode("latin1", "replace")
 
-    CRITICAL: raiden write ops auto-power-on the AP after each operation, so the AP
-    must be RE-parked before every raiden session. If the (occasionally flaky) EC
-    console drops/garbles the command, the AP stays awake and starts reading the SPI
-    to boot -- then the AP and the EC bridge are two masters on the same SPI bus and
-    the next raiden transfer times out. So don't fire-and-forget: send the command
-    and READ BACK the EC's acknowledgement ("...power...off..."), retrying until it
-    confirms. Raise (fail loud) if it never confirms -- the caller is a fresh worker
-    whose failure triggers the per-chunk retry, which re-parks cleanly."""
+
+def ec_park(attempts=5):
+    """Park the AP (`gale power off`) and confirm via the EC's own state query.
+
+    EC semantics (gale-ec/board-gale-r146/board.c command_power):
+      - The set is gated on `!system_is_locked()`; when locked it is a SILENT
+        no-op that just prints the current state -- only an "OK" line means the
+        set was accepted.  system_is_locked() is live on gale: WP_L is pulled
+        up by the AP's 3.3V rail, so a parked AP means locked and `gale power
+        on` from a parked state is always refused (un-park = EC `reboot`).
+      - Parking from a RUNNING AP works (rails up -> unlocked -> "OK"); parking
+        an ALREADY-PARKED AP is refused but the state is already "off".  Either
+        way the truth is the state line of a follow-up `gale power` query
+        (argc==1 prints state and is never gated), which reports ap_is_on as
+        updated by the deferred rail switch-off.
+      - Raiden write ops power the AP back on after each session, so the AP
+        must be RE-parked before every raiden session or the AP and the EC
+        bridge become two masters on one SPI bus and transfers time out.
+    """
     port = os.path.realpath(BYID) if os.path.exists(BYID) else "/dev/ttyUSB0"
-    text = ""
+    state = ""
     with serial.Serial(port, 115200, timeout=0.2) as s:
         for _ in range(attempts):
-            time.sleep(0.15)
-            s.reset_input_buffer()
-            s.write(b"gale power off\r\n")
-            s.flush()
-            # Read until the console falls quiet (or a hard cap), then check the ack.
-            resp = b""
-            t0 = last = time.time()
-            while time.time() - t0 < 2.0:
-                n = s.in_waiting
-                if n:
-                    resp += s.read(n)
-                    last = time.time()
-                elif time.time() - last > 0.3:
-                    break
-                else:
-                    time.sleep(0.02)
-            text = resp.decode("latin1", "replace").lower()
-            # EC acks with e.g. "power off ap" / "power - off"; both contain "off".
-            if "off" in text and "power" in text:
-                time.sleep(0.2)
+            ec_cmd(s, "gale power off")
+            state = ec_cmd(s, "gale power")
+            if "power - off" in state:
                 return
+            time.sleep(0.3)
     raise RaidenError(
-        f"ec_park: EC console did not confirm AP parked after {attempts} "
+        f"ec_park: EC state query never reported 'power - off' after {attempts} "
         f"'gale power off' attempts -- refusing to drive SPI against a possibly "
-        f"awake AP (last response: {text!r})")
+        f"awake AP (last state: {state!r})")
 
 
 class Raiden:

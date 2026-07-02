@@ -7,12 +7,12 @@
 """Single-puck flash orchestrator for Gale fleet firmware.
 
 Wires together the six-step pipeline for one puck:
-  backup → extract → build → flash → poweron → verify (operator boot-check)
+  backup → extract → build → flash → verify-boot (EC reboot + AP capture)
 
 Usage:
     uv run flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
                               [--out-dir DIR] [--rekeyed-ok]
-                              [--chunk 0x1000] [--dry-run]
+                              [--chunk 0x1000] [--dry-run] [--skip-verify]
 
 The serial-hint must match the live puck's serial number exactly — the
 flash step's serial-guard re-reads the puck and aborts on any mismatch.
@@ -36,13 +36,13 @@ DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
 
 # Exit-criteria block printed after a successful flash (§7 of the plan doc).
 _EXIT_CRITERIA = """\
-=== WATCH SERIAL CONSOLE FOR THESE EXIT CRITERIA (§7) ===
-  1. Boots RW coreboot (Dec-2018 or later) — NOT an immediate recovery boot.
-  2. Depthcharge starts (not stock u-boot / recovery shim).
+=== BOOT EXIT CRITERIA (§7) — checked automatically by verify_boot.py ===
+  1. Verstage verifies a RW slot ("This is developer signed firmware").
+  2. Depthcharge starts ("Starting depthcharge on gale...").
   3a. WITH DHCP/TFTP up  : puck netboots — TFTP kernel fetch visible on console.
-  3b. WITHOUT DHCP/TFTP  : falls through to eMMC / USB recovery as expected.
-  NOTE: dev-signed image; the unit must already be in developer mode for the
-        GBB to accept the dev keyblock.
+  3b. WITHOUT DHCP/TFTP  : DHCP discover retries, then eMMC fallback.
+  NOTE: slots are signed with the flags-7 firmware.keyblock, so the image
+        boots in NORMAL mode — no per-unit developer-mode step is needed.
 """
 
 
@@ -78,11 +78,18 @@ def _flash_image(image_path: Path, serial: str, chunk: str) -> None:  # pragma: 
     )
 
 
-def _poweron() -> None:  # pragma: no cover
-    """Step 5: release AP from park / power the puck on."""
+def _verify_boot(log_path: Path) -> None:  # pragma: no cover
+    """Step 5: EC-reboot the puck and verify the captured boot.
+
+    `gale power on` cannot un-park the AP (the EC is locked while parked —
+    WP_L follows the AP's 3.3V rail), so verify_boot.py reboots the EC: that
+    clears dev/rec and the PD renegotiation auto-powers the AP into a clean
+    normal-mode cold boot, which is captured and classified.  Raises
+    CalledProcessError on a BAD or UNDECIDED verdict.
+    """
     _run_hw(
-        ["python3", str(TOOLS / "ec_console.py"), "gale power on"],
-        "poweron",
+        ["python3", str(FLEET / "verify_boot.py"), "--log", str(log_path)],
+        "verify-boot",
     )
 
 
@@ -173,6 +180,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
         "--dry-run", action="store_true",
         help="Print plan filenames and steps; do NOT touch hardware or build",
     )
+    parser.add_argument(
+        "--skip-verify", action="store_true",
+        help="Skip the EC-reboot boot verification (leaves the puck parked)",
+    )
     return parser.parse_args(argv)
 
 
@@ -216,12 +227,21 @@ def main(argv=None) -> None:
     bk = inventory.bookkeeping(p.image_path, backup, args.date, "flashed")
     _write_inventory({**p.identity, **bk}, inventory_dir)
 
-    # Step 5: poweron (hardware)
-    _poweron()  # pragma: no cover
-
-    # Step 6: verify — the operator boot-check (watch the serial console for
-    # the §7 exit criteria printed below).
+    # Step 5: verify — EC reboot + AP boot capture, classified automatically.
     print(_EXIT_CRITERIA)
+    if args.skip_verify:
+        print("verify-boot SKIPPED (--skip-verify); puck is parked.  To power "
+              "it on, reboot the EC (NOT `gale power on` — refused while "
+              "parked): python3 " + str(FLEET / "verify_boot.py"))
+    else:
+        log_path = (args.out_dir / "logs"
+                    / f"gale-{p.expected_serial}-{args.date}-boot.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _verify_boot(log_path)  # pragma: no cover
+        bk = inventory.bookkeeping(
+            p.image_path, backup, args.date, "flashed+boot-verified")
+        _write_inventory({**p.identity, **bk}, inventory_dir)
+
     print(f"Done.  backup: {backup}")
     print(f"       image : {p.image_path}")
 

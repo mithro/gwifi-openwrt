@@ -24,6 +24,15 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
    write-protected (`BP=CMP=WPS=0`), but stock flashrom's WP-unlock step trips on the
    SR lock and its erase then silently no-ops — which is why these tools drive the
    bridge directly instead.
+3. **EC console sets are silent no-ops while `system_is_locked()`.** `gale
+   power/dev/rec <v>` only act when unlocked; when locked they just print the
+   current state — the only true ack of a set is an `OK` line.  On gale the lock
+   is LIVE: `WP_L` is pulled up by the AP's 3.3 V rail, so a **parked AP means a
+   locked EC**, and `gale power on` from a parked state is ALWAYS refused.  The
+   way to power a parked puck on is an EC `reboot`: it resets `ENTERING_DEV/REC`
+   to OFF (input defaults) and the PD-charger renegotiation auto-powers the AP
+   ~1 s later (a clean normal-mode cold boot).  Note the EC USB device
+   re-enumerates on `reboot` — reopen both ttys.
 
 ## Tools
 - **`raiden_write_region.py`** — region-aware erase+program+verify writer (the main
@@ -50,6 +59,22 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
 - **`fix_ath10k_retries.py`** — apply the ath10k-ct retry-limit fix (UCI clamp to 2;
   `--swap-firmware` swaps to upstream non-CT firmware) that stops the periodic SoC
   reset when the AP is exercised under load.
+
+## Flashing pucks (the fleet runbook — one command per puck)
+```sh
+# On the flash rig (rpi3b-gwifi), per puck:
+#   1. plug the puck's USB-C debug port into the SuzyQ; wait for 18d1:500f
+#   2. read the serial from the label (or a prior inventory row), then:
+python3 fleet/flash_one_puck.py --serial-hint <SERIAL> --date $(date +%F)
+#   backup -> identity/inventory -> build (flags-7 dev-key) -> serial-guarded
+#   RO-last flash -> EC-reboot boot verification (exit != 0 on a bad boot)
+#   3. on "verdict GOOD", unplug and move to the next puck.
+# Re-flashing an already-rekeyed puck additionally needs --rekeyed-ok.
+# --skip-verify flashes only and leaves the puck parked.
+```
+Timing per puck (rpi3b, `--chunk 0x1000`): backup + build + flash + verify is
+roughly an hour, dominated by the per-chunk write cycle (~2.5 s per 4 KiB
+chunk, 927 chunks). `--chunk 0x4000` cuts the write time substantially.
 
 ## Usage
 ```sh

@@ -97,8 +97,11 @@ def main(argv=None):
     # --- Done ---
     print(
         "\n=== ALL FLASHES SUCCEEDED ===\n"
-        "Device is parked. Power it on when ready:\n"
-        f"  python3 {TOOLS / 'ec_console.py'} 'gale power on'"
+        "Device is parked.  The EC is LOCKED while parked (WP_L follows the\n"
+        "AP 3.3V rail), so `gale power on` is refused.  To power on + verify:\n"
+        f"  python3 {Path(__file__).resolve().parent / 'verify_boot.py'} "
+        "--log <boot.log>\n"
+        "(EC reboot: clears dev/rec, PD auto-powers the AP ~1 s later.)"
     )
 
 

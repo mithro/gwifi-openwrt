@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI wiring tests for flash_one_puck.py — no hardware required.
 
-All hardware seams (_backup_spi, _flash_image, _poweron) and the build step
-(imagebuild.build) are monkeypatched so main() wiring runs in-process.
+All hardware seams (_backup_spi, _flash_image, _verify_boot) and the build
+step (imagebuild.build) are monkeypatched so main() wiring runs in-process.
 identity.from_dump is patched via the orchestrator module reference so no
 real SPI dump or futility binary is needed.
 """
@@ -35,14 +35,16 @@ _COMMON_ARGV = [
 ]
 
 
-def _patch_hw(monkeypatch, tmp_path):
+def _patch_hw(monkeypatch, tmp_path, verify_calls=None):
     """Patch all hardware/build seams; return (build_calls, flash_calls) recorders."""
     build_calls = []
     flash_calls = []
 
     monkeypatch.setattr(orchestrator.identity, "from_dump", lambda p: dict(_STOCK_FALSE_IDV))
     monkeypatch.setattr(flash_one_puck, "_backup_spi", lambda backup, chunk: None)
-    monkeypatch.setattr(flash_one_puck, "_poweron", lambda: None)
+    monkeypatch.setattr(
+        flash_one_puck, "_verify_boot",
+        lambda log_path: None if verify_calls is None else verify_calls.append(log_path))
 
     def fake_build(live, out):
         # Create the output file so inventory.bookkeeping() can hash it.
@@ -122,3 +124,41 @@ def test_rekeyed_ok_flash_called_with_correct_serial(tmp_path, monkeypatch):
 
     _, serial, _ = flash_calls[0]
     assert serial == "SN-TEST-01"
+
+
+# ---------------------------------------------------------------------------
+# Boot verification wiring
+# ---------------------------------------------------------------------------
+
+def test_verify_boot_called_with_log_under_out_dir(tmp_path, monkeypatch):
+    """A successful flash triggers _verify_boot with a log path in out-dir/logs."""
+    verify_calls = []
+    _patch_hw(monkeypatch, tmp_path, verify_calls)
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert len(verify_calls) == 1
+    assert verify_calls[0].parent == tmp_path / "logs"
+    assert "SN-TEST-01" in verify_calls[0].name
+
+
+def test_skip_verify_skips_boot_verification(tmp_path, monkeypatch):
+    """--skip-verify leaves the puck parked and never calls _verify_boot."""
+    verify_calls = []
+    _patch_hw(monkeypatch, tmp_path, verify_calls)
+
+    flash_one_puck.main(
+        _COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok", "--skip-verify"])
+
+    assert verify_calls == []
+
+
+def test_verify_boot_upgrades_inventory_status(tmp_path, monkeypatch):
+    """After verification the inventory status becomes flashed+boot-verified."""
+    import json
+    _patch_hw(monkeypatch, tmp_path, [])
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    inv = json.loads((tmp_path / "inventory" / "SN-TEST-01.json").read_text())
+    assert inv["flash_status"] == "flashed+boot-verified"
