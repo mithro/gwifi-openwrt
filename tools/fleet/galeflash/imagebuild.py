@@ -59,11 +59,16 @@ def sign_slot(out: Path, slot: str) -> None:
     Ports the v2 prototype's signing method, parameterized by *slot* ("A"/"B").
     The slot's full ``FW_MAIN_{slot}`` region is the firmware volume, so the new
     preamble's ``body_size`` == the FMAP region size (matching coreboot's
-    runtime CBFS bound). The dev keyblock is used; ``--flags 0`` drops
-    USE_RO_NORMAL so the body hash is actually checked at verify/runtime.
+    runtime CBFS bound). ``--flags 0`` (preamble flags) drops USE_RO_NORMAL so
+    the body hash is actually checked at verify/runtime.
 
-    NOTE: this signs with the Chromium OS DEV test keyblock — the resulting
-    image boots ONLY a developer-mode unit, NOT a production signing key.
+    Keyblock: the Chromium OS ``firmware.keyblock`` (keyblock flags 7 =
+    ``!DEV DEV !REC``) so the re-keyed puck boots in NORMAL mode too — NOT the
+    dev-only ``dev_firmware.keyblock`` (flags 6 ``DEV !REC``), which requires the
+    unit to be in developer mode and lands a fresh fleet puck in recovery. Both
+    keyblocks are signed by the dev ``root_key`` we install into the GBB, so the
+    chain verifies either way; flags 7 is what lets a normal-mode puck accept the
+    RW with no per-unit dev-mode step. This is still a DEV chain, not a prod key.
     """
     vb_off, vb_size = const.FMAP[f"VBLOCK_{slot}"]
     fw_off, fw_size = const.FMAP[f"FW_MAIN_{slot}"]
@@ -89,8 +94,8 @@ def sign_slot(out: Path, slot: str) -> None:
             _run(
                 const.FUTILITY, "vbutil_firmware",
                 "--vblock", nvb,
-                "--keyblock", const.DEVKEYS / "dev_firmware.keyblock",
-                "--signprivate", const.DEVKEYS / "dev_firmware_data_key.vbprivk",
+                "--keyblock", const.DEVKEYS / "firmware.keyblock",
+                "--signprivate", const.DEVKEYS / "firmware_data_key.vbprivk",
                 "--version", "1",
                 "--fv", fv,
                 "--kernelkey", const.DEVKEYS / "kernel_subkey.vbpubk",
@@ -161,7 +166,7 @@ def build(live: Path, out: Path) -> None:
     mut[b_off:b_off + b_size] = mut[a_off:a_off + a_size]
     out.write_bytes(bytes(mut))
 
-    # 7. sign BOTH slots (dev keyblock; bodies identical)
+    # 7. sign BOTH slots (flags-7 firmware.keyblock -> normal-mode boot; bodies identical)
     sign_slot(out, "A")
     sign_slot(out, "B")
 
