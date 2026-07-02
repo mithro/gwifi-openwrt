@@ -20,6 +20,11 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
    *fresh process* (re-`REQ_ENABLE`, re-park, and `DISABLE`+`ENABLE` within one libusb
    claim all fail). So every tool works in `<84 KiB` pieces, one fresh process per
    piece. A single full-chip read therefore looks "bricked" (all zeros) — it isn't.
+   Even inside the window, reads can contain short bursts of `0x00` in place of
+   real data with flashrom still exiting 0 (observed 2026-07-02: scattered 00s
+   in CBFS 0xff padding of a dump whose flash verstage had just RSA-verified),
+   so `chunk_read.py` accepts a chunk only when two independent sessions return
+   byte-identical data.
 2. **Status register is locked** (`SRP1=1`, power-cycle lock). The array is NOT
    write-protected (`BP=CMP=WPS=0`), but stock flashrom's WP-unlock step trips on the
    SR lock and its erase then silently no-ops — which is why these tools drive the

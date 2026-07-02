@@ -8,6 +8,11 @@ is exactly why earlier full-chip reads looked "99% 0x00 / bricked". This reads t
 flash in 64 KiB pieces, RE-PARKING the AP (EC 'gale power off') before EACH piece,
 and stitches them into a faithful image.
 
+Why double-read: even inside the reliable window the bridge can return short
+bursts of 0x00 in place of real data with flashrom still exiting 0, so every
+chunk is read in two independent sessions and accepted only when both agree
+byte-for-byte (see read_chunk).
+
 READ-ONLY. The only state change is 'gale power off' (park AP + grant EC the SPI
 bus) -- the approved park+read operation. No erase, no program, no gpioset, no
 reliance on EC-reported gpio values (which may be stale).
@@ -66,7 +71,7 @@ def build_layout(off, size):
         f.write("\n".join(lines) + "\n")
 
 
-def read_chunk(off, size, outpath, retries=1):
+def _read_chunk_session(off, size, outpath, retries=1):
     """Park, then flashrom-read ONLY [off,off+size) via -i chunk:outpath.
 
     A read counts as success only if the file is full-size AND flashrom exited 0.
@@ -92,6 +97,34 @@ def read_chunk(off, size, outpath, retries=1):
         if attempt < retries:
             time.sleep(0.5)
     return proc.returncode, data, proc.stdout + proc.stderr, attempt
+
+
+def read_chunk(off, size, outpath, sessions=6):
+    """Double-read verified chunk read: accept data only when two CONSECUTIVE
+    independent park+read sessions return byte-identical data.
+
+    Why: the raiden bridge can return short bursts of 0x00 in place of real
+    data with flashrom still exiting 0 (observed 2026-07-02: scattered 00s in
+    the 0xff CBFS padding of a dump whose flash content was cryptographically
+    verified good by verstage at boot).  A single read therefore cannot be
+    trusted; a corruption burst repeating byte-identically in two separate
+    sessions is not a plausible failure mode.
+
+    Returns (rc, data, log, sessions_used); rc!=0 / empty data on failure so
+    callers keep failing loud.
+    """
+    prev = None
+    rc, log = 250, ""
+    for used in range(1, sessions + 1):
+        rc, data, log, _ = _read_chunk_session(off, size, outpath)
+        if len(data) != size or rc != 0:
+            prev = None   # a failed session breaks any pending agreement pair
+            continue
+        if prev == data:
+            return 0, data, log, used
+        prev = data
+    return (rc if rc != 0 else 250), b"", \
+        log + "\nno two consecutive sessions returned identical data", sessions
 
 
 def hx(b, n=16):

@@ -57,11 +57,23 @@ def _root_key_sha1(path: Path) -> str:
     We anchor on the "Root Key:" header's indentation and read the first
     "Key sha1sum:" within it, stopping if we reach another section header at
     the same-or-lower indentation (e.g. "Recovery Key:").
+
+    futility exiting non-zero means the dump failed vboot verification (a
+    faithful dump — stock or correctly rekeyed — always passes).  That is a
+    hard stop, but re-raise with the two real-world causes spelled out.
     """
-    out = subprocess.check_output(
-        [str(const.FUTILITY), "show", str(path)],
-        text=True,
-    )
+    try:
+        out = subprocess.check_output(
+            [str(const.FUTILITY), "show", str(path)],
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"futility show failed on {path} (exit {e.returncode}): the dump "
+            f"does not vboot-verify.  Either the backup READ is corrupt "
+            f"(re-run it; chunk_read double-read should prevent this) or the "
+            f"puck's flash is partially written (restore from its pre-flash "
+            f"backup).  Do NOT build an image from this dump.") from e
     lines = out.splitlines()
     in_root_key = False
     root_indent = None

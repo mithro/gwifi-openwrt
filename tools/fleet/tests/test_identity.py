@@ -53,3 +53,23 @@ def test_cli_writes_inventory_json(stock_g4, tmp_path):
     # Sensitive keys must never enter the inventory JSON
     assert "stable_device_secret_DO_NOT_SHARE" not in data
     assert "setup_psk" not in data
+
+
+def test_unverifiable_dump_raises_actionable_error(tmp_path, monkeypatch):
+    """futility exiting non-zero (dump fails vboot verification — corrupt read
+    or partially flashed puck) must surface as an actionable hard stop, and
+    must never be silently treated as a parseable dump."""
+    import pytest
+
+    def fake_check_output(cmd, **kwargs):
+        if "show" in cmd:
+            # The failing call in the field: body verification of the dump.
+            raise subprocess.CalledProcessError(1, cmd)
+        return "hardware_id: GALE TEST\n"   # gbb_utility --get --hwid
+
+    monkeypatch.setattr(identity.subprocess, "check_output", fake_check_output)
+    dump = tmp_path / "corrupt.bin"
+    dump.write_bytes(b"\x00" * 16)
+
+    with pytest.raises(RuntimeError, match="does not vboot-verify"):
+        identity.from_dump(dump)
