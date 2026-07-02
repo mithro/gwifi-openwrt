@@ -49,18 +49,27 @@ def a3(addr):
 
 
 def ec_cmd(s, cmd, timeout=4.0):
-    """Send one EC console command; read the response until the '> ' prompt."""
+    """Send one EC console command; read the complete response.
+
+    Completion = the '> ' prompt has appeared AND the console has been quiet
+    for 0.25 s.  A bare ends-with-'>' check is NOT enough: deferred cputs
+    lines (e.g. "power off ap" from set_ap_power) land milliseconds AFTER the
+    prompt, so the buffer stops ending with '>' and the read would otherwise
+    sit out the whole hard cap on every `gale power off`.  The hard cap
+    remains the safety bound."""
     s.reset_input_buffer()
     s.write((cmd + "\r\n").encode())
     s.flush()
     buf = bytearray()
     deadline = time.time() + timeout
+    last_data = time.time()
     while time.time() < deadline:
         d = s.read(256)
         if d:
             buf.extend(d)
-            if buf.rstrip().endswith(b">"):
-                break
+            last_data = time.time()
+        elif b">" in buf and time.time() - last_data > 0.25:
+            break
     return bytes(buf).decode("latin1", "replace")
 
 

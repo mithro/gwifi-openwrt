@@ -53,18 +53,23 @@ def open_port(path):
 
 
 def ec_cmd(ec, cmd, timeout=6.0):
-    """Send one command, read the full response until the '> ' prompt."""
+    """Send one command, read the complete response (prompt seen + quiet).
+
+    Deferred cputs lines land AFTER the '> ' prompt, so ends-with-'>' alone
+    would sit out the hard cap whenever one trails the response."""
     ec.reset_input_buffer()
     ec.write((cmd + "\r\n").encode())
     ec.flush()
     buf = bytearray()
     deadline = time.time() + timeout
+    last_data = time.time()
     while time.time() < deadline:
         d = ec.read(256)
         if d:
             buf.extend(d)
-            if buf.rstrip().endswith(b">"):
-                break
+            last_data = time.time()
+        elif b">" in buf and time.time() - last_data > 0.25:
+            break
     return bytes(buf).decode("latin1", "replace")
 
 
