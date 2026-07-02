@@ -5,8 +5,8 @@ Why chunks: the EC USB-SPI (raiden) bridge only returns reliable data for reads
 < ~84 KiB, and flashrom hands the SPI bus back to the AP (auto power-on) after
 every read. So a single 8 MiB read degrades to zeros past the first piece -- which
 is exactly why earlier full-chip reads looked "99% 0x00 / bricked". This reads the
-flash in 64 KiB pieces, RE-PARKING the AP (EC 'gale power off') before EACH piece,
-and stitches them into a faithful image.
+flash in small pieces (CHUNK, currently 32 KiB), RE-PARKING the AP (EC 'gale
+power off') before EACH piece, and stitches them into a faithful image.
 
 Why double-read: even inside the reliable window the bridge can return short
 bursts of 0x00 in place of real data with flashrom still exiting 0, so every
@@ -18,7 +18,7 @@ bus) -- the approved park+read operation. No erase, no program, no gpioset, no
 reliance on EC-reported gpio values (which may be stale).
 
 Usage:
-  chunk_read.py test                  # 3 scattered 64K chunks vs stock (method check)
+  chunk_read.py test                  # 3 scattered chunks vs stock (method check)
   chunk_read.py all  <out.bin>        # full 8 MiB stitched -> out.bin, compared to stock
   chunk_read.py 0x300000 0x400000     # specific offsets vs stock
 """
@@ -39,7 +39,13 @@ STOCK = os.environ.get("GALE_STOCK", os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "gale-spi-stock-2026-05-28.bin"))  # repo-shipped reference for the vs-stock diff
 SIZE = 8 * 1024 * 1024
-CHUNK = 64 * 1024          # 0x10000, comfortably under the ~84 KiB reliable limit
+# 32 KiB per park+read session.  The session budget is ~1444 usb_spi
+# transactions (= ~87 KiB at 62-byte reads) but it is NOT always the nominal
+# value: on 2026-07-02 sessions degraded to ~60 KiB, zero-filling the tail of
+# 64 KiB reads while flashrom still exited 0.  32 KiB (~530 transactions +
+# probe overhead) keeps >2.5x margin even against a degraded budget; the
+# double-read agreement in read_chunk() backstops anything smaller.
+CHUNK = 32 * 1024          # 0x8000
 TMP = os.environ.get("GALE_WORK", os.path.dirname(os.path.abspath(__file__)))
 LAY = f"{TMP}/_chunk_layout.txt"
 THROW = f"{TMP}/_chunk_throwaway.bin"
@@ -194,7 +200,7 @@ def _run(stock, args, scratch):
         cur = f"{TMP}/chunk_{off:06x}.bin"
         scratch.add(cur)
         rc, data, log, att = read_chunk(off, CHUNK, cur)
-        print(f"\n===== chunk @ 0x{off:06x} (64 KiB) =====")
+        print(f"\n===== chunk @ 0x{off:06x} (0x{CHUNK:x} B) =====")
         print(f"  flashrom rc={rc}  got={len(data)}B  retries_used={att}")
         if len(data) != CHUNK or rc != 0:
             failed.append(off)
