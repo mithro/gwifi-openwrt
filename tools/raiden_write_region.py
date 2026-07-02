@@ -241,19 +241,54 @@ def orchestrate(args):
             return f"verify MISMATCH ({diff} bytes, first +0x{first:x})"
         return None
 
+    def write_span(a, clen):
+        """One span through the retry loop; None on success, last reason on failure."""
+        reason = "not attempted"
+        for attempt in range(1, CHUNK_ATTEMPTS + 1):
+            reason = attempt_chunk(a, clen)
+            if reason is None:
+                if attempt > 1:
+                    print(f"   recovered on attempt {attempt}/{CHUNK_ATTEMPTS}", flush=True)
+                return None
+            print(f"   attempt {attempt}/{CHUNK_ATTEMPTS} FAILED: {reason}", flush=True)
+            if attempt < CHUNK_ATTEMPTS:
+                time.sleep(RETRY_BACKOFF)
+        return reason
+
+    def split(a, clen, size):
+        out = []
+        x = a
+        while x < a + clen:
+            out.append((x, min(size, a + clen - x)))
+            x += size
+        return out
+
+    # Sticky adaptive downshift: the bridge's per-session budget is not a fixed
+    # constant -- on degraded days a 16 KiB program session silently no-ops its
+    # tail (observed 2026-07-02: verify mismatches consistently starting ~7.5 KiB
+    # in, on every attempt).  4 KiB sessions (~230 transactions) keep >2x margin
+    # even then and are proven over 2x927 chunks on this rig.  So: if a chunk
+    # fails all its attempts at a size above DOWNSHIFT, requeue it and every
+    # remaining chunk in DOWNSHIFT pieces and carry on -- fast on healthy days,
+    # automatic degradation instead of an abort on bad ones.
+    DOWNSHIFT = 0x1000
     try:
-        for idx, (a, clen) in enumerate(chunks):
-            print(f"\n[{idx+1}/{len(chunks)}] writing 0x{a:06x} len 0x{clen:x} ...", flush=True)
-            reason = "not attempted"
-            for attempt in range(1, CHUNK_ATTEMPTS + 1):
-                reason = attempt_chunk(a, clen)
-                if reason is None:
-                    if attempt > 1:
-                        print(f"   recovered on attempt {attempt}/{CHUNK_ATTEMPTS}", flush=True)
-                    break
-                print(f"   attempt {attempt}/{CHUNK_ATTEMPTS} FAILED: {reason}", flush=True)
-                if attempt < CHUNK_ATTEMPTS:
-                    time.sleep(RETRY_BACKOFF)
+        queue = list(chunks)
+        done = 0
+        while queue:
+            a, clen = queue.pop(0)
+            done += 1
+            print(f"\n[{done}/{done + len(queue)}] writing 0x{a:06x} len 0x{clen:x} ...",
+                  flush=True)
+            reason = write_span(a, clen)
+            if reason is not None and clen > DOWNSHIFT:
+                print(f"   DOWNSHIFT: 0x{clen:x}-byte sessions are failing (degraded "
+                      f"session budget); this and all remaining chunks now go in "
+                      f"0x{DOWNSHIFT:x} pieces", flush=True)
+                queue = split(a, clen, DOWNSHIFT) + \
+                    [p for (x, l) in queue for p in split(x, l, DOWNSHIFT)]
+                done -= 1
+                continue
             if reason is not None:
                 raise SystemExit(f"ABORT: chunk 0x{a:06x} failed after "
                                  f"{CHUNK_ATTEMPTS} attempts (last: {reason})")
@@ -261,7 +296,7 @@ def orchestrate(args):
                 print(f"   verify OK (0x{clen:x} bytes match source)", flush=True)
             else:
                 print(f"   programmed 0x{clen:x} (no verify)", flush=True)
-        print(f"\n== DONE: {region} written and verified ({len(chunks)} chunks).")
+        print(f"\n== DONE: {region} written and verified ({done} chunks).")
     finally:
         for tmpf in (cf, vf):
             if os.path.exists(tmpf):
