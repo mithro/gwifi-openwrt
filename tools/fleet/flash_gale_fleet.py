@@ -46,7 +46,10 @@ def _run(cmd, label):  # pragma: no cover
 
 
 def _park(label="re-park AP"):  # pragma: no cover
-    _run(["python3", str(TOOLS / "ec_console.py"), "gale power off"], label)
+    # ec_park.py checks the EC's LOCKED state before setting (a set while
+    # locked is a silent no-op) and confirms the parked state (exit != 0 if
+    # the AP is not actually parked) -- never a blind "gale power off".
+    _run(["python3", str(TOOLS / "ec_park.py")], label)
 
 
 def main(argv=None):

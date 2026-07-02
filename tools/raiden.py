@@ -64,20 +64,33 @@ def ec_cmd(s, cmd, timeout=4.0):
     return bytes(buf).decode("latin1", "replace")
 
 
+def ec_locked(s):
+    """True iff system_is_locked() -- parsed from the sysinfo 'Flags:' line.
+
+    While locked, `gale power/dev/rec` sets are SILENT no-ops (they print the
+    current state, return no error), so callers MUST check this BEFORE
+    attempting any set."""
+    resp = ec_cmd(s, "sysinfo")
+    for line in resp.splitlines():
+        if line.strip().lower().startswith("flags:"):
+            return "unlocked" not in line.lower()
+    raise RaidenError(f"sysinfo did not report a Flags line: {resp!r}")
+
+
 def ec_park(attempts=5):
-    """Park the AP (`gale power off`) and confirm via the EC's own state query.
+    """Park the AP (`gale power off`): check state, check LOCKED, set, confirm.
 
     EC semantics (gale-ec/board-gale-r146/board.c command_power):
       - The set is gated on `!system_is_locked()`; when locked it is a SILENT
         no-op that just prints the current state -- only an "OK" line means the
-        set was accepted.  system_is_locked() is live on gale: WP_L is pulled
-        up by the AP's 3.3V rail, so a parked AP means locked and `gale power
-        on` from a parked state is always refused (un-park = EC `reboot`).
-      - Parking from a RUNNING AP works (rails up -> unlocked -> "OK"); parking
-        an ALREADY-PARKED AP is refused but the state is already "off".  Either
-        way the truth is the state line of a follow-up `gale power` query
-        (argc==1 prints state and is never gated), which reports ap_is_on as
-        updated by the deferred rail switch-off.
+        set was accepted.  So the locked state is checked BEFORE every set:
+        setting while locked can never work.
+      - system_is_locked() is live on gale: WP_L is pulled up by the AP's 3.3V
+        rail.  A parked AP reads locked (fine -- nothing left to set; the
+        ungated `gale power` state query is the parked-confirmation).  An AP
+        that is ON should read unlocked; locked-with-AP-on means sets are
+        impossible -> fail loud (EC `reboot` clears it) instead of firing
+        blind sets.
       - Raiden write ops power the AP back on after each session, so the AP
         must be RE-parked before every raiden session or the AP and the EC
         bridge become two masters on one SPI bus and transfers time out.
@@ -86,15 +99,22 @@ def ec_park(attempts=5):
     state = ""
     with serial.Serial(port, 115200, timeout=0.2) as s:
         for _ in range(attempts):
-            ec_cmd(s, "gale power off")
-            state = ec_cmd(s, "gale power")
+            state = ec_cmd(s, "gale power")   # ungated state query = the truth
             if "power - off" in state:
                 return
-            time.sleep(0.3)
+            if ec_locked(s):                  # a set while locked CANNOT work
+                raise RaidenError(
+                    "EC is locked while the AP is on: 'gale power off' would "
+                    "be a silent no-op. EC `reboot` clears the state (see "
+                    "tools/fleet/verify_boot.py).")
+            r = ec_cmd(s, "gale power off")
+            if not any(l.strip() == "OK" for l in r.splitlines()):
+                time.sleep(0.3)               # set not acked; re-check, retry
+                continue
+            time.sleep(0.2)                   # deferred rail switch-off settles
     raise RaidenError(
-        f"ec_park: EC state query never reported 'power - off' after {attempts} "
-        f"'gale power off' attempts -- refusing to drive SPI against a possibly "
-        f"awake AP (last state: {state!r})")
+        f"ec_park: AP still not parked after {attempts} attempts -- refusing "
+        f"to drive SPI against a possibly awake AP (last state: {state!r})")
 
 
 class Raiden:

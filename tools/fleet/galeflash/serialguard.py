@@ -58,8 +58,10 @@ def read_live_serial() -> str:  # pragma: no cover
     # the pyserial/pyusb that ec_console.py and raiden_write_region.py import.
     # Matches ec_console / flash_gale_fleet.py / tmp/flash_devkey_bringup.py.
 
-    # Park the AP — grants EC control of the SPI bus.
-    run(["python3", str(TOOLS / "ec_console.py"), "gale power off"],
+    # Park the AP — grants EC control of the SPI bus.  ec_park.py checks the
+    # EC's LOCKED state before setting (a set while locked is a silent no-op)
+    # and confirms the parked state; exits non-zero if the AP is not parked.
+    run(["python3", str(TOOLS / "ec_park.py")],
         "park AP for VPD read")
 
     # Partial read via raiden_write_region.py's "_rd" INTERNAL worker subcommand

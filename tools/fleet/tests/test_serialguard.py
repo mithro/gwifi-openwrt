@@ -16,5 +16,5 @@ def test_external_tool_paths_exist():
     # Guards the TOOLS path-derivation: an off-by-one in parents[] would break
     # the no-cover hardware path invisibly in CI — this catches it at test time.
     assert serialguard.TOOLS.name == "tools"
-    assert (serialguard.TOOLS / "ec_console.py").exists()
+    assert (serialguard.TOOLS / "ec_park.py").exists()
     assert (serialguard.TOOLS / "raiden_write_region.py").exists()

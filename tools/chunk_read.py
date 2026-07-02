@@ -28,10 +28,9 @@ import subprocess
 import sys
 import time
 
-import serial  # python3-serial, system dist-packages on the Pi
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from raiden import ec_park  # noqa: E402  (checked park: state + LOCKED + OK ack)
 
-BYID = "/dev/serial/by-id/usb-Google_Inc._Gale_debug-if00-port0"
-EC_PORT = os.path.realpath(BYID) if os.path.exists(BYID) else "/dev/ttyUSB0"
 # Rig paths overridable via env (see README); defaults = the original dev rig.
 FLASHROM = os.environ.get("GALE_FLASHROM", "/home/tim/local/gwifi/flashrom-cros/build/flashrom")
 CHIP = os.environ.get("GALE_CHIP", "W25Q64BV/W25Q64CV/W25Q64FV")
@@ -49,20 +48,6 @@ CHUNK = 32 * 1024          # 0x8000
 TMP = os.environ.get("GALE_WORK", os.path.dirname(os.path.abspath(__file__)))
 LAY = f"{TMP}/_chunk_layout.txt"
 THROW = f"{TMP}/_chunk_throwaway.bin"
-
-
-def ec_park():
-    """Send 'gale power off' to the EC: parks the AP and grants the EC the SPI bus.
-    Opens and CLOSES the EC console before flashrom touches the raiden interface."""
-    with serial.Serial(EC_PORT, 115200, timeout=0.2) as s:
-        time.sleep(0.2)
-        s.reset_input_buffer()
-        s.write(b"gale power off\r\n")
-        s.flush()
-        time.sleep(0.8)
-        if s.in_waiting:
-            s.read(s.in_waiting)
-    time.sleep(0.3)
 
 
 def build_layout(off, size):
