@@ -107,9 +107,13 @@ def ec_park(attempts=5):
       - "locked (forced)" (syslock), or plain locked with state on, means
         sets cannot work and the state is contradictory: fail loud; only an
         EC `reboot` clears it (see tools/fleet/verify_boot.py).
-      - Raiden write ops power the AP back on after each session, so the AP
-        must be RE-parked before every raiden session or the AP and the EC
-        bridge become two masters on one SPI bus and transfers time out.
+      - Sessions do NOT power the AP on (352 consecutive sessions left it
+        parked; usb_spi_board_enable only raises SYS_PWR_EN + the 3.3V flash
+        rail and holds the CPU rails low).  The AP is re-parked before every
+        session as insurance against the ASYNCHRONOUS wakers -- above all PD
+        contract events on the same USB-C port (a 5V/>=2.5A sink contract
+        calls set_ap_power(1)) -- since an awake AP and the EC bridge would be
+        two masters on one SPI bus.
     """
     port = os.path.realpath(BYID) if os.path.exists(BYID) else "/dev/ttyUSB0"
     last = ""
