@@ -140,19 +140,23 @@ def _run(stock, args, scratch):
         for idx in range(n):
             off = idx * CHUNK
             rc, data, log, att = read_chunk(off, CHUNK, cur)
+            # flush=True on every progress line: under nohup/log redirection
+            # stdout is block-buffered and a silent multi-minute phase is
+            # indistinguishable from a hang for whoever is watching the log.
             if len(data) != CHUNK or rc != 0:
                 bad.append(off)
-                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  FAILED rc={rc} got={len(data)}B")
-                print("    " + log.strip().replace("\n", "\n    "))
+                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  FAILED rc={rc} got={len(data)}B",
+                      flush=True)
+                print("    " + log.strip().replace("\n", "\n    "), flush=True)
                 continue
             image[off:off + CHUNK] = data
             if stock is not None:
                 same = sum(1 for a, b in zip(data, stock[off:off + CHUNK]) if a == b)
                 if idx % 8 == 0 or same != CHUNK:
                     print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att} "
-                          f"vs-stock={100 * same / CHUNK:5.1f}%")
+                          f"vs-stock={100 * same / CHUNK:5.1f}%", flush=True)
             elif idx % 8 == 0:
-                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att}")
+                print(f"  [{idx + 1:3d}/{n}] 0x{off:06x}  rc={rc} att={att}", flush=True)
         with open(outbin, "wb") as f:
             f.write(image)
         dt = time.time() - t0
