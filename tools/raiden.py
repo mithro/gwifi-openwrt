@@ -64,8 +64,9 @@ def ec_cmd(s, cmd, timeout=4.0):
     return bytes(buf).decode("latin1", "replace")
 
 
-def ec_locked(s):
-    """True iff system_is_locked() -- parsed from the sysinfo 'Flags:' line.
+def ec_flags(s):
+    """The sysinfo 'Flags:' line, lowercased: 'flags: unlocked' /
+    'flags: locked' / 'flags: locked (forced)'.
 
     While locked, `gale power/dev/rec` sets are SILENT no-ops (they print the
     current state, return no error), so callers MUST check this BEFORE
@@ -73,48 +74,62 @@ def ec_locked(s):
     resp = ec_cmd(s, "sysinfo")
     for line in resp.splitlines():
         if line.strip().lower().startswith("flags:"):
-            return "unlocked" not in line.lower()
+            return line.strip().lower()
     raise RaidenError(f"sysinfo did not report a Flags line: {resp!r}")
 
 
 def ec_park(attempts=5):
-    """Park the AP (`gale power off`): check state, check LOCKED, set, confirm.
+    """Park the AP: locked-state checked BEFORE any set; bookkeeping never trusted.
 
-    EC semantics (gale-ec/board-gale-r146/board.c command_power):
-      - The set is gated on `!system_is_locked()`; when locked it is a SILENT
-        no-op that just prints the current state -- only an "OK" line means the
-        set was accepted.  So the locked state is checked BEFORE every set:
-        setting while locked can never work.
-      - system_is_locked() is live on gale: WP_L is pulled up by the AP's 3.3V
-        rail.  A parked AP reads locked (fine -- nothing left to set; the
-        ungated `gale power` state query is the parked-confirmation).  An AP
-        that is ON should read unlocked; locked-with-AP-on means sets are
-        impossible -> fail loud (EC `reboot` clears it) instead of firing
-        blind sets.
+    Probe-verified facts (2026-07-02, tmp/deploy/probe_ap_state.py):
+      - `gale power` prints the EC's ap_is_on BOOKKEEPING, which reads "off"
+        while the AP is actually booting (the post-EC-reboot auto-boot
+        bypasses set_ap_power).  gpioget rail enables and WP_L are equally
+        blind: the AP was observed running with every VDD enable reading 0.
+        A running AP is therefore UNDETECTABLE from the EC console.
+      - So while UNLOCKED the park is FORCED, not inferred: send `gale power
+        off` (idempotent -- command_power acts regardless of ap_is_on) and
+        require the "OK" ack, even when the state already reads off.  The set
+        also resyncs ap_is_on, making the state confirmation meaningful.
+      - Plain "locked" (not "(forced)") is WP_L-derived: WP_L low means the
+        3.3V/flash rail is down, so the AP CANNOT be running.  Plain locked +
+        state off is PROVEN parked -- the normal state between chunks -- and
+        no set is attempted (it would be a silent no-op).
+      - "locked (forced)" (syslock), or plain locked with state on, means
+        sets cannot work and the state is contradictory: fail loud; only an
+        EC `reboot` clears it (see tools/fleet/verify_boot.py).
       - Raiden write ops power the AP back on after each session, so the AP
         must be RE-parked before every raiden session or the AP and the EC
         bridge become two masters on one SPI bus and transfers time out.
     """
     port = os.path.realpath(BYID) if os.path.exists(BYID) else "/dev/ttyUSB0"
-    state = ""
+    last = ""
     with serial.Serial(port, 115200, timeout=0.2) as s:
         for _ in range(attempts):
-            state = ec_cmd(s, "gale power")   # ungated state query = the truth
-            if "power - off" in state:
-                return
-            if ec_locked(s):                  # a set while locked CANNOT work
+            flags = ec_flags(s)
+            state = ec_cmd(s, "gale power")   # ungated state query
+            if "forced" in flags:
                 raise RaidenError(
-                    "EC is locked while the AP is on: 'gale power off' would "
-                    "be a silent no-op. EC `reboot` clears the state (see "
-                    "tools/fleet/verify_boot.py).")
+                    f"EC reports {flags!r} (syslock): all sets are silent "
+                    f"no-ops; EC `reboot` required.")
+            if "unlocked" not in flags:
+                # plain locked: WP_L low => rails down => AP provably off
+                if "power - off" in state:
+                    return
+                raise RaidenError(
+                    f"EC plain-locked (rails down) yet state says {state!r}: "
+                    f"contradictory; EC `reboot` required.")
+            # unlocked: FORCE the park -- "off" bookkeeping is not proof.
             r = ec_cmd(s, "gale power off")
-            if not any(l.strip() == "OK" for l in r.splitlines()):
-                time.sleep(0.3)               # set not acked; re-check, retry
-                continue
-            time.sleep(0.2)                   # deferred rail switch-off settles
+            if any(line.strip() == "OK" for line in r.splitlines()):
+                time.sleep(0.2)               # deferred rail switch-off settles
+                if "power - off" in ec_cmd(s, "gale power"):
+                    return
+            last = r
+            time.sleep(0.3)
     raise RaidenError(
-        f"ec_park: AP still not parked after {attempts} attempts -- refusing "
-        f"to drive SPI against a possibly awake AP (last state: {state!r})")
+        f"ec_park: AP not confirmed parked after {attempts} attempts -- "
+        f"refusing to drive SPI against a possibly awake AP (last: {last!r})")
 
 
 class Raiden:
