@@ -48,7 +48,12 @@ These tools speak the chromiumos-EC `usb_spi` **V1** protocol directly, because
   4 KiB alignment. (16 KiB is the safe per-session write ceiling — a transaction
   guard refuses bigger `--chunk`.)
 - **`chunk_read.py`** — chunked reader / backup. `all <out.bin>` reads and stitches
-  the full 8 MiB, re-parking per chunk.
+  the full 8 MiB via the pure-python `_rd` worker (fresh process + checked park per
+  32 KiB session), accepting each chunk only when two independent sessions agree
+  byte-for-byte. No flashrom involved.
+- **`ec_park.py`** — the ONE approved way to park the AP: checks the EC LOCKED
+  state before the set (a set while locked is a silent no-op), requires the "OK"
+  ack, confirms the state. Exit non-zero = not parked.
 - **`raiden_sr.py`** — read `RDID` + status registers `SR1/SR2/SR3` (self-validated
   by `RDID == ef4017`). Surfaces the `BP/CMP/WPS/SRP` write-protect bits flashrom
   doesn't decode.
@@ -105,13 +110,16 @@ python3 raiden_write_region.py <src.bin> RW_SECTION_A --commit
 python3 raiden_write_region.py gale-backup.bin 0x700000:0x100000 --commit
 ```
 
-## Why not flashrom
-`flashrom -p raiden_debug_spi … -E/-w` fails on this unit: it logs *"Failed to unlock
-flash status reg with wp support"* (the `SRP1` lock) and its erase silently no-ops.
-`flashrom -r` works only if each read stays `< 84 KiB`.
+## NEVER use flashrom (standing directive)
+flashrom — distro OR the flashrom-cros fork — must not be used for ANY gale SPI
+operation. It failed in both directions on this hardware: `-E/-w` logs *"Failed
+to unlock flash status reg with wp support"* (the `SRP1` lock) and its erase
+silently no-ops; and its raiden read path returned silent `0x00` bursts with
+exit code 0 (corrupt backups that looked successful, 2026-07-02). Everything
+goes through the pure-python raiden transport in this directory, which
+validates every usb_spi transaction status and fails loud.
 
 ## Configuration (environment variables)
-- `GALE_FLASHROM` — path to a `raiden_debug_spi`-capable flashrom (used by `chunk_read.py`).
 - `GALE_CHIP` — flashrom chip name (default `W25Q64BV/W25Q64CV/W25Q64FV`).
 - `GALE_STOCK` — reference image for `chunk_read.py`'s vs-reference comparison.
 - `GALE_WORK` — scratch dir for temporary chunk/layout files (default: this directory).
@@ -120,9 +128,8 @@ The defaults point at the original test rig; override them for your setup.
 
 ## Requirements
 - Python 3 with **`pyserial`** and **`pyusb`** (libusb). Run on the host the SuzyQ
-  cable is attached to (the EC must enumerate as `18d1:500f`).
-- `chunk_read.py` additionally needs a `raiden_debug_spi`-capable flashrom build
-  (e.g. the chromiumos flashrom fork).
+  cable is attached to (the EC must enumerate as `18d1:500f`). Nothing else —
+  no flashrom build is needed or permitted (see the standing directive above).
 
 ## Safety
 - `raiden_write_region.py` is **dry-run by default**; pass `--commit` to write.

@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """Faithful CHUNKED read of the gale AP SPI flash through the EC raiden bridge.
 
-Why chunks: the EC USB-SPI (raiden) bridge only returns reliable data for reads
-< ~84 KiB, and flashrom hands the SPI bus back to the AP (auto power-on) after
-every read. So a single 8 MiB read degrades to zeros past the first piece -- which
-is exactly why earlier full-chip reads looked "99% 0x00 / bricked". This reads the
-flash in small pieces (CHUNK, currently 32 KiB), RE-PARKING the AP (EC 'gale
-power off') before EACH piece, and stitches them into a faithful image.
+Transport: the project's PURE-PYTHON raiden path only -- each session spawns
+raiden_write_region.py's `_rd` worker in a fresh process (resets the bridge's
+per-session transaction budget; the worker parks via the checked ec_park and
+FAILS LOUD on any short/garbled transfer).  flashrom -- stock OR flashrom-cros
+-- is NEVER used: its erase path silently no-ops against this chip's SR lock
+and its raiden read path returned silent 0x00 bursts with exit code 0.
 
-Why double-read: even inside the reliable window the bridge can return short
-bursts of 0x00 in place of real data with flashrom still exiting 0, so every
-chunk is read in two independent sessions and accepted only when both agree
-byte-for-byte (see read_chunk).
+Why chunks: the bridge honours only a limited per-session transaction budget
+(~1444 usb_spi transactions nominal, observed degrading well below that), so
+the 8 MiB read goes in small pieces (CHUNK, currently 32 KiB), one fresh
+worker per piece, stitched into a faithful image.
 
-READ-ONLY. The only state change is 'gale power off' (park AP + grant EC the SPI
-bus) -- the approved park+read operation. No erase, no program, no gpioset, no
-reliance on EC-reported gpio values (which may be stale).
+Why double-read: a single read cannot be trusted (silent 0x00 bursts, see
+above), so every chunk is read in two independent sessions and accepted only
+when both agree byte-for-byte (see read_chunk).
+
+READ-ONLY. The only state change is the worker's AP park (checked `gale power
+off`) -- the approved park+read operation. No erase, no program, no gpioset.
 
 Usage:
   chunk_read.py test                  # 3 scattered chunks vs stock (method check)
@@ -28,60 +31,42 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from raiden import ec_park  # noqa: E402  (checked park: state + LOCKED + OK ack)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+RWR = os.path.join(_HERE, "raiden_write_region.py")   # `_rd` worker host
 
-# Rig paths overridable via env (see README); defaults = the original dev rig.
-FLASHROM = os.environ.get("GALE_FLASHROM", "/home/tim/local/gwifi/flashrom-cros/build/flashrom")
-CHIP = os.environ.get("GALE_CHIP", "W25Q64BV/W25Q64CV/W25Q64FV")
 STOCK = os.environ.get("GALE_STOCK", os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    os.path.dirname(_HERE),
     "gale-spi-stock-2026-05-28.bin"))  # repo-shipped reference for the vs-stock diff
 SIZE = 8 * 1024 * 1024
 # 32 KiB per park+read session.  The session budget is ~1444 usb_spi
 # transactions (= ~87 KiB at 62-byte reads) but it is NOT always the nominal
-# value: on 2026-07-02 sessions degraded to ~60 KiB, zero-filling the tail of
-# 64 KiB reads while flashrom still exited 0.  32 KiB (~530 transactions +
-# probe overhead) keeps >2.5x margin even against a degraded budget; the
-# double-read agreement in read_chunk() backstops anything smaller.
+# value: on 2026-07-02 sessions degraded and zero-filled the tails of 64 KiB
+# reads.  32 KiB (~530 transactions + overhead) keeps >2.5x margin against a
+# degraded budget; the double-read agreement in read_chunk() backstops the
+# rest.
 CHUNK = 32 * 1024          # 0x8000
-TMP = os.environ.get("GALE_WORK", os.path.dirname(os.path.abspath(__file__)))
-LAY = f"{TMP}/_chunk_layout.txt"
-THROW = f"{TMP}/_chunk_throwaway.bin"
-
-
-def build_layout(off, size):
-    """Whole-chip layout with [off,off+size) named 'chunk' (avoids gap warnings)."""
-    lines = []
-    if off > 0:
-        lines.append(f"0x000000:0x{off - 1:06x} lo")
-    lines.append(f"0x{off:06x}:0x{off + size - 1:06x} chunk")
-    if off + size < SIZE:
-        lines.append(f"0x{off + size:06x}:0x{SIZE - 1:06x} hi")
-    with open(LAY, "w") as f:
-        f.write("\n".join(lines) + "\n")
+TMP = os.environ.get("GALE_WORK", _HERE)
 
 
 def _read_chunk_session(off, size, outpath, retries=1):
-    """Park, then flashrom-read ONLY [off,off+size) via -i chunk:outpath.
+    """One park+read session of [off,off+size) via the pure-python `_rd` worker.
 
-    A read counts as success only if the file is full-size AND flashrom exited 0.
-    A full-size file with nonzero rc is retried (up to `retries` times) and, if it
-    never returns rc==0, handed back WITH that nonzero rc so callers fail loud --
-    so a persistent flashrom error costs `retries`+1 park+read device sessions.
+    The worker runs in a FRESH process (resets the per-session budget), parks
+    the AP itself through the checked ec_park (locked-state aware), and raises
+    on any short/garbled usb_spi transfer instead of zero-filling.  A read
+    counts as success only if the worker exited 0 AND the file is full-size;
+    anything else is retried up to `retries` times, then handed back with the
+    non-zero rc so callers fail loud.
     """
     for attempt in range(retries + 1):
-        build_layout(off, size)
-        for p in (outpath, THROW):
-            if os.path.exists(p):
-                os.remove(p)
-        ec_park()
-        cmd = [FLASHROM, "-p", "raiden_debug_spi", "-c", CHIP,
-               "-l", LAY, "-i", f"chunk:{outpath}", "-r", THROW]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if os.path.exists(outpath):
+            os.remove(outpath)
+        proc = subprocess.run(
+            ["python3", RWR, "_rd", hex(off), hex(size), outpath],
+            capture_output=True, text=True)
         data = open(outpath, "rb").read() if os.path.exists(outpath) else b""
-        # A read is valid only if BOTH signals agree: full length AND flashrom
-        # exited 0. A nonzero rc with a full-size file (e.g. a stale same-size
+        # A read is valid only if BOTH signals agree: full length AND worker
+        # exit 0. A nonzero rc with a full-size file (e.g. a stale same-size
         # file from a prior failed attempt) must NOT be accepted as good data.
         if len(data) == size and proc.returncode == 0:
             return proc.returncode, data, proc.stdout + proc.stderr, attempt
@@ -95,7 +80,7 @@ def read_chunk(off, size, outpath, sessions=6):
     independent park+read sessions return byte-identical data.
 
     Why: the raiden bridge can return short bursts of 0x00 in place of real
-    data with flashrom still exiting 0 (observed 2026-07-02: scattered 00s in
+    data with the session still reporting success (observed 2026-07-02: 00s in
     the 0xff CBFS padding of a dump whose flash content was cryptographically
     verified good by verstage at boot).  A single read therefore cannot be
     trusted; a corruption burst repeating byte-identically in two separate
@@ -190,7 +175,7 @@ def _run(stock, args, scratch):
         scratch.add(cur)
         rc, data, log, att = read_chunk(off, CHUNK, cur)
         print(f"\n===== chunk @ 0x{off:06x} (0x{CHUNK:x} B) =====")
-        print(f"  flashrom rc={rc}  got={len(data)}B  retries_used={att}")
+        print(f"  worker rc={rc}  got={len(data)}B  sessions_used={att}")
         if len(data) != CHUNK or rc != 0:
             failed.append(off)
             print(f"  READ FAILED (rc={rc}, got {len(data)}B, want {CHUNK}) -- log:")
@@ -211,7 +196,7 @@ def _run(stock, args, scratch):
             print(f"  FOUND 'Google_Gale' @0x{off + i:06x}: {printable(data[i:], 28)!r}")
 
     if failed:
-        sys.exit(f"FAILED chunks (short read or flashrom rc!=0): "
+        sys.exit(f"FAILED chunks (short read or worker rc!=0): "
                  f"{[hex(x) for x in failed]}")
 
 
@@ -235,7 +220,7 @@ def main():
 
     # Remove every scratch temp file on ANY exit (return, sys.exit, exception).
     # _run() registers the paths it creates; the user's output file is never added.
-    scratch = {LAY, THROW}
+    scratch = set()
     try:
         _run(stock, args, scratch)
     finally:
