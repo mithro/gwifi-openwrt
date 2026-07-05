@@ -59,6 +59,13 @@ BLOCK_SIZE = 0x10000                 # 64 KiB
 RO_GUARD_LIMIT = 0x400000
 RDID_EXPECT = bytes.fromhex("ef4017")
 
+FMAP_SIGNATURE = b"__FMAP__"
+FMAP_EXPECTED_OFFSET = 0x300000
+# RO-LAST order: program the AP RW slots first, then the RO/GBB region last, so an
+# interrupted flash never leaves a valid RO block pointing at a half-written RW
+# slot (which would recovery-loop). GBB is below RO_GUARD_LIMIT -> needs --allow-ro.
+FLASH_ORDER = ("RW_SECTION_A", "RW_SECTION_B", "GBB")
+
 OP_READ, OP_WREN = 0x03, 0x06
 OP_SECTOR_ERASE, OP_BLOCK_ERASE, OP_PAGE_PROGRAM = 0x20, 0xD8, 0x02
 OP_RDID, OP_RDSR1, OP_RDSR2 = 0x9F, 0x05, 0x35
@@ -652,6 +659,50 @@ def flash_region(new_session, offset, data, log, piece=WRITE_PIECE, verify=True)
              % (po + plen, offset + n, 100.0 * done / n, plen))
 
 
+def parse_fmap(data):
+    """Minimal coreboot FMAP parse -> {area_name: (offset, size)}, or None.
+
+    Scans ALL __FMAP__ signatures and keeps only a structurally-sane one
+    (printable name, bounded area count), preferring the conventional offset --
+    a spurious 8-byte match can precede the real FMAP (gflash's lesson)."""
+    best = None
+    start = 0
+    while True:
+        i = data.find(FMAP_SIGNATURE, start)
+        if i < 0:
+            break
+        start = i + 1
+        off = i + len(FMAP_SIGNATURE)
+        try:
+            total = struct.unpack_from("<I", data, off + 10)[0]      # after ver(2)+base(8)
+            name = data[off + 14:off + 46].split(b"\0")[0]
+            nareas = struct.unpack_from("<H", data, off + 46)[0]
+        except struct.error:
+            continue
+        if not name or any(b < 0x20 or b > 0x7E for b in name):
+            continue
+        if not (1 <= nareas <= 255) or not (0 < total <= 0x10000000):
+            continue
+        areas = {}
+        o = off + 48
+        ok = True
+        for _ in range(nareas):
+            try:
+                a_off, a_size = struct.unpack_from("<II", data, o)
+                a_name = data[o + 8:o + 40].split(b"\0")[0].decode("ascii", "replace")
+                o += 42
+            except struct.error:
+                ok = False
+                break
+            areas[a_name] = (a_off, a_size)
+        if not ok or any(ao + asz > total for ao, asz in areas.values()):
+            continue
+        if i == FMAP_EXPECTED_OFFSET:
+            return areas
+        best = best or areas
+    return best
+
+
 # --------------------------------------------------------------------------- #
 # Boot verification -- classification (pure); the EC-reboot + AP capture that
 # feeds it is added with the flash orchestration and validated on hardware.
@@ -974,6 +1025,64 @@ def cmd_shakedown(args, log):
             info("shakedown ABORTED (fail-loud).")
 
 
+def flash_plan(image):
+    """[(name, offset, size), ...] in RO-last FLASH_ORDER; raises on any problem.
+    Pure -- offline-testable."""
+    if len(image) != FLASH_SIZE:
+        raise FatalError("image is %d bytes, expected %d" % (len(image), FLASH_SIZE))
+    areas = parse_fmap(image)
+    if not areas:
+        raise FatalError("no valid FMAP found in the image")
+    plan = []
+    for name in FLASH_ORDER:
+        if name not in areas:
+            raise FatalError("region %s not in the image FMAP (have: %s)"
+                             % (name, ", ".join(sorted(areas))))
+        off, size = areas[name]
+        # Round to the 4 KiB erase granularity. The extra bytes come from the
+        # SOURCE image (correct content), so a neighbour sharing GBB's last
+        # sector (RO_FRID) is preserved as-is. GBB itself is not sector-aligned.
+        a_off = off & ~(SECTOR_SIZE - 1)
+        a_end = (off + size + SECTOR_SIZE - 1) & ~(SECTOR_SIZE - 1)
+        plan.append((name, a_off, a_end - a_off))
+    # Refuse overlapping rounded spans (would double-flash / mis-order).
+    plan.sort(key=lambda e: e[1])
+    for (_, o1, s1), (n2, o2, _) in zip(plan, plan[1:]):
+        if o1 + s1 > o2:
+            raise FatalError("rounded flash spans overlap at 0x%06x (%s)" % (o2, n2))
+    # Restore the RO-last program order.
+    order = {n: k for k, n in enumerate(FLASH_ORDER)}
+    plan.sort(key=lambda e: order[e[0]])
+    return plan
+
+
+def cmd_flash(args, log):
+    image = open(os.path.expanduser(args.image), "rb").read()
+    plan = flash_plan(image)
+    info("flash plan (RO-last order):")
+    for name, off, size in plan:
+        ro = "  [RO region -- needs --allow-ro]" if off < RO_GUARD_LIMIT else ""
+        info("  %-16s 0x%06x..0x%06x  %7d B%s" % (name, off, off + size, size, ro))
+    if not args.commit:
+        info("\nDRY-RUN: nothing written. Pass --commit to flash.")
+        return 0
+    for name, off, size in plan:
+        if off < RO_GUARD_LIMIT and not args.allow_ro:
+            raise FatalError("%s is in the RO/bottom-4MiB region (0x%06x); refusing "
+                             "without --allow-ro (bricking risk)" % (name, off))
+    new_session = make_session_factory(log, args.abort_every)
+    t0 = time.monotonic()
+    for name, off, size in plan:
+        info("\n== flashing %s (0x%06x, %d B) ==" % (name, off, size))
+        flash_region(new_session, off, image[off:off + size], log)
+    info("\nALL REGIONS FLASHED + VERIFIED in %.0fs (RO-last)" % (time.monotonic() - t0))
+    if args.verify_boot:
+        info("\n== boot verification ==")
+        r = verify_boot(log)
+        return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--log", metavar="FILE", help="append a full operation log")
@@ -995,12 +1104,25 @@ def main(argv=None):
     vb.add_argument("--timeout", type=float, default=120.0,
                     help="max seconds to wait for a decisive boot marker")
 
+    fl = sub.add_parser("flash", help="flash RW_SECTION_A/B + GBB (RO-last) from a "
+                        "built image, one fresh session per piece; dry-run by default")
+    fl.add_argument("image", help="8 MiB built image (must contain a valid FMAP)")
+    fl.add_argument("--commit", action="store_true", help="actually erase/program")
+    fl.add_argument("--allow-ro", action="store_true",
+                    help="permit the GBB write below 0x400000 (bricking risk)")
+    fl.add_argument("--verify-boot", action="store_true",
+                    help="EC-reboot boot-verify after flashing (exit 0/2/3)")
+    fl.add_argument("--abort-every", type=int, default=512,
+                    help="inline AP-guard poll interval, in SPI transactions")
+
     args = p.parse_args(argv)
     log = Log(args.log)
     try:
         if args.command == "verify-boot":
             r = verify_boot(log, timeout_s=args.timeout)
             return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
+        if args.command == "flash":
+            return cmd_flash(args, log)
         return cmd_shakedown(args, log)
     except FatalError as e:
         log.log("FATAL", str(e))

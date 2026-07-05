@@ -2,9 +2,55 @@
 sector erase planner and the block-erase-aware write_region. No hardware; a
 SimFlash implements the bridge's transact() against a simulated array.
 """
+import struct
+
 import pytest
 
 import flash_puck_usb as fp
+
+
+def _image_with_fmap(areas):
+    """8 MiB image with an FMAP at 0x300000. areas: [(name, off, size), ...]."""
+    data = bytearray(b"\xff" * fp.FLASH_SIZE)
+    fmap = bytearray(b"__FMAP__") + bytes([1, 1]) + struct.pack("<Q", 0)
+    fmap += struct.pack("<I", fp.FLASH_SIZE) + b"FMAP".ljust(32, b"\0")
+    fmap += struct.pack("<H", len(areas))
+    for name, off, size in areas:
+        fmap += struct.pack("<II", off, size) + name.encode().ljust(32, b"\0") + struct.pack("<H", 0)
+    data[0x300000:0x300000 + len(fmap)] = fmap
+    return bytes(data)
+
+
+_STD_AREAS = [("RW_SECTION_A", 0x400000, 0x160000),
+              ("RW_SECTION_B", 0x580000, 0x160000),
+              ("GBB", 0x301000, 0xDF000), ("RO_VPD", 0x3E0000, 0x20000)]
+
+
+def test_flash_plan_ro_last_order():
+    plan = fp.flash_plan(_image_with_fmap(_STD_AREAS))
+    assert [n for n, _, _ in plan] == ["RW_SECTION_A", "RW_SECTION_B", "GBB"]
+    assert plan[-1][1] < fp.RO_GUARD_LIMIT          # GBB is the RO-last region
+
+
+def test_flash_plan_missing_region_fails_loud():
+    with pytest.raises(fp.FatalError):
+        fp.flash_plan(_image_with_fmap([("RW_SECTION_A", 0x400000, 0x160000),
+                                        ("GBB", 0x301000, 0xDF000)]))  # no RW_SECTION_B
+
+
+def test_flash_plan_rounds_unaligned_gbb_to_sectors():
+    # GBB's real size (0xDEF00) is not sector-aligned; the plan rounds the span
+    # UP to the 4 KiB boundary (0xDF000), flashing the extra bytes from source.
+    plan = fp.flash_plan(_image_with_fmap([("RW_SECTION_A", 0x400000, 0x160000),
+                                           ("RW_SECTION_B", 0x580000, 0x160000),
+                                           ("GBB", 0x301000, 0xDEF00)]))
+    gbb = [e for e in plan if e[0] == "GBB"][0]
+    assert gbb == ("GBB", 0x301000, 0xDF000)        # 0xDEF00 -> 0xDF000, aligned
+
+
+def test_flash_plan_bad_image_size_fails_loud():
+    with pytest.raises(fp.FatalError):
+        fp.flash_plan(b"\xff" * 100)
 
 
 class SimFlash:
