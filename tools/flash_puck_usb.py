@@ -1103,46 +1103,41 @@ def cmd_flash(args, log):
 
 
 def cmd_budgetprobe(args, log):
-    """Find the CHEAPEST way to reset the per-ENABLE-session transaction budget,
-    which decides whether <5 min is reachable. Read-only."""
+    """MEASURE the per-ENABLE-session write budget: burn reads, checking every
+    `step` txns whether WREN still latches WEL; report where it stops. A large
+    budget (healthy rig) => a whole region flashes in one session => <5 min.
+    Read-only."""
+    step = args.step
+    cap = args.cap
     sess = Session(log)
     try:
         sess.bring_up()
         b = sess.bridge
 
-        def wren_wel(tag):
-            b.transact([OP_WREN], 0, "wren-%s" % tag)
-            sr = read_sr(b)[0]
-            wel = bool(sr & SR1_WEL)
-            info("  WREN %-18s txn=%d SR1=0x%02x WEL=%d" % (tag, b.txn, sr, wel))
-            return wel
+        def wel_ok():
+            b.transact([OP_WREN], 0, "wren")
+            return bool(read_sr(b)[0] & SR1_WEL)
 
-        wren_wel("early")
-        info("burning ~1500 reads to exhaust the session budget...")
-        for _ in range(1500):
-            b.transact([OP_READ, 0, 0, 0], 4, "burn")
-        info("after burn:")
-        wren_wel("late(expect 0)")
-
-        info("-- LIGHT reset: release + re-claim if3 + re-ENABLE (no re-park) --")
-        usb.util.release_interface(b.dev, IF_SPI)
-        _detach_and_claim(b.dev, IF_SPI, log)
-        b.enable()
-        light = wren_wel("after-light")
-
-        if not light:
-            info("-- MEDIUM reset: dispose device + re-find + re-claim + enable --")
-            usb.util.dispose_resources(b.dev)
-            time.sleep(SESSION_SETTLE_S)
-            b.dev = open_device(log)
-            _detach_and_claim(b.dev, IF_SPI, log)
-            b.enable()
-            medium = wren_wel("after-medium")
-            info("\nRESULT: light-reclaim resets budget=%s, medium(re-find)=%s"
-                 % (light, medium))
+        if not wel_ok():
+            info("WREN did not latch even at txn %d -- rig is wedged" % b.txn)
+            return 0
+        info("WREN latches at txn %d; burning reads, checking WEL every %d txns "
+             "(cap %d)..." % (b.txn, step, cap))
+        broke = None
+        while b.txn < cap:
+            for _ in range(step):
+                b.transact([OP_READ, 0, 0, 0], 4, "burn")
+            if not wel_ok():
+                broke = b.txn
+                break
+        if broke is not None:
+            info("\nRESULT: per-session write budget ~= %d txns (DEGRADED -- a "
+                 "healthy session does 135302; needs a power-cycle for the fast "
+                 "path). A ~1.5 MiB slot is ~25000 write txns, so at this budget "
+                 "it downshifts to ~%d pieces." % (broke, max(1, 25000 // broke)))
         else:
-            info("\nRESULT: LIGHT release+re-claim of if3 RESETS the budget -> "
-                 "per-chunk overhead ~ms, <5 min IS reachable.")
+            info("\nRESULT: WREN STILL latches at txn %d -- budget is LARGE "
+                 "(healthy). A whole RW slot flashes in ONE session -> <5 min." % b.txn)
         return 0
     finally:
         sess.teardown()
@@ -1180,8 +1175,10 @@ def main(argv=None):
     fl.add_argument("--abort-every", type=int, default=512,
                     help="inline AP-guard poll interval, in SPI transactions")
 
-    sub.add_parser("budgetprobe", help="find the cheapest session-budget reset "
-                   "(decides <5min feasibility); read-only")
+    bp = sub.add_parser("budgetprobe", help="measure the per-session write budget "
+                        "(decides <5min feasibility); read-only")
+    bp.add_argument("--step", type=int, default=500, help="check WEL every N txns")
+    bp.add_argument("--cap", type=int, default=40000, help="stop after this many txns")
 
     args = p.parse_args(argv)
     log = Log(args.log)
