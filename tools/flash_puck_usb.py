@@ -363,9 +363,22 @@ class SpiBridge:
                 return
             raise FatalError("%s control transfer failed: %s" % (name, e))
 
+    def _drain(self):
+        for _ in range(50):
+            try:
+                self.dev.read(SPI_EP_IN, 64, timeout=20)
+            except usb.core.USBError:
+                break
+
     def enable(self):
         self._ctrl(1, "DISABLE(self-heal)", tolerate=True)  # clear any wedged prior enable
         self._ctrl(0, "ENABLE")
+        # usb_spi_board_enable raises SYS_PWR_EN + the 3.3V flash rail; give it a
+        # moment to settle and drain any stale IN data before trusting RDID (the
+        # proven raiden transport does the same -- otherwise a not-yet-stable rail
+        # reads back as RDID 000000).
+        time.sleep(0.1)
+        self._drain()
 
     def disable(self):
         self._ctrl(1, "DISABLE")
