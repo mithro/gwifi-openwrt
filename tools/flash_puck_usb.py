@@ -693,6 +693,133 @@ def boot_classify(text):
             "dev_signed": BOOT_DEV_SIGNED in text, "slot": boot_slot(text)}
 
 
+def _wait_device(present, deadline_s, what):
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if (usb.core.find(idVendor=USB_VID, idProduct=USB_PID) is not None) == present:
+            return usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        time.sleep(0.2)
+    raise FatalError("%s: device did not %s within %.0fs"
+                     % (what, "appear" if present else "disappear", deadline_s))
+
+
+def verify_boot(log, timeout_s=120.0, observe_s=5.0):
+    """EC `reboot` (a clean MCU reset) over libusb, then capture the AP boot log
+    and classify. The reboot RE-ENUMERATES the USB device and the PD charger
+    renegotiation auto-powers the AP ~1 s later (a normal-mode cold boot). This
+    also recovers a wedged EC. Returns the boot_classify dict."""
+    dev = open_device(log)
+    ec = Console(dev, "ec", log)
+    ec.sync()
+    try:
+        info("EC pre-reboot: %s"
+             % parse_flags_line(ec.cmd("sysinfo", until=has_flags_line)))
+    except FatalError:
+        info("EC pre-reboot: sysinfo unavailable (EC may be wedged; rebooting anyway)")
+    old_id = (dev.bus, dev.address)
+    info("sending EC reboot (device re-enumerates; PD auto-powers the AP)...")
+    try:
+        ec.drain()                             # clear the sysinfo tail -> clean prompt
+        ec.write(b"reboot\r\n")
+    except (usb.core.USBError, FatalError):
+        pass                                   # device may drop mid-write
+    # Read a little reboot banner, best-effort: a pipe/ENODEV/timeout here is
+    # EXPECTED -- it means the endpoint/device is resetting to re-enumerate.
+    rb = bytearray()
+    r_end = time.monotonic() + 3
+    while time.monotonic() < r_end:
+        try:
+            d = ec.read(200)
+        except usb.core.USBError:
+            break                              # pipe/ENODEV: the device is resetting
+        if d:
+            rb += d
+    if rb:
+        info("EC reboot banner: %r" % bytes(rb)[:200])
+    try:
+        ec.release()
+        usb.util.dispose_resources(dev)
+    except Exception:                          # noqa: BLE001 - handles may be stale
+        pass
+
+    # Detect re-enumeration by a NEW bus/address: the reboot resets the MCU so the
+    # device drops and comes back at a fresh address. This is unambiguous -- the
+    # disappear window can be shorter than a poll interval, and a pipe error alone
+    # does not mean it re-enumerated.
+    info("waiting for EC re-enumeration (disappear-then-reappear; was %s)..." % (old_id,))
+    dev = None
+    seen_gone = False
+    end = time.monotonic() + 40
+    while time.monotonic() < end:
+        cand = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        if cand is None:
+            seen_gone = True                   # the device dropped for the reset
+        elif seen_gone or (cand.bus, cand.address) != old_id:
+            dev = cand                         # back after a drop, or at a new addr
+            break
+        time.sleep(0.1)                        # fast poll to catch the drop window
+    if dev is None:
+        raise FatalError("EC did not re-enumerate within 40s of reboot "
+                         "(never observed gone, no new address)")
+    info("re-enumerated: bus %d addr %d (dropped=%s)" % (dev.bus, dev.address, seen_gone))
+    # Claim if1 IMMEDIATELY (before the kernel usb-serial driver re-grabs it and
+    # buffers the early boot) so we capture the AP log from ~T0.
+    ap = Console(dev, "ap", log)
+    # Diagnostic: confirm the AP actually powered on after the reboot (0 bytes
+    # captured usually means the AP never booted, not a capture bug).
+    try:
+        ecq = Console(dev, "ec", log)
+        ecq.sync()
+        pw = ecq.cmd("gale power")
+        info("post-reboot EC 'gale power': %s" % " ".join(pw.split()))
+        if "power - on" not in pw:
+            # No PD auto-power on a USB-A SuzyQ rig -> boot the AP explicitly.
+            # The reboot leaves the EC unlocked, so the set is honored.
+            fl = parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line))
+            info("EC %s; sending 'gale power on' to boot the AP" % fl)
+            r = ecq.cmd("gale power on", until=has_ok_line,
+                        deadline_s=PARK_DEADLINE_S, require=False)
+            if not has_ok_line(r):
+                info("'gale power on' NOT acknowledged (EC locked? no PD?): %r"
+                     % " ".join(r.split()))
+            else:
+                info("AP power-on acknowledged (OK)")
+        ecq.release()
+    except FatalError as e:
+        info("post-reboot EC query/power-on failed (continuing): %s" % e)
+    info("capturing AP boot log (up to %.0fs)..." % timeout_s)
+
+    buf = bytearray()
+    end = time.monotonic() + timeout_s
+    decisive = False
+    while time.monotonic() < end:
+        d = ap.read(500, size=4096)
+        if d:
+            buf += d
+        if boot_decisive(bytes(buf).replace(b"\x00", b"").decode("latin1", "replace")):
+            decisive = True
+            break
+    ctx_end = time.monotonic() + observe_s     # a little context after the marker
+    while time.monotonic() < ctx_end:
+        d = ap.read(500, size=4096)
+        if d:
+            buf += d
+    ap.release()
+    usb.util.dispose_resources(dev)
+
+    text = bytes(buf).replace(b"\x00", b"").decode("latin1", "replace")
+    r = boot_classify(text)
+    info("\n===== boot verdict: %s (%s) ====="
+         % (r["verdict"], "decisive marker seen" if decisive else "deadline/no marker"))
+    info("  dev_signed : %s" % r["dev_signed"])
+    info("  slot       : %s" % r["slot"])
+    info("  good       : %s" % r["good"])
+    info("  bad        : %s" % r["bad"])
+    info("  captured   : %d bytes" % len(buf))
+    r["capture"] = text
+    return r
+
+
 # --------------------------------------------------------------------------- #
 # Session: park the AP over libusb, enable the bridge
 # --------------------------------------------------------------------------- #
@@ -875,9 +1002,17 @@ def main(argv=None):
     sd.add_argument("--abort-every", type=int, default=512,
                     help="inline AP-guard poll interval, in SPI transactions")
 
+    vb = sub.add_parser("verify-boot", help="EC reboot over libusb, capture the "
+                        "AP boot log, classify GOOD/BAD/UNDECIDED")
+    vb.add_argument("--timeout", type=float, default=120.0,
+                    help="max seconds to wait for a decisive boot marker")
+
     args = p.parse_args(argv)
     log = Log(args.log)
     try:
+        if args.command == "verify-boot":
+            r = verify_boot(log, timeout_s=args.timeout)
+            return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
         return cmd_shakedown(args, log)
     except FatalError as e:
         log.log("FATAL", str(e))
