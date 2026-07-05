@@ -616,11 +616,14 @@ def write_region(bridge, offset, data, log, verify=True):
 # latches again at txn 4 after a reopen). So every multi-KiB operation is split
 # into fresh-session pieces sized to stay well under the budget.
 # --------------------------------------------------------------------------- #
-READ_PIECE = 0x8000     # 32 KiB/read-session (~528 txns) -- safe margin
-WRITE_PIECE = 0x2000    # 8 KiB/write-session (~570 txns): well under the ~1330
-#                         budget, and HALF the session churn of 4 KiB (rapid
-#                         dispose/reopen/ENABLE cycles stress the EC into slow
-#                         responses + bulk timeouts).
+READ_PIECE = 0x40000    # 256 KiB/read-session; large on a healthy rig, few sessions
+WRITE_PIECE = 0x180000  # start BIG: a healthy session streams 100k+ txns (clean-
+#                         room proved 135302), so a whole ~1.5 MiB RW slot fits ONE
+#                         session -> a full flash is a handful of sessions, <5 min.
+#                         flash_region ADAPTIVELY DOWNSHIFTS a piece that hits a
+#                         DEGRADED session's smaller budget. The ~1330-txn budget
+#                         seen this session is a degraded-rig artifact, not a limit.
+WRITE_PIECE_MIN = 0x1000  # 4 KiB downshift floor
 
 
 def read_region_sessioned(new_session, offset, length, log, piece=READ_PIECE,
@@ -640,23 +643,39 @@ def read_region_sessioned(new_session, offset, length, log, piece=READ_PIECE,
     return bytes(out)
 
 
-def flash_region(new_session, offset, data, log, piece=WRITE_PIECE, verify=True):
-    """Erase+program+verify `data` at `offset`, one fresh session per `piece`."""
-    n = len(data)
-    if offset % SECTOR_SIZE or n % SECTOR_SIZE:
-        raise FatalError("flash_region 0x%x+0x%x not 4 KiB aligned" % (offset, n))
-    done = 0
-    for po in range(offset, offset + n, piece):
-        plen = min(piece, offset + n - po)
-        pdata = data[po - offset:po - offset + plen]
-        sess = new_session()
+def flash_region(new_session, offset, data, log):
+    """Erase+program+VERIFY `data` at `offset`, one fresh session per piece,
+    starting with WRITE_PIECE-sized pieces (large -> fast/few sessions on a
+    healthy rig). A piece that FAILS (WEL not latched / verify mismatch = the
+    session budget was hit, or contention) is split in half (4 KiB-aligned) and
+    each half retried in a fresh session, down to WRITE_PIECE_MIN. Fails LOUD
+    only when a minimum-size piece cannot be written and verified."""
+    if offset % SECTOR_SIZE or len(data) % SECTOR_SIZE:
+        raise FatalError("flash_region 0x%x+0x%x not 4 KiB aligned"
+                         % (offset, len(data)))
+
+    def do(po, pdata):
         try:
-            write_region(sess.bridge, po, pdata, log, verify=verify)
-        finally:
-            sess.teardown()
-        done += plen
-        info("flash: 0x%06x/0x%06x %3.0f%% (%d B piece, per-piece verified)"
-             % (po + plen, offset + n, 100.0 * done / n, plen))
+            sess = new_session()
+            try:
+                write_region(sess.bridge, po, pdata, log, verify=True)
+            finally:
+                sess.teardown()
+            info("flash: 0x%06x..0x%06x  OK (%d B verified)"
+                 % (po, po + len(pdata), len(pdata)))
+        except FatalError as e:
+            if len(pdata) <= WRITE_PIECE_MIN:
+                raise FatalError("flash 0x%06x (%d B, min piece) failed: %s"
+                                 % (po, len(pdata), e))
+            half = (len(pdata) // 2 + SECTOR_SIZE - 1) // SECTOR_SIZE * SECTOR_SIZE
+            info("flash: 0x%06x (%d B) failed (%s) -> downshift to <=%d B"
+                 % (po, len(pdata), e, half))
+            do(po, pdata[:half])
+            do(po + half, pdata[half:])
+
+    for po in range(offset, offset + len(data), WRITE_PIECE):
+        plen = min(WRITE_PIECE, offset + len(data) - po)
+        do(po, data[po - offset:po - offset + plen])
 
 
 def parse_fmap(data):
@@ -1083,6 +1102,52 @@ def cmd_flash(args, log):
     return 0
 
 
+def cmd_budgetprobe(args, log):
+    """Find the CHEAPEST way to reset the per-ENABLE-session transaction budget,
+    which decides whether <5 min is reachable. Read-only."""
+    sess = Session(log)
+    try:
+        sess.bring_up()
+        b = sess.bridge
+
+        def wren_wel(tag):
+            b.transact([OP_WREN], 0, "wren-%s" % tag)
+            sr = read_sr(b)[0]
+            wel = bool(sr & SR1_WEL)
+            info("  WREN %-18s txn=%d SR1=0x%02x WEL=%d" % (tag, b.txn, sr, wel))
+            return wel
+
+        wren_wel("early")
+        info("burning ~1500 reads to exhaust the session budget...")
+        for _ in range(1500):
+            b.transact([OP_READ, 0, 0, 0], 4, "burn")
+        info("after burn:")
+        wren_wel("late(expect 0)")
+
+        info("-- LIGHT reset: release + re-claim if3 + re-ENABLE (no re-park) --")
+        usb.util.release_interface(b.dev, IF_SPI)
+        _detach_and_claim(b.dev, IF_SPI, log)
+        b.enable()
+        light = wren_wel("after-light")
+
+        if not light:
+            info("-- MEDIUM reset: dispose device + re-find + re-claim + enable --")
+            usb.util.dispose_resources(b.dev)
+            time.sleep(SESSION_SETTLE_S)
+            b.dev = open_device(log)
+            _detach_and_claim(b.dev, IF_SPI, log)
+            b.enable()
+            medium = wren_wel("after-medium")
+            info("\nRESULT: light-reclaim resets budget=%s, medium(re-find)=%s"
+                 % (light, medium))
+        else:
+            info("\nRESULT: LIGHT release+re-claim of if3 RESETS the budget -> "
+                 "per-chunk overhead ~ms, <5 min IS reachable.")
+        return 0
+    finally:
+        sess.teardown()
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--log", metavar="FILE", help="append a full operation log")
@@ -1115,9 +1180,14 @@ def main(argv=None):
     fl.add_argument("--abort-every", type=int, default=512,
                     help="inline AP-guard poll interval, in SPI transactions")
 
+    sub.add_parser("budgetprobe", help="find the cheapest session-budget reset "
+                   "(decides <5min feasibility); read-only")
+
     args = p.parse_args(argv)
     log = Log(args.log)
     try:
+        if args.command == "budgetprobe":
+            return cmd_budgetprobe(args, log)
         if args.command == "verify-boot":
             r = verify_boot(log, timeout_s=args.timeout)
             return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]

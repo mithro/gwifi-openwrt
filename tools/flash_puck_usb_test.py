@@ -235,16 +235,45 @@ def test_flash_region_writes_and_reads_across_pieces():
     sim = SimFlash(0x700000, 0x3000, fill=0x00)
     ns = lambda: _FakeSess(sim)  # noqa: E731
     src = bytes((i * 13 + 1) & 0xFF for i in range(0x3000))
-    fp.flash_region(ns, 0x700000, src, log=fp.Log(None), piece=0x1000, verify=True)
-    assert bytes(sim.flash) == src                       # written across 3 pieces
+    fp.flash_region(ns, 0x700000, src, log=fp.Log(None))
+    assert bytes(sim.flash) == src
     got = fp.read_region_sessioned(ns, 0x700000, 0x3000, fp.Log(None), piece=0x1000)
-    assert got == src                                    # read back across pieces
+    assert got == src
 
 
 def test_flash_region_requires_4k_alignment():
     ns = lambda: _FakeSess(SimFlash(0x700000, 0x2000))  # noqa: E731
     with pytest.raises(fp.FatalError):
         fp.flash_region(ns, 0x700000, b"\x00" * 0x800, fp.Log(None))
+
+
+def test_flash_region_downshifts_past_a_session_budget():
+    # A DEGRADED session (small txn budget) fails a large piece; flash_region must
+    # split down until pieces fit, and the whole region still comes out correct.
+    base, size = 0x700000, 0x8000
+    flash = bytearray(b"\x00" * size)
+
+    class BudgetBridge(SimFlash):
+        def __init__(self):
+            super().__init__(base, size)
+            self.flash = flash                 # shared across "sessions"
+            self.budget = 400                  # a >4 KiB piece exceeds this
+
+        def transact(self, wdata, rcount, context=""):
+            if self.txn >= self.budget:
+                raise fp.FatalError("simulated session budget exhausted")
+            return super().transact(wdata, rcount, context)
+
+    class FS:
+        def __init__(self):
+            self.bridge = BudgetBridge()
+
+        def teardown(self):
+            pass
+
+    src = bytes((i * 7 + 1) & 0xFF for i in range(size))
+    fp.flash_region(lambda: FS(), base, src, fp.Log(None))
+    assert bytes(flash) == src                 # completed correctly via downshift
 
 
 # ------------------------- boot classification ----------------------------- #
