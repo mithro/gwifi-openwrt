@@ -171,6 +171,32 @@ def test_transact_abort_check_raise_aborts_the_stream():
     assert "AP woke" in str(ei.value)
 
 
+# ------------------------- boot classification ----------------------------- #
+def test_boot_classify_good_dev_signed():
+    text = ("vb2 ... This is developer signed firmware ...\n"
+            "Starting depthcharge on gale...\nSending DHCP discover")
+    r = fp.boot_classify(text)
+    assert r["verdict"] == "GOOD"
+    assert r["dev_signed"] is True
+
+
+def test_boot_classify_bad_wins_over_good_banner():
+    text = "Starting depthcharge on gale...\nVB2:vb2_fail entering recovery"
+    assert fp.boot_classify(text)["verdict"] == "BAD"
+
+
+def test_boot_classify_bare_recovery_is_not_failure():
+    text = ("vb2_check_recovery() Recovery reason from previous boot: 0x0\n"
+            "gpio: recovery=0")
+    assert fp.boot_classify(text)["verdict"] == "UNDECIDED"
+
+
+def test_boot_slot_last_verified():
+    assert fp.boot_slot("... FW_MAIN_A found ...") == "A"
+    assert fp.boot_slot("FW_MAIN_A found ... then FW_MAIN_B found") == "B"
+    assert fp.boot_slot("no slot line here") is None
+
+
 # ------------------------- program chunking (page) ------------------------- #
 def test_iter_program_chunks_never_crosses_page():
     data = bytes((i * 3) & 0xFF for i in range(600))

@@ -570,6 +570,47 @@ def write_region(bridge, offset, data, log, verify=True):
 
 
 # --------------------------------------------------------------------------- #
+# Boot verification -- classification (pure); the EC-reboot + AP capture that
+# feeds it is added with the flash orchestration and validated on hardware.
+# Markers are from real 2712HW0072Z captures (see fleet/galeflash/bootverify.py):
+# a GOOD normal-mode dev-key boot reaches depthcharge + netboot; EVERY boot
+# prints "recovery" in a GPIO/vboot line, so a bare "recovery" is NOT a failure.
+# --------------------------------------------------------------------------- #
+BOOT_DEV_SIGNED = "This is developer signed firmware"
+BOOT_GOOD_MARKERS = ("Starting depthcharge", "Sending DHCP discover", "TFTP")
+BOOT_BAD_MARKERS = ("VB2:vb2_fail", "Need recovery", "Recovery requested",
+                    "Entering recovery mode")
+
+
+def boot_markers(text):
+    return ([m for m in BOOT_GOOD_MARKERS if m in text],
+            [m for m in BOOT_BAD_MARKERS if m in text])
+
+
+def boot_decisive(text):
+    good, bad = boot_markers(text)
+    return bool(good or bad)
+
+
+def boot_slot(text):
+    last = None
+    for name in ("A", "B"):
+        idx = text.rfind("FW_MAIN_%s found" % name)
+        if idx >= 0 and (last is None or idx > last[1]):
+            last = (name, idx)
+    return last[0] if last else None
+
+
+def boot_classify(text):
+    """Verdict GOOD|BAD|UNDECIDED. Any BAD marker wins (a recovery boot can still
+    print a depthcharge banner)."""
+    good, bad = boot_markers(text)
+    verdict = "BAD" if bad else ("GOOD" if good else "UNDECIDED")
+    return {"verdict": verdict, "good": good, "bad": bad,
+            "dev_signed": BOOT_DEV_SIGNED in text, "slot": boot_slot(text)}
+
+
+# --------------------------------------------------------------------------- #
 # Session: park the AP over libusb, enable the bridge
 # --------------------------------------------------------------------------- #
 class Session:
