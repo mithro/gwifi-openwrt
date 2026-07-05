@@ -716,37 +716,26 @@ def verify_boot(log, timeout_s=120.0, observe_s=5.0):
              % parse_flags_line(ec.cmd("sysinfo", until=has_flags_line)))
     except FatalError:
         info("EC pre-reboot: sysinfo unavailable (EC may be wedged; rebooting anyway)")
-    old_id = (dev.bus, dev.address)
     info("sending EC reboot (device re-enumerates; PD auto-powers the AP)...")
     try:
         ec.drain()                             # clear the sysinfo tail -> clean prompt
         ec.write(b"reboot\r\n")
     except (usb.core.USBError, FatalError):
         pass                                   # device may drop mid-write
-    # Read a little reboot banner, best-effort: a pipe/ENODEV/timeout here is
-    # EXPECTED -- it means the endpoint/device is resetting to re-enumerate.
-    rb = bytearray()
-    r_end = time.monotonic() + 3
-    while time.monotonic() < r_end:
-        try:
-            d = ec.read(200)
-        except usb.core.USBError:
-            break                              # pipe/ENODEV: the device is resetting
-        if d:
-            rb += d
-    if rb:
-        info("EC reboot banner: %r" % bytes(rb)[:200])
+    # Dispose the old handle IMMEDIATELY -- do NOT read the reboot banner: a
+    # multi-second banner read would consume the ~1-2 s drop+re-enumerate window
+    # and leave us polling only after the device is already back (and a reused
+    # USB address makes "same address" ambiguous). We must be polling at T0.
     try:
         ec.release()
         usb.util.dispose_resources(dev)
-    except Exception:                          # noqa: BLE001 - handles may be stale
+    except Exception:                          # noqa: BLE001 - handle may be stale
         pass
 
-    # Detect re-enumeration by a NEW bus/address: the reboot resets the MCU so the
-    # device drops and comes back at a fresh address. This is unambiguous -- the
-    # disappear window can be shorter than a poll interval, and a pipe error alone
-    # does not mean it re-enumerated.
-    info("waiting for EC re-enumeration (disappear-then-reappear; was %s)..." % (old_id,))
+    # Detect re-enumeration by disappear-then-reappear. Fast-poll from T0 so the
+    # drop window (>1 s during an MCU reset) can't slip past between polls; this
+    # is robust to the host REUSING the old USB address on re-enumeration.
+    info("waiting for EC re-enumeration (disappear-then-reappear)...")
     dev = None
     seen_gone = False
     end = time.monotonic() + 40
@@ -754,14 +743,13 @@ def verify_boot(log, timeout_s=120.0, observe_s=5.0):
         cand = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
         if cand is None:
             seen_gone = True                   # the device dropped for the reset
-        elif seen_gone or (cand.bus, cand.address) != old_id:
-            dev = cand                         # back after a drop, or at a new addr
+        elif seen_gone:
+            dev = cand                         # back after the drop
             break
-        time.sleep(0.1)                        # fast poll to catch the drop window
+        time.sleep(0.05)
     if dev is None:
-        raise FatalError("EC did not re-enumerate within 40s of reboot "
-                         "(never observed gone, no new address)")
-    info("re-enumerated: bus %d addr %d (dropped=%s)" % (dev.bus, dev.address, seen_gone))
+        raise FatalError("EC did not drop+re-enumerate within 40s of reboot")
+    info("re-enumerated: bus %d addr %d" % (dev.bus, dev.address))
     # Claim if1 IMMEDIATELY (before the kernel usb-serial driver re-grabs it and
     # buffers the early boot) so we capture the AP log from ~T0.
     ap = Console(dev, "ap", log)
