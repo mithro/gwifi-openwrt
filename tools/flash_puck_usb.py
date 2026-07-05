@@ -62,7 +62,7 @@ RDID_EXPECT = bytes.fromhex("ef4017")
 OP_READ, OP_WREN = 0x03, 0x06
 OP_SECTOR_ERASE, OP_BLOCK_ERASE, OP_PAGE_PROGRAM = 0x20, 0xD8, 0x02
 OP_RDID, OP_RDSR1, OP_RDSR2 = 0x9F, 0x05, 0x35
-SR1_WIP, SR1_BP, SR1_TB, SR1_SRP0 = 0x01, 0x1C, 0x20, 0x80
+SR1_WIP, SR1_WEL, SR1_BP, SR1_TB, SR1_SRP0 = 0x01, 0x02, 0x1C, 0x20, 0x80
 
 SECTOR_ERASE_DEADLINE_S = 3.0        # W25Q64 4K: typ 45 ms, max 400 ms
 BLOCK_ERASE_DEADLINE_S = 4.0         # W25Q64 64K: typ 150 ms, max 2000 ms
@@ -530,15 +530,34 @@ def write_region(bridge, offset, data, log, verify=True):
     t0 = time.monotonic()
     for addr, size, op in plan:
         deadline = BLOCK_ERASE_DEADLINE_S if size == BLOCK_SIZE else SECTOR_ERASE_DEADLINE_S
+        kind = "block" if size == BLOCK_SIZE else "sector"
         bridge.transact([OP_WREN], 0, context="WREN erase@0x%06x" % addr)
+        wel = read_sr(bridge)[0]
+        if not (wel & SR1_WEL):
+            raise FatalError("WREN did not latch WEL before %s erase@0x%06x "
+                             "(SR1=0x%02x) -- erase would no-op" % (kind, addr, wel))
         bridge.transact([op] + list(addr3(addr)), 0, context="ERASE@0x%06x" % addr)
         wait_wip_clear(bridge, deadline, "erase@0x%06x" % addr)
         head = bridge.transact([OP_READ] + list(addr3(addr)), READ_CHUNK,
                                context="erasecheck@0x%06x" % addr)
         if any(b != 0xFF for b in head):
-            raise FatalError("ERASE NO-OP at 0x%06x: head not 0xff after erase "
-                             "(first bad 0x%02x) -- erase blocked"
-                             % (addr, next(b for b in head if b != 0xFF)))
+            # Distinguish a genuine no-op from AP-bus contention: re-probe RDID
+            # and re-read. RDID != ef4017 or a 0x00 re-read => the flash is not
+            # responding to US (AP woke and is driving the bus); RDID ok with the
+            # head unchanged => the erase truly no-op'd (protect/WEL).
+            rdid = bridge.transact([OP_RDID], 3, context="diag-rdid@0x%06x" % addr)
+            sr1d, sr2d = read_sr(bridge)
+            head2 = bridge.transact([OP_READ] + list(addr3(addr)), READ_CHUNK,
+                                    context="diag-reread@0x%06x" % addr)
+            if rdid != RDID_EXPECT:
+                cause = ("flash UNRESPONSIVE (RDID=%s != ef4017) -- AP woke and is "
+                         "contending the SPI bus" % rdid.hex())
+            else:
+                cause = ("flash RESPONDS (RDID ok) -- erase truly no-op'd (protect/WEL)")
+            raise FatalError("ERASE NO-OP at 0x%06x (%s): head[0]=0x%02x reread[0]=0x%02x "
+                             "SR1=0x%02x(WEL=%d) SR2=0x%02x; %s"
+                             % (addr, kind, head[0], head2[0], sr1d,
+                                (sr1d >> 1) & 1, sr2d, cause))
     erase_s = time.monotonic() - t0
     info("erase: done %.1fs" % erase_s)
 
@@ -567,6 +586,57 @@ def write_region(bridge, offset, data, log, verify=True):
         raise FatalError("VERIFY FAILED: length mismatch %d vs %d" % (len(readback), length))
     info("verify: read-back matches source")
     return timings
+
+
+# --------------------------------------------------------------------------- #
+# Sessioned read/write -- the bridge silently no-ops operations past a per-
+# ENABLE-session transaction budget (WREN stops latching WEL; reads return
+# 0x00). Measured on this rig 2026-07-06: ~1330 txns, and VARIABLE day to day.
+# A fresh in-process session (teardown + bring_up) resets it (proven: WREN
+# latches again at txn 4 after a reopen). So every multi-KiB operation is split
+# into fresh-session pieces sized to stay well under the budget.
+# --------------------------------------------------------------------------- #
+READ_PIECE = 0x8000     # 32 KiB/read-session (~528 txns) -- safe margin
+WRITE_PIECE = 0x2000    # 8 KiB/write-session (~570 txns): well under the ~1330
+#                         budget, and HALF the session churn of 4 KiB (rapid
+#                         dispose/reopen/ENABLE cycles stress the EC into slow
+#                         responses + bulk timeouts).
+
+
+def read_region_sessioned(new_session, offset, length, log, piece=READ_PIECE,
+                          label="read"):
+    out = bytearray()
+    done = 0
+    for po in range(offset, offset + length, piece):
+        plen = min(piece, offset + length - po)
+        sess = new_session()
+        try:
+            out += read_region(sess.bridge, po, plen, label=label, progress=False)
+        finally:
+            sess.teardown()
+        done += plen
+        info("%s: 0x%06x/0x%06x %3.0f%%" % (label, po + plen, offset + length,
+                                            100.0 * done / length))
+    return bytes(out)
+
+
+def flash_region(new_session, offset, data, log, piece=WRITE_PIECE, verify=True):
+    """Erase+program+verify `data` at `offset`, one fresh session per `piece`."""
+    n = len(data)
+    if offset % SECTOR_SIZE or n % SECTOR_SIZE:
+        raise FatalError("flash_region 0x%x+0x%x not 4 KiB aligned" % (offset, n))
+    done = 0
+    for po in range(offset, offset + n, piece):
+        plen = min(piece, offset + n - po)
+        pdata = data[po - offset:po - offset + plen]
+        sess = new_session()
+        try:
+            write_region(sess.bridge, po, pdata, log, verify=verify)
+        finally:
+            sess.teardown()
+        done += plen
+        info("flash: 0x%06x/0x%06x %3.0f%% (%d B piece, per-piece verified)"
+             % (po + plen, offset + n, 100.0 * done / n, plen))
 
 
 # --------------------------------------------------------------------------- #
@@ -677,9 +747,12 @@ class Session:
         return self
 
     def teardown(self):
+        # Fail-SAFE: teardown must never raise, or it masks the real error that
+        # brought us here (a raising bridge.disable() would replace e.g. a
+        # VERIFY FAILED with a generic "DISABLE failed"). Best-effort only.
         try:
             if self.bridge:
-                self.bridge.disable()
+                self.bridge.emergency_disable()   # 500 ms, swallows errors
                 self.bridge.release()
         finally:
             for c in (self.ec, self.ap):
@@ -697,56 +770,78 @@ class Session:
 # --------------------------------------------------------------------------- #
 # shakedown: non-destructive hardware validation of concurrency + write path
 # --------------------------------------------------------------------------- #
+SESSION_SETTLE_S = 1.0   # let the EC/USB settle between fresh ENABLE sessions;
+#                          disposing the device then immediately re-opening +
+#                          re-ENABLE races the EC (control-transfer timeout).
+
+
+def make_session_factory(log, abort_every):
+    """Return a callable that yields a fresh, brought-up Session -- each fresh
+    ENABLE resets the bridge's per-session transaction budget."""
+    state = {"first": True}
+
+    def new_session():
+        if not state["first"]:
+            time.sleep(SESSION_SETTLE_S)
+        state["first"] = False
+        s = Session(log)
+        try:
+            s.bring_up()
+        except BaseException:
+            s.teardown()
+            raise
+        s.bridge.abort_every = abort_every
+        return s
+    return new_session
+
+
 def cmd_shakedown(args, log):
-    sess = Session(log)
+    new_session = make_session_factory(log, args.abort_every)
     ok = False
     try:
-        sess.bring_up()
-        sess.bridge.abort_every = args.abort_every
-
-        info("\n== 1/2 reliability: %d SPI reads, single-threaded, inline AP guard =="
+        # 1) bring-up + SPI reliability in one fresh session
+        info("== 1/2 reliability: %d SPI reads, single-threaded, inline AP guard =="
              % args.spins)
-        t0 = time.monotonic()
-        for i in range(args.spins):
-            check_rdid(sess.bridge)
-        dt = time.monotonic() - t0
-        info("SPI stream OK: %d RDID in %.1fs, %s" % (args.spins, dt, sess.bridge.rtt_ms()))
+        s = new_session()
+        try:
+            t0 = time.monotonic()
+            for _ in range(args.spins):
+                check_rdid(s.bridge)
+            info("SPI stream OK: %d RDID in %.1fs, %s"
+                 % (args.spins, time.monotonic() - t0, s.bridge.rtt_ms()))
+        finally:
+            s.teardown()
 
         off, ln = args.offset, args.length
         if off < RO_GUARD_LIMIT:
             raise FatalError("shakedown scratch 0x%06x is below the RO guard 0x%06x"
                              % (off, RO_GUARD_LIMIT))
-        info("\n== 2/2 write path: erase/program/verify/restore at 0x%06x..0x%06x =="
-             % (off, off + ln))
-        orig = read_region(sess.bridge, off, ln, label="save-orig")
+        info("\n== 2/2 write path (fresh session per %d B): 0x%06x..0x%06x =="
+             % (WRITE_PIECE, off, off + ln))
+        orig = read_region_sessioned(new_session, off, ln, log, label="save-orig")
         info("saved original (%d bytes, %s)"
-             % (len(orig), "all-0xff" if orig == b"\xff"*ln else "non-blank -> restore"))
+             % (len(orig), "all-0xff" if orig == b"\xff" * ln else "non-blank -> restore"))
         if not args.commit:
-            info("DRY-RUN: would block+sector erase, program a test pattern, verify, "
-                 "then restore the original. Pass --commit to exercise the write path.")
+            info("DRY-RUN: would erase/program a test pattern then restore, one fresh "
+                 "session per %d B. Pass --commit to exercise the write path." % WRITE_PIECE)
             ok = True
             return 0
 
+        t0 = time.monotonic()
         pattern = bytes((0xA5 ^ (i & 0xFF)) for i in range(ln))
         info("-- programming test pattern --")
-        tp = write_region(sess.bridge, off, pattern, log, verify=True)
-        confirm = read_region(sess.bridge, off, ln, label="confirm-pattern")
-        if confirm != pattern:
-            raise FatalError("pattern read-back mismatch after write")
+        flash_region(new_session, off, pattern, log)      # per-piece erase+program+verify
         info("-- restoring original --")
-        tr = write_region(sess.bridge, off, orig, log, verify=True)
-        confirm = read_region(sess.bridge, off, ln, label="confirm-restore")
+        flash_region(new_session, off, orig, log)
+        info("-- independent read-back confirm --")
+        confirm = read_region_sessioned(new_session, off, ln, log, label="confirm")
         if confirm != orig:
             raise FatalError("RESTORE FAILED: region not byte-identical to original")
-        info("\nWRITE PATH OK on real hardware: pattern write %s; restore %s; "
-             "region byte-identical to original."
-             % ("/".join("%s=%.1fs" % (k, v) for k, v in tp.items()),
-                "/".join("%s=%.1fs" % (k, v) for k, v in tr.items())))
-        info("usb_spi: %s" % sess.bridge.rtt_ms())
+        info("\nWRITE PATH OK on real hardware: erase+program+verify across fresh "
+             "sessions, region restored byte-identical (%.1fs)." % (time.monotonic() - t0))
         ok = True
         return 0
     finally:
-        sess.teardown()
         if not ok:
             info("shakedown ABORTED (fail-loud).")
 

@@ -15,6 +15,7 @@ class SimFlash:
         self.base = base
         self.flash = bytearray(bytes([fill]) * size)
         self.sr1 = sr1
+        self.wel = False
         self.erase_works = erase_works
         self.program_xor = program_xor
         self.txn = 0
@@ -29,12 +30,13 @@ class SimFlash:
         op = wdata[0]
         self.ops.append(op)
         if op == fp.OP_RDSR1:
-            return bytes([self.sr1])
+            return bytes([self.sr1 | (fp.SR1_WEL if self.wel else 0)])
         if op == fp.OP_RDSR2:
             return bytes([0])
         if op == fp.OP_RDID:
             return bytes(fp.RDID_EXPECT)[:rcount]
         if op == fp.OP_WREN:
+            self.wel = True                       # WREN latches WEL
             return b""
         if op == fp.OP_READ:
             a = self._idx(int.from_bytes(bytes(wdata[1:4]), "big"))
@@ -44,11 +46,13 @@ class SimFlash:
             size = fp.BLOCK_SIZE if op == fp.OP_BLOCK_ERASE else fp.SECTOR_SIZE
             if self.erase_works:
                 self.flash[a:a + size] = b"\xff" * size
+            self.wel = False                      # erase clears WEL
             return b""
         if op == fp.OP_PAGE_PROGRAM:
             a = self._idx(int.from_bytes(bytes(wdata[1:4]), "big"))
             payload = bytes(b ^ self.program_xor for b in wdata[4:])
             self.flash[a:a + len(payload)] = payload
+            self.wel = False                      # program clears WEL
             return b""
         raise AssertionError("unexpected opcode 0x%02x" % op)
 
@@ -169,6 +173,32 @@ def test_transact_abort_check_raise_aborts_the_stream():
     with pytest.raises(fp.FatalError) as ei:
         b.transact([0x9F], 3)        # third hits the guard
     assert "AP woke" in str(ei.value)
+
+
+# ------------------------- sessioned flash/read ---------------------------- #
+class _FakeSess:
+    def __init__(self, bridge):
+        self.bridge = bridge
+
+    def teardown(self):
+        pass
+
+
+def test_flash_region_writes_and_reads_across_pieces():
+    # One SimFlash stands in for the flash across all "fresh sessions".
+    sim = SimFlash(0x700000, 0x3000, fill=0x00)
+    ns = lambda: _FakeSess(sim)  # noqa: E731
+    src = bytes((i * 13 + 1) & 0xFF for i in range(0x3000))
+    fp.flash_region(ns, 0x700000, src, log=fp.Log(None), piece=0x1000, verify=True)
+    assert bytes(sim.flash) == src                       # written across 3 pieces
+    got = fp.read_region_sessioned(ns, 0x700000, 0x3000, fp.Log(None), piece=0x1000)
+    assert got == src                                    # read back across pieces
+
+
+def test_flash_region_requires_4k_alignment():
+    ns = lambda: _FakeSess(SimFlash(0x700000, 0x2000))  # noqa: E731
+    with pytest.raises(fp.FatalError):
+        fp.flash_region(ns, 0x700000, b"\x00" * 0x800, fp.Log(None))
 
 
 # ------------------------- boot classification ----------------------------- #
