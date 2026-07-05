@@ -494,15 +494,18 @@ def read_region(bridge, offset, length, label="read", progress=True):
     return bytes(out)
 
 
-def erase_plan(offset, length):
-    """List of (addr, size, opcode): 64 KiB block-erase where the range covers a
-    full aligned block, else 4 KiB sector-erase. Requires 4 KiB alignment."""
+def erase_plan(offset, length, use_block=False):
+    """List of (addr, size, opcode). Default = 4 KiB SECTOR-erase only (0x20),
+    matching the PROVEN raiden path: a 64 KiB block-erase (0xD8) draws far more
+    current and, on a marginal supply, browns out the flash rail (RDID 000000)
+    mid-write. use_block=True re-enables block-erase for speed on a healthy rig.
+    Requires 4 KiB alignment."""
     if offset % SECTOR_SIZE or length % SECTOR_SIZE:
         raise FatalError("erase range not 4 KiB aligned: 0x%x+0x%x" % (offset, length))
     plan = []
     addr, end = offset, offset + length
     while addr < end:
-        if addr % BLOCK_SIZE == 0 and end - addr >= BLOCK_SIZE:
+        if use_block and addr % BLOCK_SIZE == 0 and end - addr >= BLOCK_SIZE:
             plan.append((addr, BLOCK_SIZE, OP_BLOCK_ERASE))
             addr += BLOCK_SIZE
         else:

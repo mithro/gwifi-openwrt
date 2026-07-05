@@ -105,14 +105,14 @@ class SimFlash:
 
 # ------------------------------- erase_plan -------------------------------- #
 def test_erase_plan_all_blocks_when_aligned():
-    plan = fp.erase_plan(0x400000, 0x160000)   # 22 x 64 KiB, block-aligned
+    plan = fp.erase_plan(0x400000, 0x160000, use_block=True)   # 22 x 64 KiB
     assert all(size == fp.BLOCK_SIZE and op == fp.OP_BLOCK_ERASE
                for _, size, op in plan)
     assert len(plan) == 0x160000 // fp.BLOCK_SIZE == 22
 
 
 def test_erase_plan_block_plus_sector_tail():
-    plan = fp.erase_plan(0x700000, 0x11000)    # 1 block + 1 sector
+    plan = fp.erase_plan(0x700000, 0x11000, use_block=True)    # 1 block + 1 sector
     assert [(a, s, op) for a, s, op in plan] == [
         (0x700000, fp.BLOCK_SIZE, fp.OP_BLOCK_ERASE),
         (0x710000, fp.SECTOR_SIZE, fp.OP_SECTOR_ERASE),
@@ -121,7 +121,7 @@ def test_erase_plan_block_plus_sector_tail():
 
 def test_erase_plan_sectors_until_block_alignment():
     # Starts unaligned: 4 KiB sectors until a 64 KiB boundary, then a block.
-    plan = fp.erase_plan(0x40F000, 0x11000)    # 0x1000 sector -> aligned -> 0x10000 block
+    plan = fp.erase_plan(0x40F000, 0x11000, use_block=True)   # sector -> aligned -> block
     assert plan == [
         (0x40F000, fp.SECTOR_SIZE, fp.OP_SECTOR_ERASE),
         (0x410000, fp.BLOCK_SIZE, fp.OP_BLOCK_ERASE),
@@ -154,7 +154,8 @@ def test_write_region_block_and_sector_roundtrip():
     timings = fp.write_region(sim, off, src, log=fp.Log(None), verify=True)
     assert bytes(sim.flash) == src
     assert set(("erase_s", "program_s", "verify_s")) <= set(timings)
-    assert fp.OP_BLOCK_ERASE in sim.ops and fp.OP_SECTOR_ERASE in sim.ops
+    assert fp.OP_SECTOR_ERASE in sim.ops       # sector-only by default (proven, low-current)
+    assert fp.OP_BLOCK_ERASE not in sim.ops
 
 
 def test_write_region_detects_blocked_erase():
