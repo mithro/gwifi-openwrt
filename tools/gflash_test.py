@@ -495,15 +495,38 @@ def test_validate_vpd_accepts_magic_rejects_blank():
     assert "gVpdInfo" in str(ei.value)
 
 
-def build_full_image(break_gpt=False):
+def build_spurious_fmap():
+    """An 8-byte '__FMAP__' coincidence with a garbage header, reproducing the
+    real spurious hit observed at 0x0453fb: non-printable name, absurd declared
+    total (~1.85 GB) and area count (11876)."""
+    b = bytearray(b"__FMAP__")
+    b += bytes([228, 0])                                  # ver garbage
+    b += struct.pack("<Q", 0x2061000D206F4E30)            # base garbage
+    b += struct.pack("<I", 0x6E756F66)                    # total garbage
+    b += bytes([0x64, 0xBE, 0x03, 0x23, 0x7A, 0x78,       # name: non-printable
+                0xAB, 0x03, 0x01, 0x2C, 0x08]) + b"\x00" * 21
+    b += struct.pack("<H", 11876)                         # nareas garbage
+    return bytes(b)
+
+
+def build_full_image(break_gpt=False, spurious=False,
+                     include_gpt=True, include_vpd=True, blank_gpt=False):
     data = bytearray(b"\xff" * gflash.FLASH_SIZE)
-    gpt = build_gpt(corrupt_array=break_gpt)
-    data[0x560000:0x560000 + len(gpt)] = gpt
-    vpd = b"gVpdInfo" + b"\x00\x01\x00\x00" + b"\x00" * 64
-    data[0x3E0000:0x3E0000 + len(vpd)] = vpd
-    fmap = build_fmap([("RW_GPT_PRIMARY", 0x560000, 0x1000, 0),
-                       ("RO_VPD", 0x3E0000, 0x20000, 0)])
+    areas = []
+    if include_gpt:
+        if not blank_gpt:   # blank_gpt: declare the FMAP area but leave it 0xff
+            gpt = build_gpt(corrupt_array=break_gpt)
+            data[0x560000:0x560000 + len(gpt)] = gpt
+        areas.append(("RW_GPT_PRIMARY", 0x560000, 0x1000, 0))
+    if include_vpd:
+        vpd = b"gVpdInfo" + b"\x00\x01\x00\x00" + b"\x00" * 64
+        data[0x3E0000:0x3E0000 + len(vpd)] = vpd
+        areas.append(("RO_VPD", 0x3E0000, 0x20000, 0))
+    fmap = build_fmap(areas)
     data[0x300000:0x300000 + len(fmap)] = fmap
+    if spurious:
+        sp = build_spurious_fmap()
+        data[0x0453FB:0x0453FB + len(sp)] = sp   # a spurious hit BEFORE the real FMAP
     return bytes(data)
 
 
@@ -527,3 +550,65 @@ def test_validate_full_image_size_and_fmap_guards():
         gflash.validate_full_image(b"\xff" * gflash.FLASH_SIZE, gflash.Log(None),
                                    skip_vboot=True)
     assert "__FMAP__" in str(ei.value)
+
+
+# --- regression: spurious __FMAP__ selection + silent-skip (observed live) --- #
+def test_parse_fmap_rejects_spurious_only_image():
+    # A full image whose ONLY __FMAP__ is a garbage coincidence has no real
+    # FMAP -> parse must return None, not a garbage dict.
+    data = bytearray(b"\xff" * gflash.FLASH_SIZE)
+    sp = build_spurious_fmap()
+    data[0x0453FB:0x0453FB + len(sp)] = sp
+    assert gflash.parse_fmap(bytes(data)) is None
+
+
+def test_parse_fmap_skips_spurious_and_returns_real():
+    fmap = gflash.parse_fmap(build_full_image(spurious=True))
+    assert fmap is not None
+    assert fmap["fmap_offset"] == gflash.FMAP_EXPECTED_OFFSET       # the real one
+    assert fmap["name"] == "FMAP"
+    assert "RW_GPT_PRIMARY" in fmap["areas"] and "RO_VPD" in fmap["areas"]
+
+
+def test_parse_fmap_prefers_expected_offset_over_earlier_sane():
+    # Two structurally-sane FMAPs; the real one at 0x300000 must win.
+    data = bytearray(b"\xff" * gflash.FLASH_SIZE)
+    early = build_fmap([("DECOY", 0x1000, 0x1000, 0)])
+    data[0x100000:0x100000 + len(early)] = early
+    real = build_fmap([("RW_GPT_PRIMARY", 0x560000, 0x1000, 0)])
+    data[0x300000:0x300000 + len(real)] = real
+    fmap = gflash.parse_fmap(bytes(data))
+    assert fmap["fmap_offset"] == gflash.FMAP_EXPECTED_OFFSET
+    assert "RW_GPT_PRIMARY" in fmap["areas"]
+
+
+def test_validate_full_image_ignores_spurious_fmap_and_checks_regions():
+    # THE production bug: a spurious __FMAP__ must not shadow the real FMAP and
+    # silently skip the GPT/VPD checks.
+    gflash.validate_full_image(build_full_image(spurious=True), gflash.Log(None),
+                               skip_vboot=True)                     # must not raise
+    with pytest.raises(gflash.FatalError) as ei:
+        gflash.validate_full_image(build_full_image(spurious=True, break_gpt=True),
+                                   gflash.Log(None), skip_vboot=True)
+    assert "CRC32 mismatch" in str(ei.value)                       # GPT check DID run
+
+
+def test_validate_full_image_fails_loud_when_gpt_or_vpd_absent():
+    # Region entirely ABSENT from the FMAP (not merely blank) -> the FMAP is
+    # wrong; fail loud instead of silently skipping.
+    with pytest.raises(gflash.FatalError) as ei:
+        gflash.validate_full_image(build_full_image(include_gpt=False),
+                                   gflash.Log(None), skip_vboot=True)
+    assert "GPT" in str(ei.value)
+    with pytest.raises(gflash.FatalError) as ei:
+        gflash.validate_full_image(build_full_image(include_vpd=False),
+                                   gflash.Log(None), skip_vboot=True)
+    assert "VPD" in str(ei.value)
+
+
+def test_validate_full_image_accepts_blank_gpt_region():
+    # gale's RW_GPT region is legitimately erased (0xff) on netboot pucks
+    # (verified: pristine stock 2712HW0072Z). A blank cached-GPT region present
+    # in the FMAP must be accepted, not treated as corruption.
+    gflash.validate_full_image(build_full_image(blank_gpt=True), gflash.Log(None),
+                               skip_vboot=True)   # must not raise

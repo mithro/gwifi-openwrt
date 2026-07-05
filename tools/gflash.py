@@ -107,6 +107,12 @@ RO_GUARD_LIMIT = 0x400000
 # Backup-image data validation.
 FMAP_SIGNATURE = b"__FMAP__"
 FMAP_EXPECTED_OFFSET = 0x300000
+# Structural sanity bounds used to reject a SPURIOUS 8-byte "__FMAP__" match
+# (a coincidence inside CBFS/compressed data) from being parsed as the real
+# FMAP.  gale's real FMAP has 24 areas and a declared total of 0x800000; the
+# spurious hit observed at 0x0453fb had 11876 areas and total ~1.85 GB.
+FMAP_MAX_AREAS = 255
+FMAP_MAX_TOTAL = 0x10000000  # 256 MiB: larger than any plausible SPI flash
 GPT_SIGNATURE = b"EFI PART"
 VPD_MAGIC = b"gVpdInfo"
 # Region names actually present in gale's FMAP (parsed from the dump, not
@@ -968,11 +974,14 @@ def write_region(bridge, offset, data, log, verify=True):
 # Every check fails loud on failure.
 
 
-def parse_fmap(data):
-    """Locate and parse the coreboot FMAP.  Returns a dict or None."""
-    i = data.find(FMAP_SIGNATURE)
-    if i < 0:
-        return None
+def _parse_fmap_at(data, i):
+    """Parse an FMAP whose "__FMAP__" signature starts at byte offset i.
+
+    Returns a dict, or None if the bytes there are NOT a structurally sane FMAP.
+    The gate exists because an 8-byte "__FMAP__" coincidence can occur inside
+    CBFS/compressed data BEFORE the real FMAP; a sane FMAP has a non-empty
+    printable-ASCII name, a bounded area count, a plausible declared total, and
+    every area lying within that total.  A spurious hit fails at least one."""
     off = i + len(FMAP_SIGNATURE)
     try:
         ver_major, ver_minor = data[off], data[off + 1]
@@ -981,11 +990,21 @@ def parse_fmap(data):
         off += 8
         total = struct.unpack_from("<I", data, off)[0]
         off += 4
-        name = data[off : off + 32].split(b"\0")[0].decode("ascii", "replace")
+        name_raw = data[off : off + 32]
         off += 32
         nareas = struct.unpack_from("<H", data, off)[0]
         off += 2
-        areas = {}
+    except struct.error:
+        return None
+    name = name_raw.split(b"\0")[0]
+    if not name or any(b < 0x20 or b > 0x7E for b in name):
+        return None
+    if not (1 <= nareas <= FMAP_MAX_AREAS):
+        return None
+    if not (0 < total <= FMAP_MAX_TOTAL):
+        return None
+    areas = {}
+    try:
         for _ in range(nareas):
             a_off, a_size = struct.unpack_from("<II", data, off)
             off += 8
@@ -994,16 +1013,45 @@ def parse_fmap(data):
             (a_flags,) = struct.unpack_from("<H", data, off)
             off += 2
             areas[a_name] = (a_off, a_size, a_flags)
-    except struct.error as e:
-        raise FatalError("FMAP parse failed at 0x%06x: %s" % (i, e))
+    except struct.error:
+        return None
+    if any(a_off + a_size > total for a_off, a_size, _ in areas.values()):
+        return None
     return {
         "fmap_offset": i,
         "version": (ver_major, ver_minor),
         "base": base,
         "size": total,
-        "name": name,
+        "name": name.decode("ascii"),
         "areas": areas,
     }
+
+
+def parse_fmap(data):
+    """Locate and parse the coreboot FMAP.  Returns a dict or None.
+
+    A spurious 8-byte "__FMAP__" match can PRECEDE the real FMAP (observed live
+    2026-07-06: a hit at 0x0453fb with a non-printable name and 11876 areas
+    shadowed the real FMAP at 0x300000, so validate_full_image silently skipped
+    its GPT/VPD checks and reported "all passed").  So scan ALL matches, keep
+    only the structurally sane ones, and prefer the one at the conventional
+    offset over any earlier sane hit."""
+    candidates = []
+    start = 0
+    while True:
+        i = data.find(FMAP_SIGNATURE, start)
+        if i < 0:
+            break
+        parsed = _parse_fmap_at(data, i)
+        if parsed is not None:
+            candidates.append(parsed)
+        start = i + 1
+    if not candidates:
+        return None
+    for c in candidates:
+        if c["fmap_offset"] == FMAP_EXPECTED_OFFSET:
+            return c
+    return candidates[0]
 
 
 def validate_gpt(region, log, label):
@@ -1160,24 +1208,39 @@ def validate_full_image(data, log, futility_path=None, skip_vboot=False):
     # verified against the whole image via futility.
     verify_vboot(data, log, futility_path=futility_path, skip=skip_vboot)
 
-    # GPT: RW_GPT_PRIMARY (cached copy of the eMMC GPT) if present, else skip.
+    # GPT: RW_GPT_PRIMARY (cached copy of the eMMC GPT).  A full-chip gale image
+    # MUST contain it; its absence means the selected FMAP is wrong or the dump
+    # is corrupt -- fail loud rather than silently skip (a silent skip once
+    # masked a spurious-FMAP parse as "all checks passed").
     gpt_name = next((n for n in GPT_REGION_NAMES if n in areas), None)
-    if gpt_name:
-        validate_gpt(region(gpt_name), log, gpt_name)
+    if not gpt_name:
+        raise FatalError(
+            "validate: FMAP '%s' at 0x%06x has no %s region -- a full-chip gale "
+            "image must contain a GPT region; the FMAP is wrong or the dump is "
+            "corrupt (areas: %s)"
+            % (fmap["name"], foff, "/".join(GPT_REGION_NAMES), ", ".join(sorted(areas)))
+        )
+    gpt_region = region(gpt_name)
+    if gpt_region == b"\xff" * len(gpt_region):
+        # A netboot gale's cached-GPT region is legitimately erased (verified:
+        # pristine stock 2712HW0072Z reads 0xff across RW_GPT).  Blank is OK;
+        # only a NON-blank region must hold a valid GPT, else it is corrupt.
+        info("validate: %s is blank (erased) -- no cached GPT to validate "
+             "(normal for a netboot gale)" % gpt_name)
+        log.log("VALIDATE", "%s all-0xff (blank); GPT content check N/A" % gpt_name)
     else:
-        info("validate: no %s region in FMAP; GPT check skipped"
-             % "/".join(GPT_REGION_NAMES))
-        log.log("VALIDATE", "GPT: no region present, skipped")
+        validate_gpt(gpt_region, log, gpt_name)
 
-    # VPD magic (RO and, if present, RW).
-    vpd_done = False
-    for vn in VPD_REGION_NAMES:
-        if vn in areas:
-            validate_vpd(region(vn), log, vn)
-            vpd_done = True
-    if not vpd_done:
-        info("validate: no %s region in FMAP; VPD check skipped"
-             % "/".join(VPD_REGION_NAMES))
+    # VPD magic (RO and, if present, RW).  RO_VPD is likewise mandatory.
+    vpd_names = [vn for vn in VPD_REGION_NAMES if vn in areas]
+    if not vpd_names:
+        raise FatalError(
+            "validate: FMAP '%s' at 0x%06x has no %s region -- a full-chip gale "
+            "image must contain VPD; the FMAP is wrong or the dump is corrupt"
+            % (fmap["name"], foff, "/".join(VPD_REGION_NAMES))
+        )
+    for vn in vpd_names:
+        validate_vpd(region(vn), log, vn)
 
     info("validate: all applicable data-integrity checks passed")
 
