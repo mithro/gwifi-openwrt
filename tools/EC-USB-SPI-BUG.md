@@ -140,11 +140,14 @@ commit fa95c3d), the full flash flow ran end-to-end on the pilot puck
 
 ## 6. Operational facts (for the flasher)
 
-* `gflash.py` performed 270,603 transactions wedge-free; its session shape
-  differs (it idles >0.5 s after ENABLE before hammering; large reads).
-* A wedged EC is NOT recovered by USB reset (`greset`); post-wedge the EC
-  can refuse new ENABLE control transfers until an MCU reboot (console
-  `reboot` when alive, else eventual self-recovery, minutes).
+* The historical `gflash.py` (since removed) performed 270,603 transactions
+  wedge-free; its session shape was the clue — it idled >0.5 s after ENABLE
+  before hammering, and read large. That idle is now the `flash_puck_usb.py`
+  5 s post-ENABLE settle (`SETTLE_AFTER_ENABLE_S`).
+* A wedged EC is NOT recovered by a USB reset; post-wedge the EC can refuse
+  new ENABLE control transfers until an MCU reboot (`flash_puck_usb.py
+  verify-boot` reboots it; else eventual self-recovery, minutes; else a PoE
+  power-cycle — see `RIG-POWER-CYCLE.md`).
 * Fresh-session bring-up after an EC reboot is reliable: `sysinfo` unlocked,
   `gale power off` park, ENABLE, RDID=ef4017, and large-read burns run
   multi-second clean.

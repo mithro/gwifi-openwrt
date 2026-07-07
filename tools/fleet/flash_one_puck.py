@@ -6,13 +6,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Single-puck flash orchestrator for Gale fleet firmware.
 
-Wires together the six-step pipeline for one puck:
+Wires together the pipeline for one puck:
   backup → extract → build → flash → verify-boot (EC reboot + AP capture)
+  → sheet sync ('Google WiFi Pucks')
+
+All hardware I/O goes through flash_puck_usb.py — the verified libusb tool
+(parked + settled sessions, double-read backups, byte-verified writes,
+fail-fast wedge canaries).
 
 Usage:
     uv run flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
                               [--out-dir DIR] [--rekeyed-ok]
-                              [--chunk 0x1000] [--dry-run] [--skip-verify]
+                              [--dry-run] [--skip-verify] [--no-sheet]
 
 The serial-hint must match the live puck's serial number exactly — the
 flash step's serial-guard re-reads the puck and aborts on any mismatch.
@@ -36,7 +41,7 @@ DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
 
 # Exit-criteria block printed after a successful flash (§7 of the plan doc).
 _EXIT_CRITERIA = """\
-=== BOOT EXIT CRITERIA (§7) — checked automatically by verify_boot.py ===
+=== BOOT EXIT CRITERIA (§7) — checked by flash_puck_usb.py verify-boot ===
   1. Verstage verifies a RW slot ("This is developer signed firmware").
   2. Depthcharge starts ("Starting depthcharge on gale...").
   3a. WITH DHCP/TFTP up  : puck netboots — TFTP kernel fetch visible on console.
@@ -57,22 +62,25 @@ def _run_hw(cmd: list, label: str) -> None:  # pragma: no cover
     subprocess.check_call(cmd)
 
 
-def _backup_spi(backup: Path, chunk: str) -> None:  # pragma: no cover
-    """Step 1: read full 8 MiB SPI flash from the live puck."""
+def _backup_spi(backup: Path) -> None:  # pragma: no cover
+    """Step 1: read full 8 MiB SPI flash from the live puck.
+
+    flash_puck_usb.py `read` parks the AP itself, settles out the rail-bounce
+    event windows, and double-reads (second pass must match byte-for-byte).
+    """
     _run_hw(
-        ["python3", str(TOOLS / "chunk_read.py"), "all", str(backup)],
+        ["python3", str(TOOLS / "flash_puck_usb.py"), "read", str(backup)],
         "backup SPI",
     )
 
 
-def _flash_image(image_path: Path, serial: str, chunk: str) -> None:  # pragma: no cover
+def _flash_image(image_path: Path, serial: str) -> None:  # pragma: no cover
     """Step 4: flash the built image; flash_gale_fleet.py's serial-guard runs here."""
     _run_hw(
         [
             "python3", str(FLEET / "flash_gale_fleet.py"),
             str(image_path),
             serial,
-            "--chunk", chunk,
         ],
         "flash",
     )
@@ -82,14 +90,27 @@ def _verify_boot(log_path: Path) -> None:  # pragma: no cover
     """Step 5: EC-reboot the puck and verify the captured boot.
 
     `gale power on` cannot un-park the AP (the EC is locked while parked —
-    WP_L follows the AP's 3.3V rail), so verify_boot.py reboots the EC: that
-    clears dev/rec and the PD renegotiation auto-powers the AP into a clean
-    normal-mode cold boot, which is captured and classified.  Raises
-    CalledProcessError on a BAD or UNDECIDED verdict.
+    WP_L follows the AP's 3.3V rail), so flash_puck_usb.py `verify-boot`
+    reboots the EC: that clears dev/rec and the PD renegotiation auto-powers
+    the AP into a clean normal-mode cold boot, which is captured, classified,
+    and written to *log_path*.  Raises CalledProcessError on a BAD (exit 2)
+    or UNDECIDED (exit 3) verdict.
     """
     _run_hw(
-        ["python3", str(FLEET / "verify_boot.py"), "--log", str(log_path)],
+        ["python3", str(TOOLS / "flash_puck_usb.py"), "verify-boot",
+         "--boot-log", str(log_path)],
         "verify-boot",
+    )
+
+
+def _sync_sheet(inventory_dir: Path) -> None:  # pragma: no cover
+    """Step 6: push the inventory (identity + flash bookkeeping) to the
+    'Google WiFi Pucks' sheet.  Raises CalledProcessError on failure — the
+    operator must know the sheet was NOT updated."""
+    _run_hw(
+        ["uv", "run", str(FLEET / "sync_sheet.py"), "--write",
+         "--inventory", str(inventory_dir)],
+        "sync sheet",
     )
 
 
@@ -172,19 +193,16 @@ def _parse_args(argv=None) -> argparse.Namespace:
         help="Allow flashing a puck whose GBB root key is already dev-keyed",
     )
     parser.add_argument(
-        "--chunk", default="0x1000",
-        help="Chunk size passed to raiden_write_region (default: 0x1000 — the "
-             "PROVEN session size, used by every successful flash; 0x4000 is "
-             "faster on a healthy bridge but relies on the writer's automatic "
-             "downshift when the session budget is degraded)",
-    )
-    parser.add_argument(
         "--dry-run", action="store_true",
         help="Print plan filenames and steps; do NOT touch hardware or build",
     )
     parser.add_argument(
         "--skip-verify", action="store_true",
         help="Skip the EC-reboot boot verification (leaves the puck parked)",
+    )
+    parser.add_argument(
+        "--no-sheet", action="store_true",
+        help="Skip the 'Google WiFi Pucks' sheet sync at the end",
     )
     return parser.parse_args(argv)
 
@@ -205,7 +223,7 @@ def main(argv=None) -> None:
         return
 
     # Step 1: backup (hardware)
-    _backup_spi(backup, args.chunk)  # pragma: no cover
+    _backup_spi(backup)  # pragma: no cover
 
     # Step 2: extract identity + plan (one dump read; identity rides on the plan)
     p = orchestrator.plan(backup, rekeyed_ok=args.rekeyed_ok, date=args.date)
@@ -221,7 +239,7 @@ def main(argv=None) -> None:
     print(f"  image: {p.image_path}", flush=True)
 
     # Step 4: flash (hardware); serial-guard runs inside flash_gale_fleet.py
-    _flash_image(p.image_path, p.expected_serial, args.chunk)  # pragma: no cover
+    _flash_image(p.image_path, p.expected_serial)  # pragma: no cover
 
     # Step 4.5: bookkeeping — merge audit fields into inventory/<serial>.json now
     # that the flash has completed successfully.  Re-writes the file that was first
@@ -234,7 +252,8 @@ def main(argv=None) -> None:
     if args.skip_verify:
         print("verify-boot SKIPPED (--skip-verify); puck is parked.  To power "
               "it on, reboot the EC (NOT `gale power on` — refused while "
-              "parked): python3 " + str(FLEET / "verify_boot.py"))
+              "parked): python3 " + str(TOOLS / "flash_puck_usb.py")
+              + " verify-boot")
     else:
         log_path = (args.out_dir / "logs"
                     / f"gale-{p.expected_serial}-{args.date}-boot.log")
@@ -243,6 +262,13 @@ def main(argv=None) -> None:
         bk = inventory.bookkeeping(
             p.image_path, backup, args.date, "flashed+boot-verified")
         _write_inventory({**p.identity, **bk}, inventory_dir)
+
+    # Step 6: sheet — push identity + bookkeeping to 'Google WiFi Pucks'.
+    if args.no_sheet:
+        print("sheet sync SKIPPED (--no-sheet); run later with: "
+              f"uv run {FLEET / 'sync_sheet.py'} --write")
+    else:
+        _sync_sheet(inventory_dir)  # pragma: no cover
 
     print(f"Done.  backup: {backup}")
     print(f"       image : {p.image_path}")

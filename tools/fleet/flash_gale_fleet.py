@@ -3,22 +3,24 @@
 # requires-python = ">=3.10"
 # ///
 # SPDX-License-Identifier: Apache-2.0
-"""Flash a gale fleet firmware image over the SuzyQ / raiden bridge.
+"""Flash a gale fleet firmware image with the verified libusb tool.
 
 Safety rail: reads the live device serial number and refuses to write anything
 if it does not match the expected serial supplied on the command line.  This
 prevents flashing the wrong puck in a multi-device lab.
 
-Write order (RO region written LAST):
-  1. RW_SECTION_A
-  2. RW_SECTION_B
-  3. 0x301000:0xdf000  (GBB + RO_FRID, --allow-ro)
+The actual write is one invocation of flash_puck_usb.py `flash`, which owns:
+  * RO-last region ordering (RW_SECTION_A, RW_SECTION_B, then GBB),
+  * one parked + settled session per region (the 5 s post-ENABLE settle that
+    sidesteps the rail-bounce event windows — see tools/EC-USB-SPI-BUG.md),
+  * erase + program + byte-for-byte read-back verification,
+  * fail-fast wedge canaries (any anomaly aborts loud, nothing is retried).
 
 A partial failure leaves the device in the state written so far; writing RO
-last means the puck stays stock-bootable until the very last step.
+last means the puck stays stock-bootable until the very last region.
 
 Usage:
-  python3 flash_gale_fleet.py <out.bin> <expected-serial> [--chunk 0x1000]
+  python3 flash_gale_fleet.py <out.bin> <expected-serial>
 """
 import argparse
 import subprocess
@@ -27,14 +29,13 @@ import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths — tools/ lives three levels above this script's package directory.
+# Paths — tools/ lives one level above this script's directory.
 # flash_gale_fleet.py is at tools/fleet/flash_gale_fleet.py
-# TOOLS is the sibling tools/ root:  tools/
 # ---------------------------------------------------------------------------
 TOOLS = Path(__file__).resolve().parent.parent  # tools/fleet/../ = tools/
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # make galeflash importable
-from galeflash import flashplan, serialguard  # noqa: E402
+from galeflash import serialguard  # noqa: E402
 
 
 def _run(cmd, label):  # pragma: no cover
@@ -45,28 +46,17 @@ def _run(cmd, label):  # pragma: no cover
     print(f"  ok ({time.time() - t0:.1f}s)")
 
 
-def _park(label="re-park AP"):  # pragma: no cover
-    # ec_park.py checks the EC's LOCKED state before setting (a set while
-    # locked is a silent no-op) and confirms the parked state (exit != 0 if
-    # the AP is not actually parked) -- never a blind "gale power off".
-    _run(["python3", str(TOOLS / "ec_park.py")], label)
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", type=Path, help="Firmware image to flash (out.bin)")
     ap.add_argument("expected_serial", help="Serial number the live device must have")
-    ap.add_argument("--chunk", default="0x1000",
-                    help="Chunk size for raiden_write_region (default: 0x1000; "
-                         "fleet can opt into 0x4000 for faster writes)")
     args = ap.parse_args(argv)
 
     if not args.image.exists():
         sys.exit(f"FATAL: image not found: {args.image}")
 
-    # --- Step 1: park AP, then read the live serial number ---
-    _park("park AP (initial)")
+    # --- Step 1: read the live serial number (the tool parks the AP itself) ---
     live = serialguard.read_live_serial()
 
     # --- Step 2: serial guard — refuse to flash the wrong device ---
@@ -84,26 +74,25 @@ def main(argv=None):
 
     print(f"\nSerial OK: {live!r} matches {args.expected_serial!r}")
 
-    # --- Step 3: flash each region in RO-last order ---
-    for region, extra_flags in flashplan.regions_in_order():
-        _park()
-        cmd = [
+    # --- Step 3: flash all regions (RO-last) via the verified tool ---
+    _run(
+        [
             "python3",
-            str(TOOLS / "raiden_write_region.py"),
+            str(TOOLS / "flash_puck_usb.py"),
+            "flash",
             str(args.image),
-            region,
-            "--chunk", args.chunk,
             "--commit",
-        ] + extra_flags
-        _run(cmd, f"flash {region}")
+            "--allow-ro",
+        ],
+        "flash RW_SECTION_A + RW_SECTION_B + GBB (RO-last, settled sessions)",
+    )
 
     # --- Done ---
     print(
         "\n=== ALL FLASHES SUCCEEDED ===\n"
         "Device is parked.  The EC is LOCKED while parked (WP_L follows the\n"
         "AP 3.3V rail), so `gale power on` is refused.  To power on + verify:\n"
-        f"  python3 {Path(__file__).resolve().parent / 'verify_boot.py'} "
-        "--log <boot.log>\n"
+        f"  python3 {TOOLS / 'flash_puck_usb.py'} verify-boot --boot-log <boot.log>\n"
         "(EC reboot: clears dev/rec, PD auto-powers the AP ~1 s later.)"
     )
 

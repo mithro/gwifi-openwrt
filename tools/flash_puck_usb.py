@@ -31,6 +31,7 @@ new things before any real flash:
        erase -> program -> verify -> restore byte-identical.
 """
 import argparse
+import hashlib
 import os
 import struct
 import sys
@@ -384,9 +385,8 @@ class SpiBridge:
         self._ctrl(1, "DISABLE(self-heal)", tolerate=True)  # clear any wedged prior enable
         self._ctrl(0, "ENABLE")
         # usb_spi_board_enable raises SYS_PWR_EN + the 3.3V flash rail; give it a
-        # moment to settle and drain any stale IN data before trusting RDID (the
-        # proven raiden transport does the same -- otherwise a not-yet-stable rail
-        # reads back as RDID 000000).
+        # moment to settle and drain any stale IN data before trusting RDID --
+        # otherwise a not-yet-stable rail reads back as RDID 000000.
         time.sleep(0.1)
         self._drain()
 
@@ -508,11 +508,10 @@ def read_region(bridge, offset, length, label="read", progress=True):
 
 
 def erase_plan(offset, length, use_block=False):
-    """List of (addr, size, opcode). Default = 4 KiB SECTOR-erase only (0x20),
-    matching the PROVEN raiden path: a 64 KiB block-erase (0xD8) draws far more
-    current and, on a marginal supply, browns out the flash rail (RDID 000000)
-    mid-write. use_block=True re-enables block-erase for speed on a healthy rig.
-    Requires 4 KiB alignment."""
+    """List of (addr, size, opcode). Default = 4 KiB SECTOR-erase only (0x20):
+    a 64 KiB block-erase (0xD8) draws far more current and, on a marginal
+    supply, browns out the flash rail (RDID 000000) mid-write. use_block=True
+    re-enables block-erase for speed on a healthy rig. Requires 4 KiB alignment."""
     if offset % SECTOR_SIZE or length % SECTOR_SIZE:
         raise FatalError("erase range not 4 KiB aligned: 0x%x+0x%x" % (offset, length))
     plan = []
@@ -699,7 +698,7 @@ def parse_fmap(data):
 
     Scans ALL __FMAP__ signatures and keeps only a structurally-sane one
     (printable name, bounded area count), preferring the conventional offset --
-    a spurious 8-byte match can precede the real FMAP (gflash's lesson)."""
+    a spurious 8-byte match can precede the real FMAP (measured on gale)."""
     best = None
     start = 0
     while True:
@@ -741,7 +740,7 @@ def parse_fmap(data):
 # --------------------------------------------------------------------------- #
 # Boot verification -- classification (pure); the EC-reboot + AP capture that
 # feeds it is added with the flash orchestration and validated on hardware.
-# Markers are from real 2712HW0072Z captures (see fleet/galeflash/bootverify.py):
+# Markers are from real 2712HW0072Z boot captures:
 # a GOOD normal-mode dev-key boot reaches depthcharge + netboot; EVERY boot
 # prints "recovery" in a GPIO/vboot line, so a bare "recovery" is NOT a failure.
 # --------------------------------------------------------------------------- #
@@ -1143,6 +1142,62 @@ def cmd_flash(args, log):
     return 0
 
 
+def cmd_read(args, log):
+    """Read [offset, offset+length) of the SPI flash to a file.
+
+    Runs inside a parked + settled session (the SOP that survived 365k
+    transactions). Default is a DOUBLE read -- the second pass must match the
+    first byte-for-byte or we fail loud without writing output; identity
+    extraction and pre-flash backups depend on faithful reads.
+    """
+    offset, length = args.offset, args.length
+    sess = Session(log)
+    try:
+        sess.bring_up()
+        data = read_region(sess.bridge, offset, length, label="read")
+        if not args.single_read:
+            again = read_region(sess.bridge, offset, length, label="confirm")
+            if again != data:
+                raise FatalError(
+                    "double-read mismatch: two reads of 0x%06x+0x%06x differ "
+                    "-- unreliable session, NOT writing output" % (offset, length))
+        out = os.path.expanduser(args.out)
+        with open(out, "wb") as f:
+            f.write(data)
+        info("wrote %d bytes to %s\n  sha256=%s"
+             % (len(data), out, hashlib.sha256(data).hexdigest()))
+        return 0
+    finally:
+        sess.teardown()
+
+
+def cmd_ec(args, log):
+    """Run EC console command(s) over libusb (no kernel tty needed) and print
+    each response. Read-until-quiet per command; sends nothing on its own."""
+    dev = open_device(log)
+    ec = Console(dev, "ec", log)
+    try:
+        ec.sync()
+        for c in args.cmd:
+            ec.drain()
+            ec.write((c + "\r\n").encode())
+            raw = bytearray()
+            start = last = time.monotonic()
+            while time.monotonic() - start < args.deadline:
+                d = ec.read(200)
+                if d:
+                    raw += d
+                    last = time.monotonic()
+                elif raw and time.monotonic() - last > 0.4:
+                    break
+            print("===== EC <- %r =====" % c, flush=True)
+            print(bytes(raw).decode("ascii", "replace"), flush=True)
+        return 0
+    finally:
+        ec.release()
+        usb.util.dispose_resources(dev)
+
+
 def cmd_budgetprobe(args, log):
     """Characterize the small-transfer wall: burn self-checking SMALL transactions
     (each verified against a known value, so the EXACT trip is detected without
@@ -1406,6 +1461,24 @@ def main(argv=None):
                         "AP boot log, classify GOOD/BAD/UNDECIDED")
     vb.add_argument("--timeout", type=float, default=120.0,
                     help="max seconds to wait for a decisive boot marker")
+    vb.add_argument("--boot-log", metavar="FILE",
+                    help="write the captured AP boot log to this file")
+
+    rd = sub.add_parser("read", help="read flash to a file (parked + settled "
+                        "session; double-read confirmed by default)")
+    rd.add_argument("out", help="output file for the read bytes")
+    rd.add_argument("--offset", type=lambda s: int(s, 0), default=0x0,
+                    help="start offset (default 0x0)")
+    rd.add_argument("--length", type=lambda s: int(s, 0), default=0x800000,
+                    help="bytes to read (default 0x800000 = full 8 MiB)")
+    rd.add_argument("--single-read", action="store_true",
+                    help="skip the confirming second pass (faster, less safe)")
+
+    ecp = sub.add_parser("ec", help="run EC console command(s) over libusb "
+                         "and print each response")
+    ecp.add_argument("cmd", nargs="+", help="EC console command(s) to run")
+    ecp.add_argument("--deadline", type=float, default=3.0,
+                     help="max seconds to wait per command (default 3.0)")
 
     fl = sub.add_parser("flash", help="flash RW_SECTION_A/B + GBB (RO-last) from a "
                         "built image, one fresh session per piece; dry-run by default")
@@ -1464,7 +1537,15 @@ def main(argv=None):
             return cmd_budgetprobe(args, log)
         if args.command == "verify-boot":
             r = verify_boot(log, timeout_s=args.timeout)
+            if args.boot_log:
+                with open(os.path.expanduser(args.boot_log), "w") as f:
+                    f.write(r["capture"])
+                info("boot log written to %s" % args.boot_log)
             return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
+        if args.command == "read":
+            return cmd_read(args, log)
+        if args.command == "ec":
+            return cmd_ec(args, log)
         if args.command == "flash":
             return cmd_flash(args, log)
         return cmd_shakedown(args, log)

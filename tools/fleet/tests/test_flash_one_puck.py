@@ -35,24 +35,27 @@ _COMMON_ARGV = [
 ]
 
 
-def _patch_hw(monkeypatch, tmp_path, verify_calls=None):
+def _patch_hw(monkeypatch, tmp_path, verify_calls=None, sheet_calls=None):
     """Patch all hardware/build seams; return (build_calls, flash_calls) recorders."""
     build_calls = []
     flash_calls = []
 
     monkeypatch.setattr(orchestrator.identity, "from_dump", lambda p: dict(_STOCK_FALSE_IDV))
-    monkeypatch.setattr(flash_one_puck, "_backup_spi", lambda backup, chunk: None)
+    monkeypatch.setattr(flash_one_puck, "_backup_spi", lambda backup: None)
     monkeypatch.setattr(
         flash_one_puck, "_verify_boot",
         lambda log_path: None if verify_calls is None else verify_calls.append(log_path))
+    monkeypatch.setattr(
+        flash_one_puck, "_sync_sheet",
+        lambda inv_dir: None if sheet_calls is None else sheet_calls.append(inv_dir))
 
     def fake_build(live, out):
         # Create the output file so inventory.bookkeeping() can hash it.
         out.write_bytes(b"fake-firmware-for-test")
         build_calls.append((live, out))
 
-    def fake_flash(img, serial, chunk):
-        flash_calls.append((img, serial, chunk))
+    def fake_flash(img, serial):
+        flash_calls.append((img, serial))
 
     monkeypatch.setattr(imagebuild, "build", fake_build)
     monkeypatch.setattr(flash_one_puck, "_flash_image", fake_flash)
@@ -122,7 +125,7 @@ def test_rekeyed_ok_flash_called_with_correct_serial(tmp_path, monkeypatch):
 
     flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
 
-    _, serial, _ = flash_calls[0]
+    _, serial = flash_calls[0]
     assert serial == "SN-TEST-01"
 
 
@@ -162,3 +165,47 @@ def test_verify_boot_upgrades_inventory_status(tmp_path, monkeypatch):
 
     inv = json.loads((tmp_path / "inventory" / "SN-TEST-01.json").read_text())
     assert inv["flash_status"] == "flashed+boot-verified"
+
+
+# ---------------------------------------------------------------------------
+# Sheet-sync wiring (Step 6)
+# ---------------------------------------------------------------------------
+
+def test_sheet_synced_by_default(tmp_path, monkeypatch):
+    """A successful flow ends by syncing the inventory dir to the sheet."""
+    sheet_calls = []
+    _patch_hw(monkeypatch, tmp_path, sheet_calls=sheet_calls)
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert len(sheet_calls) == 1
+    assert sheet_calls[0] == tmp_path / "inventory"
+
+
+def test_no_sheet_flag_skips_sync(tmp_path, monkeypatch):
+    """--no-sheet suppresses the sheet sync entirely."""
+    sheet_calls = []
+    _patch_hw(monkeypatch, tmp_path, sheet_calls=sheet_calls)
+
+    flash_one_puck.main(
+        _COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok", "--no-sheet"])
+
+    assert sheet_calls == []
+
+
+def test_sheet_synced_after_inventory_written(tmp_path, monkeypatch):
+    """Sheet sync must see the FINAL inventory (status flashed+boot-verified)
+    already on disk — i.e. it runs after the bookkeeping write."""
+    import json
+    seen_status = {}
+
+    def spy_sync(inv_dir):
+        inv = json.loads((inv_dir / "SN-TEST-01.json").read_text())
+        seen_status["status"] = inv["flash_status"]
+
+    _patch_hw(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(flash_one_puck, "_sync_sheet", spy_sync)
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert seen_status["status"] == "flashed+boot-verified"

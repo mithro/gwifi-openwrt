@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """CLI wiring tests for flash_gale_fleet.py — no hardware required.
 
-All hardware seams (_run, _park, serialguard.read_live_serial) are
-monkeypatched so the entire main() wiring runs in-process.
+The hardware seams (_run, serialguard.read_live_serial) are monkeypatched so
+the entire main() wiring runs in-process.  Region ordering / RO-last / erase
+semantics live INSIDE flash_puck_usb.py (hardware-proven); the contract at
+this level is: serial guard gates everything, and a match produces exactly
+one invocation of the verified tool with the right flags.
 """
 import pytest
 
@@ -30,89 +33,78 @@ def test_serial_mismatch_raises_system_exit_nonzero(tmp_path, monkeypatch):
     img = _make_image(tmp_path)
 
     monkeypatch.setattr(serialguard, "read_live_serial", lambda: "WRONG-SERIAL")
-    monkeypatch.setattr(flash_gale_fleet, "_park", lambda label="re-park AP": None)
     monkeypatch.setattr(flash_gale_fleet, "_run", lambda cmd, label: None)
 
-    with pytest.raises(SystemExit) as exc_info:
-        flash_gale_fleet.main([str(img), "EXPECTED-SERIAL"])
-
-    assert exc_info.value.code not in (None, 0)
+    with pytest.raises(SystemExit) as exc:
+        flash_gale_fleet.main([str(img), "GOOD-SERIAL"])
+    assert exc.value.code not in (0, None)
 
 
 def test_serial_mismatch_no_write_called(tmp_path, monkeypatch):
-    """Mismatching serial → no raiden_write_region invocation (nothing written)."""
+    """Mismatching serial → _run never invoked (nothing written)."""
     img = _make_image(tmp_path)
     run_calls = []
 
     monkeypatch.setattr(serialguard, "read_live_serial", lambda: "WRONG-SERIAL")
-    monkeypatch.setattr(flash_gale_fleet, "_park", lambda label="re-park AP": None)
     monkeypatch.setattr(flash_gale_fleet, "_run",
                         lambda cmd, label: run_calls.append((cmd, label)))
 
     with pytest.raises(SystemExit):
-        flash_gale_fleet.main([str(img), "EXPECTED-SERIAL"])
+        flash_gale_fleet.main([str(img), "GOOD-SERIAL"])
 
-    # _run must never have been called at all — nothing was written.
     assert run_calls == [], f"Unexpected _run calls on mismatch: {run_calls}"
 
 
+def test_missing_image_exits_before_serial_read(tmp_path, monkeypatch):
+    """Nonexistent image → SystemExit before any hardware access."""
+    reads = []
+    monkeypatch.setattr(serialguard, "read_live_serial",
+                        lambda: reads.append(1) or "GOOD-SERIAL")
+    monkeypatch.setattr(flash_gale_fleet, "_run", lambda cmd, label: None)
+
+    with pytest.raises(SystemExit):
+        flash_gale_fleet.main([str(tmp_path / "nope.bin"), "GOOD-SERIAL"])
+    assert reads == [], "serial must not be read when the image is missing"
+
+
 # ---------------------------------------------------------------------------
-# Match case: write helper called in RO-last order
+# Match case: exactly one invocation of the verified tool
 # ---------------------------------------------------------------------------
 
-def test_serial_match_calls_write_three_times(tmp_path, monkeypatch):
-    """Matching serial → _run called exactly three times (once per region)."""
+def test_serial_match_single_call_uses_verified_tool(tmp_path, monkeypatch):
+    """Matching serial → ONE _run call driving flash_puck_usb.py flash with
+    --commit --allow-ro (the tool owns RO-last ordering + settled sessions)."""
     img = _make_image(tmp_path)
     run_calls = []
 
     monkeypatch.setattr(serialguard, "read_live_serial", lambda: "GOOD-SERIAL")
-    monkeypatch.setattr(flash_gale_fleet, "_park", lambda label="re-park AP": None)
     monkeypatch.setattr(flash_gale_fleet, "_run",
                         lambda cmd, label: run_calls.append((cmd, label)))
 
     flash_gale_fleet.main([str(img), "GOOD-SERIAL"])
 
-    assert len(run_calls) == 3, f"Expected 3 _run calls, got {len(run_calls)}: {run_calls}"
+    assert len(run_calls) == 1, f"Expected exactly 1 call, got: {run_calls}"
+    cmd, _ = run_calls[0]
+    cmd_str = [str(c) for c in cmd]
+    assert any("flash_puck_usb.py" in c for c in cmd_str), cmd_str
+    assert "flash" in cmd_str, cmd_str
+    assert str(img) in cmd_str, cmd_str
+    assert "--commit" in cmd_str, cmd_str
+    assert "--allow-ro" in cmd_str, cmd_str
 
 
-def test_serial_match_ro_last_write_order(tmp_path, monkeypatch):
-    """Matching serial → regions written in RO-last order: RW_A, RW_B, GBB-span."""
+def test_serial_match_no_legacy_tools_invoked(tmp_path, monkeypatch):
+    """The removed legacy tools must never appear in any invocation."""
     img = _make_image(tmp_path)
     run_calls = []
 
     monkeypatch.setattr(serialguard, "read_live_serial", lambda: "GOOD-SERIAL")
-    monkeypatch.setattr(flash_gale_fleet, "_park", lambda label="re-park AP": None)
     monkeypatch.setattr(flash_gale_fleet, "_run",
-                        lambda cmd, label: run_calls.append((cmd, label)))
+                        lambda cmd, label: run_calls.append(cmd))
 
     flash_gale_fleet.main([str(img), "GOOD-SERIAL"])
 
-    labels = [label for _, label in run_calls]
-    assert labels == [
-        "flash RW_SECTION_A",
-        "flash RW_SECTION_B",
-        "flash 0x301000:0xdf000",
-    ], f"Wrong write order: {labels}"
-
-
-def test_serial_match_last_region_has_allow_ro(tmp_path, monkeypatch):
-    """Matching serial → last write (GBB span) is invoked with --allow-ro."""
-    img = _make_image(tmp_path)
-    run_calls = []
-
-    monkeypatch.setattr(serialguard, "read_live_serial", lambda: "GOOD-SERIAL")
-    monkeypatch.setattr(flash_gale_fleet, "_park", lambda label="re-park AP": None)
-    monkeypatch.setattr(flash_gale_fleet, "_run",
-                        lambda cmd, label: run_calls.append((cmd, label)))
-
-    flash_gale_fleet.main([str(img), "GOOD-SERIAL"])
-
-    last_cmd, _ = run_calls[-1]
-    assert "--allow-ro" in last_cmd, (
-        f"--allow-ro missing from last region cmd: {last_cmd}"
-    )
-    # RW regions must NOT carry --allow-ro
-    for cmd, label in run_calls[:-1]:
-        assert "--allow-ro" not in cmd, (
-            f"--allow-ro must NOT appear in RW region cmd ({label}): {cmd}"
-        )
+    for cmd in run_calls:
+        joined = " ".join(str(c) for c in cmd)
+        for legacy in ("raiden", "chunk_read", "ec_park", "gflash", "gserial"):
+            assert legacy not in joined, f"legacy tool {legacy!r} in: {joined}"

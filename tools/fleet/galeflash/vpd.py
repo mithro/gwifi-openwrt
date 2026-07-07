@@ -19,7 +19,7 @@ def _pad_len(buf, i):
     (i >= len(buf)) the function stops early and returns whatever partial
     value has accumulated so far, keeping new_index at the end of the
     buffer.  This prevents IndexError on a short partial read from the
-    raiden bridge.
+    SPI bridge.
     """
     v = 0
     while True:

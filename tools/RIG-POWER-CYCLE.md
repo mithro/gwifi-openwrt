@@ -83,7 +83,7 @@ snmpget -v2c -c <read>  $SW 1.3.6.1.2.1.105.1.1.1.6.1.N       # want 3
   ping -c3 rpi3b-gwifi.iot.welland.mithis.com
   ssh rpi3b-gwifi.iot.welland.mithis.com 'lsusb -d 18d1:500f; ls /dev/ttyUSB*'
   ssh rpi3b-gwifi.iot.welland.mithis.com \
-      'cd local/gwifi/gwifi-openwrt/tools && python3 ec_console.py sysinfo'
+      'cd local/gwifi/gwifi-openwrt/tools && python3 flash_puck_usb.py ec sysinfo'
   ```
 - If ttyUSB nodes are missing but the gale enumerates:
   `echo 0 > /sys/bus/usb/devices/1-1.2/authorized; sleep 2; echo 1 > ...`

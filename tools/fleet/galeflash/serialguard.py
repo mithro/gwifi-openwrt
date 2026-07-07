@@ -15,8 +15,8 @@ from galeflash.const import FMAP
 TOOLS = Path(__file__).resolve().parents[2]   # .../tools
 TMP   = Path(__file__).resolve().parents[1] / "tmp"  # tools/fleet/tmp/
 
-# Read just the first 16 KiB of RO_VPD — well under the ~87 KiB per-raiden-session
-# cliff, and more than enough for the compact VPD entry list (typically < 1 KiB).
+# Read just the first 16 KiB of RO_VPD — more than enough for the compact VPD
+# entry list (typically < 1 KiB).
 _RO_VPD_OFF  = FMAP["RO_VPD"][0]  # 0x3E0000
 _READ_LEN    = 0x4000              # 16 KiB partial read
 
@@ -30,18 +30,15 @@ def ok(live_serial: str, expected_serial: str) -> bool:
 
 
 def read_live_serial() -> str:  # pragma: no cover
-    """Read the serial_number from the live device's RO_VPD over the raiden bridge.
+    """Read the serial_number from the live device's RO_VPD.
 
-    Steps:
-      1. Park the AP ('gale power off') so the EC owns the SPI bus.
-      2. Spawn raiden_write_region.py _rd to read a 16 KiB slice of RO_VPD
-         (offset 0x3E0000, length 0x4000) into a scratch file under tools/fleet/tmp/.
-         One fresh subprocess per read resets the per-session raiden cliff (~87 KiB).
-      3. Decode the blob with vpd.decode() and return the 'serial_number' value.
+    Uses flash_puck_usb.py `read` — the verified libusb tool (parks the AP
+    itself, settles out the rail-bounce event windows, double-read confirmed).
 
     Raises:
         KeyError: if 'serial_number' is absent from the VPD (blank/erased device).
-        subprocess.CalledProcessError: if the EC park or raiden read fails.
+        subprocess.CalledProcessError: if the read fails (incl. AP-park failure
+        or a double-read mismatch inside the tool).
     """
     TMP.mkdir(exist_ok=True)
     out_path = TMP / "ro_vpd_partial.bin"
@@ -53,30 +50,17 @@ def read_live_serial() -> str:  # pragma: no cover
         subprocess.check_call(cmd)
         print(f"  ok ({time.time() - t0:.1f}s)")
 
-    # Use system "python3" (NOT sys.executable) for the external tools: under
+    # Use system "python3" (NOT sys.executable) for the external tool: under
     # `uv run` sys.executable is the galeflash venv (pytest-only) which lacks
-    # the pyserial/pyusb that ec_console.py and raiden_write_region.py import.
-    # Matches ec_console / flash_gale_fleet.py / tmp/flash_devkey_bringup.py.
-
-    # Park the AP — grants EC control of the SPI bus.  ec_park.py checks the
-    # EC's LOCKED state before setting (a set while locked is a silent no-op)
-    # and confirms the parked state; exits non-zero if the AP is not parked.
-    run(["python3", str(TOOLS / "ec_park.py")],
-        "park AP for VPD read")
-
-    # Partial read via raiden_write_region.py's "_rd" INTERNAL worker subcommand
-    # ("not for direct use" per that tool's docstring).  We use it anyway because
-    # it is the only standalone bridge reader that runs in a FRESH subprocess,
-    # which resets the ~87 KiB per-raiden-session cliff for this 16 KiB read.
-    # If raiden_write_region.py is refactored, update this call site.
+    # the pyusb that flash_puck_usb.py imports.
     run(
         [
             "python3",
-            str(TOOLS / "raiden_write_region.py"),
-            "_rd",
-            hex(_RO_VPD_OFF),
-            hex(_READ_LEN),
+            str(TOOLS / "flash_puck_usb.py"),
+            "read",
             str(out_path),
+            "--offset", hex(_RO_VPD_OFF),
+            "--length", hex(_READ_LEN),
         ],
         f"read RO_VPD partial (0x{_RO_VPD_OFF:x}:0x{_READ_LEN:x})",
     )

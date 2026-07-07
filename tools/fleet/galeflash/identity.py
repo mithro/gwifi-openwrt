@@ -71,9 +71,9 @@ def _root_key_sha1(path: Path) -> str:
         raise RuntimeError(
             f"futility show failed on {path} (exit {e.returncode}): the dump "
             f"does not vboot-verify.  Either the backup READ is corrupt "
-            f"(re-run it; chunk_read double-read should prevent this) or the "
-            f"puck's flash is partially written (restore from its pre-flash "
-            f"backup).  Do NOT build an image from this dump.") from e
+            f"(re-run it; flash_puck_usb.py's double-read should prevent this) "
+            f"or the puck's flash is partially written (restore from its "
+            f"pre-flash backup).  Do NOT build an image from this dump.") from e
     lines = out.splitlines()
     in_root_key = False
     root_indent = None
