@@ -16,7 +16,7 @@ from galeflash import identity
 # The documented full procedure, in order.  "verify" is the operator boot-check
 # (watching the serial console for the §7 exit criteria) and so comes AFTER
 # "poweron"; the offline futility-verify is internal to imagebuild.build().
-STEPS: list[str] = ["backup", "extract", "build", "flash", "poweron", "verify"]
+STEPS: list[str] = ["backup", "extract", "build", "flash", "poweron", "verify", "sheet"]
 
 
 @dataclass(frozen=True)
