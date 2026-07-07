@@ -29,14 +29,21 @@ def ok(live_serial: str, expected_serial: str) -> bool:
     return live_serial.strip() == expected_serial.strip()
 
 
-def read_live_serial() -> str:  # pragma: no cover
-    """Read the serial_number from the live device's RO_VPD.
+# Identity fields read live for matching against the fleet sheet.  An explicit
+# allowlist — sensitive VPD keys (stable_device_secret_*, setup_psk) never leave.
+_IDENTITY_FIELDS = ("serial_number", "ethernet_mac0", "ethernet_mac1")
+
+
+def read_live_identity() -> dict:  # pragma: no cover
+    """Read the curated identity (serial + eth MACs) from the live RO_VPD.
 
     Uses flash_puck_usb.py `read` — the verified libusb tool (parks the AP
     itself, settles out the rail-bounce event windows, double-read confirmed).
 
+    Returns:
+        dict with keys from ``_IDENTITY_FIELDS`` (values may be None if absent).
+
     Raises:
-        KeyError: if 'serial_number' is absent from the VPD (blank/erased device).
         subprocess.CalledProcessError: if the read fails (incl. AP-park failure
         or a double-read mismatch inside the tool).
     """
@@ -67,8 +74,20 @@ def read_live_serial() -> str:  # pragma: no cover
 
     # Clean up the scratch read-back file regardless of decode outcome.
     try:
-        blob = out_path.read_bytes()
-        kv = vpd.decode(blob)
-        return kv["serial_number"]
+        kv = vpd.decode(out_path.read_bytes())
+        return {field: kv.get(field) for field in _IDENTITY_FIELDS}
     finally:
         out_path.unlink(missing_ok=True)
+
+
+def read_live_serial() -> str:  # pragma: no cover
+    """Read the serial_number from the live device's RO_VPD.
+
+    Raises:
+        KeyError: if 'serial_number' is absent from the VPD (blank/erased device).
+        subprocess.CalledProcessError: if the read fails.
+    """
+    serial = read_live_identity()["serial_number"]
+    if serial is None:
+        raise KeyError("serial_number")
+    return serial

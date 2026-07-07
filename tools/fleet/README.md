@@ -5,7 +5,21 @@ Per-puck production tooling for dev-key netboot firmware on a fleet of Gale
 tool one directory up (parked + settled sessions, double-read backups,
 byte-verified RO-last writes, fail-fast wedge canaries).
 
-## One command per puck
+## Per puck
+
+**1. Identify it against the fleet sheet** (no label reading — reads the live
+VPD and looks it up in 'Google WiFi Pucks'):
+
+```
+uv run identify_puck.py
+```
+
+Reports which sheet row the connected puck is, whether it's already been
+flashed, cross-checks its MACs, and prints the exact command to run. Exit 0 =
+ready to flash, 2 = already flashed (needs `--rekeyed-ok`), 3 = not in sheet,
+4 = MAC mismatch (investigate).
+
+**2. Flash it:**
 
 ```
 uv run flash_one_puck.py --serial-hint <SERIAL> --date $(date +%F)
