@@ -21,16 +21,23 @@ from typing import NamedTuple
 # Case-insensitive matching is used when searching the existing header row.
 # Fields absent from the sheet get new columns appended at the right, in this order.
 FIELD_TO_HEADER: dict[str, str] = {
-    "mlb_serial_number": "MLB Serial",
-    "region":            "Region",
-    "ethernet_mac0":     "eth0",          # existing col H — fill only if empty/matching
-    "ethernet_mac1":     "eth1",          # existing col I — fill only if empty/matching
-    "hwid":              "HWID",
-    "ro_frid":           "RO Firmware",
-    "backup_path":       "Backup",
-    "image_sha256":      "Image SHA256",
-    "flash_date":        "Flash Date",
-    "flash_status":      "Flash Status",
+    "mlb_serial_number":   "MLB Serial",
+    "region":              "Region",
+    "ethernet_mac0":       "eth0",        # existing col H — fill only if empty/matching
+    "ethernet_mac1":       "eth1",        # existing col I — fill only if empty/matching
+    "hwid":                "HWID",
+    # --- firmware flashed to / running on the device ---
+    "ro_frid":             "RO Firmware",   # coreboot RO version (unchanged by flash)
+    "rw_fwid":             "RW Firmware",   # coreboot RW version in the flashed slots
+    "depthcharge_version": "Depthcharge",   # TFTP-first netboot payload we flash
+    "ec_version":          "EC Firmware",   # STM32 EC firmware on the device (live)
+    # --- flash audit + off-site backup archive ---
+    "flash_date":          "Flash Date",
+    "flash_status":        "Flash Status",
+    "backup_path":         "Backup",        # big-storage path of the pre-flash capture
+    "backup_sha256":       "Backup SHA256", # sha256 of the pre-flash capture
+    "image_archive":       "Image Archive", # big-storage path of the flashed image
+    "image_sha256":        "Image SHA256",  # sha256 of the flashed image
 }
 
 # Note: the generic user-label "MAC" column (E) is left untouched — it is

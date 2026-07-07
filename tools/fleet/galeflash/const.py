@@ -24,6 +24,17 @@ FMAP = {
 }
 GBB_ROFRID_SPAN = (0x301000, 0x0DF000)   # GBB + RO_FRID, stops exactly at RO_VPD
 
+# Depthcharge payload provenance.  The TFTP-first payload (PAYLOAD_ELF) is one
+# fixed fleet-wide artifact; DEPTHCHARGE_GIT is the source rev that built it
+# (git describe of depthcharge-ipq4019/depthcharge).  Update this when the
+# payload is rebuilt — firmware.depthcharge_version() pairs it with the ELF's
+# sha256 so the sheet value is both human-readable and verifiable.
+DEPTHCHARGE_GIT = "c02e0cd"
+
+# Off-site firmware backup archive (per-puck captures + flashed images).
+BIG_STORAGE_HOST = "big-storage.welland.mithis.com"
+BIG_STORAGE_DIR  = "/backups/machines/gwifi"
+
 # RW_SECTION_A/B are COMPOSITES enclosing their VBLOCK_*+FW_MAIN_* leaves; the
 # offline diff-gate compares LEAVES only (composites would double-report them).
 COMPOSITE_REGIONS = {"RW_SECTION_A", "RW_SECTION_B"}

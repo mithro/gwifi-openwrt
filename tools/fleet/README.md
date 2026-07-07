@@ -11,10 +11,17 @@ byte-verified RO-last writes, fail-fast wedge canaries).
 uv run flash_one_puck.py --serial-hint <SERIAL> --date $(date +%F)
 ```
 
-Pipeline: backup (`flash_puck_usb.py read`) → extract identity + inventory →
-build the flags-7 dev-key image → **serial-guarded** RO-last flash
-(`flash_gale_fleet.py` → `flash_puck_usb.py flash`) → EC-reboot boot
-verification → **sheet sync** to 'Google WiFi Pucks'.
+Pipeline: backup (`flash_puck_usb.py read`) → **archive the capture off-site**
+→ extract identity + inventory → build the flags-7 dev-key image →
+**serial-guarded** RO-last flash (`flash_gale_fleet.py` → `flash_puck_usb.py
+flash`) → **archive the flashed image off-site** → read firmware ids →
+EC-reboot boot verification → **sheet sync** to 'Google WiFi Pucks'.
+
+The pre-flash capture and the flashed image are both copied to
+`big-storage.welland.mithis.com:/backups/machines/gwifi/` (const.BIG_STORAGE_*).
+The sheet records, per puck: RO/RW coreboot firmware ids, the depthcharge
+payload id (git rev + ELF sha), the live EC firmware id, both archive paths,
+and both sha256 checksums.
 
 Flags:
 - `--rekeyed-ok` — re-flash a puck whose GBB is already dev-keyed.

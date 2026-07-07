@@ -1,12 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Flash bookkeeping: compute the four audit fields written to inventory/<serial>.json.
+"""Flash bookkeeping: the audit fields written to inventory/<serial>.json.
 
-These fields are the ones that ``galeflash.sheetmap.FIELD_TO_HEADER`` maps to
-the fleet spreadsheet's audit columns.  ``bookkeeping()`` is a pure helper —
-no hardware, no I/O except reading the already-built image for its SHA-256.
+These keys are a strict subset of ``galeflash.sheetmap.FIELD_TO_HEADER``, so the
+sheet-sync consumer has a column for each.  ``bookkeeping()`` computes the file
+checksums itself and passes through the firmware/archive values captured by the
+flow (live EC read, cbfs RW id, off-site archive paths).
 """
 import hashlib
 from pathlib import Path
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def bookkeeping(
@@ -14,26 +19,39 @@ def bookkeeping(
     backup_path: Path,
     date: str,
     status: str,
+    *,
+    ec_version: str,
+    rw_fwid: str,
+    depthcharge_version: str,
+    capture_archive: str,
+    image_archive: str,
 ) -> dict:
-    """Return a flash bookkeeping dict for one puck.
+    """Return the flash bookkeeping dict for one puck.
 
     Args:
-        image_path:  Path to the built fleet image (.bin).  Its bytes are
-                     SHA-256-hashed so the sheet audit column can verify
-                     integrity later.
-        backup_path: Path to the pre-flash SPI backup file.
-        date:        Flash date string (``YYYY-MM-DD``).
-        status:      Flash status label (e.g. ``"flashed"``).
+        image_path:   Local path to the built fleet image (hashed -> image_sha256).
+        backup_path:  Local path to the pre-flash SPI capture (hashed -> backup_sha256).
+        date:         Flash date string (``YYYY-MM-DD``).
+        status:       Flash status label (e.g. ``"flashed+boot-verified"``).
+        ec_version:   STM32 EC firmware id read live (``firmware.parse_ec_version``).
+        rw_fwid:      coreboot RW firmware id in the flashed image (``firmware.rw_fwid``).
+        depthcharge_version: netboot payload id (``firmware.depthcharge_version``).
+        capture_archive: off-site (big-storage) path of the archived capture.
+        image_archive:   off-site (big-storage) path of the archived flashed image.
 
     Returns:
-        Dict with exactly four keys — ``backup_path``, ``image_sha256``,
-        ``flash_date``, ``flash_status`` — which are a strict subset of
-        ``galeflash.sheetmap.FIELD_TO_HEADER``.
+        Dict whose keys are all present in ``sheetmap.FIELD_TO_HEADER``.
     """
-    sha256 = hashlib.sha256(Path(image_path).read_bytes()).hexdigest()
     return {
-        "backup_path": str(backup_path),
-        "image_sha256": sha256,
-        "flash_date": date,
-        "flash_status": status,
+        "flash_date":          date,
+        "flash_status":        status,
+        # firmware flashed to / running on the device
+        "ec_version":          ec_version,
+        "rw_fwid":             rw_fwid,
+        "depthcharge_version": depthcharge_version,
+        # off-site backup archive + checksums
+        "backup_path":         capture_archive,   # 'Backup' column = archive location
+        "backup_sha256":       _sha256(backup_path),
+        "image_archive":       image_archive,
+        "image_sha256":        _sha256(image_path),
     }

@@ -35,19 +35,35 @@ _COMMON_ARGV = [
 ]
 
 
-def _patch_hw(monkeypatch, tmp_path, verify_calls=None, sheet_calls=None):
-    """Patch all hardware/build seams; return (build_calls, flash_calls) recorders."""
+def _patch_hw(monkeypatch, tmp_path, verify_calls=None, sheet_calls=None,
+              archive_calls=None):
+    """Patch all hardware/build/network seams; return (build_calls, flash_calls)."""
     build_calls = []
     flash_calls = []
 
     monkeypatch.setattr(orchestrator.identity, "from_dump", lambda p: dict(_STOCK_FALSE_IDV))
-    monkeypatch.setattr(flash_one_puck, "_backup_spi", lambda backup: None)
+    # _backup_spi must create the capture file — bookkeeping now hashes it.
+    monkeypatch.setattr(flash_one_puck, "_backup_spi",
+                        lambda backup: backup.write_bytes(b"fake-capture-bytes"))
     monkeypatch.setattr(
         flash_one_puck, "_verify_boot",
         lambda log_path: None if verify_calls is None else verify_calls.append(log_path))
     monkeypatch.setattr(
         flash_one_puck, "_sync_sheet",
         lambda inv_dir: None if sheet_calls is None else sheet_calls.append(inv_dir))
+
+    def fake_archive(local):
+        if archive_calls is not None:
+            archive_calls.append(local)
+        return f"big-storage.welland.mithis.com:/backups/machines/gwifi/{local.name}"
+
+    monkeypatch.setattr(flash_one_puck, "_archive_to_bigstorage", fake_archive)
+    monkeypatch.setattr(flash_one_puck, "_read_ec_version",
+                        lambda: "gale_v1.1.5337-0115719")
+    monkeypatch.setattr(flash_one_puck.firmware, "rw_fwid",
+                        lambda img: "Google_Gale.8281.47.0")
+    monkeypatch.setattr(flash_one_puck.firmware, "depthcharge_version",
+                        lambda: "c02e0cd (elf:0c668f128926)")
 
     def fake_build(live, out):
         # Create the output file so inventory.bookkeeping() can hash it.
@@ -165,6 +181,58 @@ def test_verify_boot_upgrades_inventory_status(tmp_path, monkeypatch):
 
     inv = json.loads((tmp_path / "inventory" / "SN-TEST-01.json").read_text())
     assert inv["flash_status"] == "flashed+boot-verified"
+
+
+# ---------------------------------------------------------------------------
+# Firmware-info + off-site backup archive (Steps 1.5 / 4.2)
+# ---------------------------------------------------------------------------
+
+def test_firmware_and_archive_fields_in_inventory(tmp_path, monkeypatch):
+    """The final inventory JSON carries the firmware ids and archive paths."""
+    import json
+    _patch_hw(monkeypatch, tmp_path, [])
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    inv = json.loads((tmp_path / "inventory" / "SN-TEST-01.json").read_text())
+    assert inv["ec_version"] == "gale_v1.1.5337-0115719"
+    assert inv["rw_fwid"] == "Google_Gale.8281.47.0"
+    assert inv["depthcharge_version"] == "c02e0cd (elf:0c668f128926)"
+    assert inv["backup_path"].startswith("big-storage.welland.mithis.com:")
+    assert inv["image_archive"].startswith("big-storage.welland.mithis.com:")
+    assert len(inv["backup_sha256"]) == 64
+    assert len(inv["image_sha256"]) == 64
+
+
+def test_both_capture_and_image_archived(tmp_path, monkeypatch):
+    """Archival runs for BOTH the pre-flash capture and the flashed image."""
+    archive_calls = []
+    _patch_hw(monkeypatch, tmp_path, [], archive_calls=archive_calls)
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    names = sorted(p.name for p in archive_calls)
+    assert names == [
+        "gale-SN-TEST-01-2026-06-30-fleet.bin",       # flashed image
+        "gale-SN-TEST-01-2026-06-30-pre-flash.bin",   # pre-flash capture
+    ]
+
+
+def test_capture_archived_before_flash(tmp_path, monkeypatch):
+    """The irreplaceable capture is archived before the (destructive) flash."""
+    order = []
+    _patch_hw(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(flash_one_puck, "_archive_to_bigstorage",
+                        lambda local: order.append(("archive", local.name))
+                        or f"big-storage:x/{local.name}")
+    monkeypatch.setattr(flash_one_puck, "_flash_image",
+                        lambda img, serial: order.append(("flash", img.name)))
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    first_archive = next(i for i, e in enumerate(order) if e[0] == "archive")
+    flash_idx = next(i for i, e in enumerate(order) if e[0] == "flash")
+    assert first_archive < flash_idx, f"capture must archive before flash: {order}"
 
 
 # ---------------------------------------------------------------------------

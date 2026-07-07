@@ -7,12 +7,16 @@
 """Single-puck flash orchestrator for Gale fleet firmware.
 
 Wires together the pipeline for one puck:
-  backup → extract → build → flash → verify-boot (EC reboot + AP capture)
-  → sheet sync ('Google WiFi Pucks')
+  backup → archive capture off-site → extract → build → flash →
+  archive image off-site → read firmware ids → verify-boot (EC reboot +
+  AP capture) → sheet sync ('Google WiFi Pucks')
 
 All hardware I/O goes through flash_puck_usb.py — the verified libusb tool
 (parked + settled sessions, double-read backups, byte-verified writes,
-fail-fast wedge canaries).
+fail-fast wedge canaries).  The pre-flash capture and the flashed image are
+both copied to big-storage (const.BIG_STORAGE_*), and the sheet records their
+sha256s plus the firmware flashed: RO/RW coreboot ids, the depthcharge payload
+id, and the live EC firmware id.
 
 Usage:
     uv run flash_one_puck.py --serial-hint <S> --date <YYYY-MM-DD>
@@ -35,7 +39,7 @@ FLEET = Path(__file__).resolve().parent   # tools/fleet/
 TOOLS = FLEET.parent                      # tools/
 sys.path.insert(0, str(FLEET))
 
-from galeflash import imagebuild, inventory, orchestrator  # noqa: E402
+from galeflash import const, firmware, imagebuild, inventory, orchestrator  # noqa: E402
 
 DEFAULT_OUT_DIR = Path("/home/tim/local/gwifi/fleet-flash")
 
@@ -101,6 +105,27 @@ def _verify_boot(log_path: Path) -> None:  # pragma: no cover
          "--boot-log", str(log_path)],
         "verify-boot",
     )
+
+
+def _read_ec_version() -> str:  # pragma: no cover
+    """Read the STM32 EC firmware id live over libusb (`ec version` -> RO line)."""
+    out = subprocess.check_output(
+        ["python3", str(TOOLS / "flash_puck_usb.py"), "ec", "version"],
+        text=True,
+    )
+    return firmware.parse_ec_version(out)
+
+
+def _archive_to_bigstorage(local: Path) -> str:  # pragma: no cover
+    """Copy a firmware file off-site to big-storage; return its archive path.
+
+    rsync to ``BIG_STORAGE_HOST:BIG_STORAGE_DIR`` (the rig trusts big-storage's
+    host key in ~/.ssh/known_hosts).  Fails loud — an un-archived capture is a
+    lost irreplaceable backup, so the run must stop, not proceed silently.
+    """
+    remote = f"{const.BIG_STORAGE_HOST}:{const.BIG_STORAGE_DIR}/"
+    _run_hw(["rsync", "-a", str(local), remote], f"archive {local.name} -> big-storage")
+    return f"{const.BIG_STORAGE_HOST}:{const.BIG_STORAGE_DIR}/{local.name}"
 
 
 def _sync_sheet(inventory_dir: Path) -> None:  # pragma: no cover
@@ -225,6 +250,10 @@ def main(argv=None) -> None:
     # Step 1: backup (hardware)
     _backup_spi(backup)  # pragma: no cover
 
+    # Step 1.5: archive the irreplaceable pre-flash capture off-site FIRST — if
+    # anything later fails, the puck's original firmware is already safe.
+    capture_archive = _archive_to_bigstorage(backup)  # pragma: no cover
+
     # Step 2: extract identity + plan (one dump read; identity rides on the plan)
     p = orchestrator.plan(backup, rekeyed_ok=args.rekeyed_ok, date=args.date)
     _write_inventory(p.identity, inventory_dir)
@@ -241,10 +270,21 @@ def main(argv=None) -> None:
     # Step 4: flash (hardware); serial-guard runs inside flash_gale_fleet.py
     _flash_image(p.image_path, p.expected_serial)  # pragma: no cover
 
+    # Step 4.2: archive the exact flashed image + read the firmware ids that go
+    # on the sheet (EC live; RW fwid from the image; depthcharge payload id).
+    image_archive = _archive_to_bigstorage(p.image_path)  # pragma: no cover
+    fw = dict(  # pragma: no cover
+        ec_version=_read_ec_version(),
+        rw_fwid=firmware.rw_fwid(p.image_path),
+        depthcharge_version=firmware.depthcharge_version(),
+        capture_archive=capture_archive,
+        image_archive=image_archive,
+    )
+
     # Step 4.5: bookkeeping — merge audit fields into inventory/<serial>.json now
     # that the flash has completed successfully.  Re-writes the file that was first
     # written in Step 2 (identity only) with identity + bookkeeping together.
-    bk = inventory.bookkeeping(p.image_path, backup, args.date, "flashed")
+    bk = inventory.bookkeeping(p.image_path, backup, args.date, "flashed", **fw)
     _write_inventory({**p.identity, **bk}, inventory_dir)
 
     # Step 5: verify — EC reboot + AP boot capture, classified automatically.
@@ -260,7 +300,7 @@ def main(argv=None) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _verify_boot(log_path)  # pragma: no cover
         bk = inventory.bookkeeping(
-            p.image_path, backup, args.date, "flashed+boot-verified")
+            p.image_path, backup, args.date, "flashed+boot-verified", **fw)
         _write_inventory({**p.identity, **bk}, inventory_dir)
 
     # Step 6: sheet — push identity + bookkeeping to 'Google WiFi Pucks'.
