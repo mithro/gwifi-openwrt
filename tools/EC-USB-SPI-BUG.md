@@ -81,6 +81,28 @@ runs suggests **corruption of shared state**, not a clean external signal.
 | AP console USART2 DMA on CH6/CH7 | gale configures interrupt-mode USART |
 | GPIOB bus-activity from a hidden master while parked | 60× GPIOB IDR watch: constant 0x9fcc, I2C idle-high, SPI idle |
 
+## 4b. Rail-bounce anchoring: CONFIRMED (round 7, 2026-07-07)
+
+A clean rc=32 session (park+ENABLE, rails end UP; `usb_spi_board_disable`
+never lowers rails) chained immediately into a `--no-park` session (never
+toggles SYS_PWR/VDD_3P3): **4000 small reads, 2.016 s, zero wedges** — through
+the exact window where 7/9 rails-bounced rc=4 sessions died at +0.363 s.
+
+**The Z event exists only after a park→ENABLE rail cycle.** One-shot per
+bounce; absorbed harmlessly by large-frame traffic or pure idle; bites the
+bus only when small frames are in flight at rails-up+~0.47 s.
+
+Operational consequence (flasher SOP): bounce the rails at most once per
+puck; keep large-frame (or zero) traffic through the first second after
+ENABLE; run everything else in no-bounce sessions. This matches gflash's
+270k-transaction clean profile.
+
+Still unexplained: the **wound (H)** — most instrumented sessions that
+experienced a Z event later show EC task starvation (mute console, live EP0),
+yet gflash ran minutes/270k txns wound-free. Discriminating variable unknown
+(candidates: continuous vs gapped bridge traffic, teardown ordering, the
+concurrent AP-console reader thread gflash runs).
+
 ## 5. Live threads
 
 1. **Frame-length dependence**: rc=32 burns have run clean through the event
