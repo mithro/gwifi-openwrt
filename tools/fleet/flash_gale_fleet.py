@@ -35,7 +35,7 @@ from pathlib import Path
 TOOLS = Path(__file__).resolve().parent.parent  # tools/fleet/../ = tools/
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # make galeflash importable
-from galeflash import serialguard  # noqa: E402
+from galeflash import const, serialguard  # noqa: E402
 
 
 def _run(cmd, label):  # pragma: no cover
@@ -77,7 +77,7 @@ def main(argv=None):
     # --- Step 3: flash all regions (RO-last) via the verified tool ---
     _run(
         [
-            "python3",
+            const.SYSTEM_PYTHON,
             str(TOOLS / "flash_puck_usb.py"),
             "flash",
             str(args.image),

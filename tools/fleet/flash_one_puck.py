@@ -73,7 +73,7 @@ def _backup_spi(backup: Path) -> None:  # pragma: no cover
     event windows, and double-reads (second pass must match byte-for-byte).
     """
     _run_hw(
-        ["python3", str(TOOLS / "flash_puck_usb.py"), "read", str(backup)],
+        [const.SYSTEM_PYTHON, str(TOOLS / "flash_puck_usb.py"), "read", str(backup)],
         "backup SPI",
     )
 
@@ -82,7 +82,7 @@ def _flash_image(image_path: Path, serial: str) -> None:  # pragma: no cover
     """Step 4: flash the built image; flash_gale_fleet.py's serial-guard runs here."""
     _run_hw(
         [
-            "python3", str(FLEET / "flash_gale_fleet.py"),
+            const.SYSTEM_PYTHON, str(FLEET / "flash_gale_fleet.py"),
             str(image_path),
             serial,
         ],
@@ -101,7 +101,7 @@ def _verify_boot(log_path: Path) -> None:  # pragma: no cover
     or UNDECIDED (exit 3) verdict.
     """
     _run_hw(
-        ["python3", str(TOOLS / "flash_puck_usb.py"), "verify-boot",
+        [const.SYSTEM_PYTHON, str(TOOLS / "flash_puck_usb.py"), "verify-boot",
          "--boot-log", str(log_path)],
         "verify-boot",
     )
@@ -110,7 +110,7 @@ def _verify_boot(log_path: Path) -> None:  # pragma: no cover
 def _read_ec_version() -> str:  # pragma: no cover
     """Read the STM32 EC firmware id live over libusb (`ec version` -> RO line)."""
     out = subprocess.check_output(
-        ["python3", str(TOOLS / "flash_puck_usb.py"), "ec", "version"],
+        [const.SYSTEM_PYTHON, str(TOOLS / "flash_puck_usb.py"), "ec", "version"],
         text=True,
     )
     return firmware.parse_ec_version(out)

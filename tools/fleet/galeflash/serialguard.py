@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from galeflash import vpd
+from galeflash import const, vpd
 from galeflash.const import FMAP
 
 # Paths to the shared hardware toolkit.  This file is tools/fleet/galeflash/
@@ -57,12 +57,11 @@ def read_live_identity() -> dict:  # pragma: no cover
         subprocess.check_call(cmd)
         print(f"  ok ({time.time() - t0:.1f}s)")
 
-    # Use system "python3" (NOT sys.executable) for the external tool: under
-    # `uv run` sys.executable is the galeflash venv (pytest-only) which lacks
-    # the pyusb that flash_puck_usb.py imports.
+    # const.SYSTEM_PYTHON (NOT "python3"/sys.executable): under `uv run` both
+    # resolve to the venv which lacks the pyusb that flash_puck_usb.py imports.
     run(
         [
-            "python3",
+            const.SYSTEM_PYTHON,
             str(TOOLS / "flash_puck_usb.py"),
             "read",
             str(out_path),

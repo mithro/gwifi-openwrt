@@ -3,6 +3,13 @@
 from pathlib import Path
 
 UMBRELLA = Path("/home/tim/local/gwifi")
+
+# The hardware tool flash_puck_usb.py imports pyusb, which lives in the SYSTEM
+# python3's dist-packages (apt python3-usb) — NOT in the uv/pytest venv.  When
+# the orchestrator runs under `uv run`, a bare "python3" subprocess resolves to
+# the venv interpreter and ImportErrors on `usb`.  Shell the hardware tools with
+# this explicit system interpreter so they work regardless of the parent env.
+SYSTEM_PYTHON = "/usr/bin/python3"
 DC       = UMBRELLA / "depthcharge-ipq4019"
 FUTILITY = DC / "vboot_reference/build/futility/futility"
 CBFSTOOL = DC / "coreboot/util/cbfstool/cbfstool"
