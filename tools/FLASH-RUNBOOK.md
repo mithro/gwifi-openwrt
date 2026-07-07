@@ -84,7 +84,8 @@ python3 tools/flash_puck_usb.py ec sysinfo gettime "gale power"
 | Symptom | Action |
 |---|---|
 | `/dev/ttyUSB0/1` gone after a libusb run | device-scoped re-probe: `echo 0 > /sys/bus/usb/devices/<dev>/authorized; sleep 2; echo 1 > …` (the tool doesn't need the ttys; this is only for other tooling) |
-| EC seems wedged / unresponsive | `python3 tools/flash_puck_usb.py verify-boot` (EC reboot recovers it) |
+| **verify-boot returns 0 bytes / UNDECIDED** | **The bench is wedged, NOT the flash.** After heavy churn (many `gale power on/off`, EC reboots, USB re-enumerations, swaps) the rig USB stack and/or the puck AP get stuck so the AP won't leave reset — verified 2026-07-07: two different pucks both gave 0 bytes, a full cold boot fixed both. **Cold-boot the whole bench** (`tools/RIG-POWER-CYCLE.md` PoE cycle — drops power to rig AND puck), then re-run verify-boot. Do NOT re-flash or blame the unit/power first. NB: `gale vbus` current reads ~3.5 A even with the AP `power - off` — it's a baseline, never proof the AP is running. |
+| EC seems wedged / unresponsive | `python3 tools/flash_puck_usb.py verify-boot` (EC reboot); if still stuck, PoE cold-boot the bench |
 | Rig itself is unreachable | PoE power-cycle — see `tools/RIG-POWER-CYCLE.md` |
 | Characterize the small-frame wedge window | `python3 tools/flash_puck_usb.py budgetprobe` (research/diagnostic) |
 
