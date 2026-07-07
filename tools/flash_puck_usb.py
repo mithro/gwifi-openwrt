@@ -78,6 +78,9 @@ EC_CMD_DEADLINE_S = 5.0
 PARK_DEADLINE_S = 3.0
 POST_PARK_QUIET_S = 2.0
 POST_PARK_MAX_S = 20.0
+SETTLE_AFTER_ENABLE_S = 5.0  # idle out the rail-bounce event windows before any
+#                              real SPI traffic: Z zeros-event @ rails-up+0.47s,
+#                              H starvation storm @ +1.9..3.3s (EC-USB-SPI-BUG.md)
 
 EC_PROMPT = b"> "
 
@@ -913,7 +916,19 @@ class Session:
                              "woke and can contend the bus; aborting: %s"
                              % (len(d), txn, hexs(d[:32])))
 
-    def bring_up(self, park=True):
+    def bring_up(self, park=True, settle_s=None):
+        """Bring the session up. settle_s=None -> SETTLE_AFTER_ENABLE_S.
+
+        The park->ENABLE rail bounce plants two one-shot events on the shared
+        flash bus (measured, tools/EC-USB-SPI-BUG.md): Z (bus dies to zeros)
+        at rails-up +0.47s if small SPI frames are in flight, and H (an EC
+        task-starvation storm) at +1.9..3.3s that kills in-flight transactions.
+        Both pass harmlessly when the bus is idle -- so after ENABLE we wait
+        out the windows before any real traffic (validated: 2x4000 + 4000 +
+        3849 consecutive clean small reads post-settle vs 7/9 wedges without).
+        """
+        if settle_s is None:
+            settle_s = SETTLE_AFTER_ENABLE_S
         log = self.log
         self.dev = open_device(log)
         self.ec = Console(self.dev, "ec", log)
@@ -962,6 +977,12 @@ class Session:
         self.bridge.abort_check = self._ap_abort_check   # single-threaded AP guard
         info("bridge enabled; RDID %s (inline AP guard every %d txns)"
              % (rdid.hex(), self.bridge.abort_every))
+        if settle_s:
+            info("post-ENABLE settle: %.1fs idle (rail-bounce event windows "
+                 "pass with the bus quiet)" % settle_s)
+            time.sleep(settle_s)
+            rdid2 = check_rdid(self.bridge)   # canary: bus must still be alive
+            info("post-settle RDID %s" % rdid2.hex())
         return self
 
     def teardown(self):
@@ -1137,7 +1158,8 @@ def cmd_budgetprobe(args, log):
     FM = 0x300000
     sess = Session(log)
     try:
-        sess.bring_up(park=not args.no_park)
+        # Experiments measure the raw phenomena: no settle (--pre-sleep covers it).
+        sess.bring_up(park=not args.no_park, settle_s=0.0)
         t_up = time.monotonic()   # bridge ENABLE + RDID just completed in bring_up
         b = sess.bridge
         if args.no_guard:
