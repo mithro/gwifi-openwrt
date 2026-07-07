@@ -33,6 +33,7 @@ from galeflash.sheetmap import (
     compute_updates,
     format_mac,
     get_extended_header,
+    grid_dimensions_needed,
 )
 
 # Inventory fields whose bare-hex VPD values must be colon-formatted for the
@@ -129,12 +130,16 @@ def _sheets_batch_update(token: str, data: list[dict]) -> dict:
         headers={"Authorization": f"Bearer {token}"},
         json={"valueInputOption": "RAW", "data": data},
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface the Sheets API's actual error message (raise_for_status hides
+        # the response body, which carries the real reason for a 400).
+        print(f"Sheets batchUpdate {resp.status_code}:\n{resp.text}", file=sys.stderr)
+        resp.raise_for_status()
     return resp.json()
 
 
-def _sheet_title(token: str) -> str:
-    """Return the display title of the target tab (gid=TARGET_GID)."""
+def _sheet_props(token: str) -> tuple[str, int, int]:
+    """Return (title, rowCount, columnCount) of the target tab (gid=TARGET_GID)."""
     resp = requests.get(
         f"{SHEETS_API}/{SPREADSHEET_ID}",
         headers={"Authorization": f"Bearer {token}"},
@@ -144,8 +149,39 @@ def _sheet_title(token: str) -> str:
     for sheet in resp.json().get("sheets", []):
         p = sheet["properties"]
         if p["sheetId"] == TARGET_GID:
-            return p["title"]
+            grid = p.get("gridProperties", {})
+            return p["title"], grid.get("rowCount", 0), grid.get("columnCount", 0)
     raise ValueError(f"No sheet with gid={TARGET_GID} in spreadsheet {SPREADSHEET_ID}")
+
+
+def _grow_grid(token: str, need_rows: int, need_cols: int,
+               have_rows: int, have_cols: int) -> None:
+    """Expand the target tab's grid so a values write of up to (need_rows,
+    need_cols) fits. The Sheets *values* API never auto-grows the grid — a
+    write past the edge 400s ('exceeds grid limits') — so grow it first via
+    the spreadsheet metadata API. No-op if the grid is already big enough."""
+    new_rows = max(have_rows, need_rows)
+    new_cols = max(have_cols, need_cols)
+    if new_rows == have_rows and new_cols == have_cols:
+        return
+    print(f"Growing grid {have_rows}x{have_cols} -> {new_rows}x{new_cols} "
+          f"to fit the new columns", flush=True)
+    resp = requests.post(
+        f"{SHEETS_API}/{SPREADSHEET_ID}:batchUpdate",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"requests": [{
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": TARGET_GID,
+                    "gridProperties": {"rowCount": new_rows, "columnCount": new_cols},
+                },
+                "fields": "gridProperties.rowCount,gridProperties.columnCount",
+            }
+        }]},
+    )
+    if not resp.ok:
+        print(f"Grid grow {resp.status_code}:\n{resp.text}", file=sys.stderr)
+        resp.raise_for_status()
 
 
 def _col_letter(col_idx: int) -> str:
@@ -238,7 +274,7 @@ def main() -> None:
 
     # --- Auth & load sheet ---------------------------------------------------
     token = sheet_auth()
-    title = _sheet_title(token)
+    title, grid_rows, grid_cols = _sheet_props(token)
     print(f"Sheet: {title!r} (gid={TARGET_GID})  mode={mode}")
 
     # Read range stops at column Z (26 cols).  We're at ~19 columns today, so
@@ -352,6 +388,12 @@ def main() -> None:
             "range":  _a1(title, u.row, u.col),
             "values": [[u.value]],
         })
+
+    # Grow the grid first if any target cell is past the current edge (new
+    # identity columns can extend beyond the sheet's existing width).
+    need_rows, need_cols = grid_dimensions_needed(
+        updates, [col_idx for col_idx, _ in new_header_cells])
+    _grow_grid(token, need_rows, need_cols, grid_rows, grid_cols)
 
     result = _sheets_batch_update(token, batch)
     total_cells = result.get("totalUpdatedCells", "?")

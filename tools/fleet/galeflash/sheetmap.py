@@ -141,6 +141,29 @@ def get_extended_header(header: list[str]) -> list[str]:
     return list(header) + new_cols
 
 
+def grid_dimensions_needed(
+    updates: list,
+    new_header_cols: list[int],
+) -> tuple[int, int]:
+    """Return the minimum (rowCount, columnCount) a values write must fit inside.
+
+    The Sheets *values* API never auto-grows the grid — a write past the sheet's
+    edge 400s ("exceeds grid limits") — so the caller must grow the grid to at
+    least these dimensions first.
+
+    ``updates`` are Update(row, col, ...) where *row* is a 0-based data-row
+    index (spreadsheet row = row + 2: one header row, 0-based) and *col* is a
+    0-based column index.  ``new_header_cols`` are 0-based column indices of
+    header cells (spreadsheet row 1).  columnCount must exceed the largest
+    0-based column index; rowCount must reach the largest spreadsheet row.
+    Returns (0, 0) when there is nothing to write.
+    """
+    cols = [u.col for u in updates] + list(new_header_cols)
+    need_cols = (max(cols) + 1) if cols else 0
+    need_rows = (max(u.row for u in updates) + 2) if updates else 0
+    return need_rows, need_cols
+
+
 def compute_updates(
     records: list[dict],
     header: list[str],

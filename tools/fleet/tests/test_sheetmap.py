@@ -9,6 +9,7 @@ from galeflash.sheetmap import (
     compute_updates,
     format_mac,
     get_extended_header,
+    grid_dimensions_needed,
     Update,
     Conflict,
 )
@@ -254,3 +255,36 @@ def test_conflict_is_unpackable():
     c = Conflict(row=2, col=5, current="old", new="new")
     row, col, current, new = c
     assert (row, col, current, new) == (2, 5, "old", "new")
+
+
+# ---------------------------------------------------------------------------
+# Test: grid_dimensions_needed — the min (rowCount, columnCount) a write needs.
+# Regression for the live-write 400 ("exceeds grid limits"): a values write
+# past the sheet's edge fails, so the grid must be grown to at least these
+# dims first.  Sheet row = data-row-index + 2 (1 header + 0-based); columnCount
+# must be > the largest 0-based column index.
+# ---------------------------------------------------------------------------
+
+def test_grid_needed_column_is_max_index_plus_one():
+    """A write to 0-based col 14 (spreadsheet column O) needs columnCount 15."""
+    updates = [Update(row=6, col=14, value="x")]   # O8
+    need_rows, need_cols = grid_dimensions_needed(updates, new_header_cols=[14])
+    assert need_cols == 15
+
+
+def test_grid_needed_row_is_data_index_plus_two():
+    """Data row index 6 lives on spreadsheet row 8 -> needs rowCount >= 8."""
+    updates = [Update(row=6, col=14, value="x")]
+    need_rows, _ = grid_dimensions_needed(updates, new_header_cols=[14])
+    assert need_rows == 8
+
+
+def test_grid_needed_counts_new_header_only_columns():
+    """A brand-new column with a header but (here) no data cell still counts."""
+    updates = [Update(row=0, col=3, value="x")]
+    _, need_cols = grid_dimensions_needed(updates, new_header_cols=[9])
+    assert need_cols == 10
+
+
+def test_grid_needed_empty_is_zero():
+    assert grid_dimensions_needed([], new_header_cols=[]) == (0, 0)
