@@ -125,6 +125,19 @@ concurrent AP-console reader thread gflash runs).
    external bus state. Wired into triage; first attempt lost to hang-mode;
    re-running.
 
+## 5b. Production validation (2026-07-07)
+
+With the SOP in `Session.bring_up` (5.0 s settle + post-settle RDID canary,
+commit fa95c3d), the full flash flow ran end-to-end on the pilot puck
+(2712HW0072Z, image `gale-2712HW0072Z-flags7.bin`):
+
+* RW_SECTION_A + RW_SECTION_B + GBB erased, programmed, **read-back verified
+  byte-for-byte** in 210 s across three park+ENABLE sessions;
+* **~365k SPI transactions, zero anomalies** (pre-SOP tooling died at ~700);
+* EC reboot → AP boot → verdict **GOOD** (`Starting depthcharge`,
+  `Sending DHCP discover`, `TFTP` — dev-signed, slot B);
+* total wall-clock **4 m 01 s** (`flash --commit --verify-boot`, exit 0).
+
 ## 6. Operational facts (for the flasher)
 
 * `gflash.py` performed 270,603 transactions wedge-free; its session shape
