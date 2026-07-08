@@ -3,3 +3,12 @@ def test_const_imports():
     assert const.FMAP["FW_MAIN_A"] == (0x402000, 0x14DF00)
     assert "RW_SECTION_A" not in const.LEAF_FMAP
     assert const.ALLOWED_CHANGED == {"GBB", "RO_FRID", "FW_MAIN_A", "VBLOCK_A", "FW_MAIN_B", "VBLOCK_B"}
+
+
+def test_subprocess_launcher_paths_resolve():
+    # These absolute launchers exist because bare "python3"/"uv" don't resolve
+    # under a parent `uv run` (the failures only show live) — guard them here.
+    import os
+    from galeflash import const
+    assert const.SYSTEM_PYTHON == "/usr/bin/python3"
+    assert os.path.basename(const.UV) == "uv" and os.path.isabs(const.UV)

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Verified constants for the gale fleet flash toolkit (see docs/gale-fleet-firmware-flash-plan.md)."""
+import os
+import shutil
 from pathlib import Path
 
 UMBRELLA = Path("/home/tim/local/gwifi")
@@ -10,6 +12,13 @@ UMBRELLA = Path("/home/tim/local/gwifi")
 # the venv interpreter and ImportErrors on `usb`.  Shell the hardware tools with
 # this explicit system interpreter so they work regardless of the parent env.
 SYSTEM_PYTHON = "/usr/bin/python3"
+
+# sync_sheet.py has its own inline `# /// script` deps (google-auth, requests),
+# so it must be launched via `uv run` — but under a parent `uv run` the `uv`
+# binary is not on the subprocess PATH (it lives in ~/.local/bin).  Resolve an
+# absolute path so the spawn works regardless of PATH.
+UV = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
+
 DC       = UMBRELLA / "depthcharge-ipq4019"
 FUTILITY = DC / "vboot_reference/build/futility/futility"
 CBFSTOOL = DC / "coreboot/util/cbfstool/cbfstool"

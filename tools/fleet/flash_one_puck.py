@@ -133,7 +133,7 @@ def _sync_sheet(inventory_dir: Path) -> None:  # pragma: no cover
     'Google WiFi Pucks' sheet.  Raises CalledProcessError on failure — the
     operator must know the sheet was NOT updated."""
     _run_hw(
-        ["uv", "run", str(FLEET / "sync_sheet.py"), "--write",
+        [const.UV, "run", str(FLEET / "sync_sheet.py"), "--write",
          "--inventory", str(inventory_dir)],
         "sync sheet",
     )
