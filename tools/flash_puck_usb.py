@@ -845,18 +845,28 @@ def verify_boot(log, timeout_s=120.0, observe_s=5.0):
         ecq.sync()
         pw = ecq.cmd("gale power")
         info("post-reboot EC 'gale power': %s" % " ".join(pw.split()))
-        if "power - on" not in pw:
-            # No PD auto-power on a USB-A SuzyQ rig -> boot the AP explicitly.
-            # The reboot leaves the EC unlocked, so the set is honored.
-            fl = parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line))
+        # ALWAYS drive a FRESH power-on so the capture window covers a fresh
+        # boot. If the EC reset left the AP powered (rails not dropped), an
+        # already-booted AP emits nothing new -> a MISLEADING 0-byte capture
+        # that reads like "no console" when the AP simply booted before we
+        # started reading. So power it off first when it's already on.
+        fl = parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line))
+        if "power - on" in pw:
+            info("EC %s; AP already powered -> forcing off+on for a fresh boot" % fl)
+            ecq.cmd("gale power off", until=has_ok_line,
+                    deadline_s=PARK_DEADLINE_S, require=False)
+            time.sleep(0.5)
+        else:
             info("EC %s; sending 'gale power on' to boot the AP" % fl)
-            r = ecq.cmd("gale power on", until=has_ok_line,
-                        deadline_s=PARK_DEADLINE_S, require=False)
-            if not has_ok_line(r):
-                info("'gale power on' NOT acknowledged (EC locked? no PD?): %r"
-                     % " ".join(r.split()))
-            else:
-                info("AP power-on acknowledged (OK)")
+        # No PD auto-power on a USB-A SuzyQ rig -> boot the AP explicitly.
+        # The reboot leaves the EC unlocked, so the set is honored.
+        r = ecq.cmd("gale power on", until=has_ok_line,
+                    deadline_s=PARK_DEADLINE_S, require=False)
+        if not has_ok_line(r):
+            info("'gale power on' NOT acknowledged (EC locked? no PD?): %r"
+                 % " ".join(r.split()))
+        else:
+            info("AP power-on acknowledged (OK)")
         ecq.release()
     except FatalError as e:
         info("post-reboot EC query/power-on failed (continuing): %s" % e)
@@ -889,6 +899,15 @@ def verify_boot(log, timeout_s=120.0, observe_s=5.0):
     info("  good       : %s" % r["good"])
     info("  bad        : %s" % r["bad"])
     info("  captured   : %d bytes" % len(buf))
+    if len(buf) == 0:
+        # Hard-won 2026-07-08: 0 bytes is NEVER "no console". A fresh gale boot
+        # ALWAYS emits ~11-12 KB of coreboot console on if1 (proven 4/4). 0 bytes
+        # means the AP never left reset -- a bench wedge (rig USB + AP stuck after
+        # heavy churn). Do NOT re-flash, blame the unit/power, or conclude the
+        # console/serial routing is unavailable.
+        info("  NOTE: 0 bytes == the AP NEVER BOOTED (bench wedge), NOT 'no")
+        info("        console'. PoE COLD-BOOT the whole bench and retry; a fresh")
+        info("        boot always emits ~11-12KB. (memory: gale-verify-boot-wedged-bench)")
     r["capture"] = text
     return r
 
