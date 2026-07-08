@@ -88,3 +88,24 @@ To watch the actual `netboot: trying TFTP… → no kernel → rebooting to retr
 netboot → [reboot]` cycle text, use a **PD-capable servo** (servo v4, or a
 Type-C CCD/SuzyQ that passes PD) instead of the USB-A SuzyQ — it provides
 autonomous power **and** the AP console + flashing at once.
+
+## How it was actually validated (2026-07-08)
+
+The plain-PD path above did **not** work on our bench: with just a USB-C PD
+adapter the gale stays **parked** (AP off, ~2 W) — un-parking needs an EC
+`sysjump RW` over CCD, which a plain adapter can't do. So validation was done
+over **CCD (SuzyQ)** instead, standing in for the AP restart that production
+PD/PMIC gives for free:
+
+```sh
+# EC in RW via sysjump; per cycle: gale power off/on (restart) + capture/count
+tools/netboot-verify/loop_demo.py 3 45
+```
+
+Result (2831): **3/3 cycles were normal RW boots** (coreboot `9ff56ab`), each
+`VbSetRecoveryRequest(0)` + cold_reboot, **0 RO-recovery boots** (`60d1b1c`),
+**0 "waiting for manual recovery"**. That confirms the fix's per-boot behaviour
+end-to-end. (On this bench `cold_reboot` resets the SoC but the EC holds the
+rails without cycling, so the loop can't self-sustain unaided — hence loop_demo
+supplies the `gale power off/on` restart. A PD-capable servo would let it run
+autonomously.)
