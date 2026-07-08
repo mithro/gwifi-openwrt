@@ -50,9 +50,31 @@ dump under `~/local/gwifi/fleet-flash/backups/`). Adjust before reuse elsewhere.
 - **`ap_console_probe.py <cmd>`** — run a shell command on the puck's AP serial
   console (`if1`, the EC's AP stream) — e.g. a running netbooted OpenWrt, which
   auto-logs-in root. Used to confirm dropbear + the WAN firewall directly.
+- **`raw_ap_capture.py [SECS]`** — raw read of the AP console (`if1`) with live
+  progress, saved to `~/gale-netboot/ap_raw.txt`. Counts real boots (verstage),
+  RW normal boots (`9ff56ab` romstage) vs RO recovery boots (`60d1b1c`), cold
+  reboots, `VbSetRecoveryRequest(...)`, and `waiting for manual recovery`. The
+  observe-side of the reboot-retry validation.
+- **`loop_demo.py [CYCLES] [SECS]`** — demonstrate the reboot-retry self-healing
+  loop over CCD: `sysjump RW` once, then per cycle `gale power off/on` (supplying
+  the AP restart this bench's `cold_reboot` can't) + `raw_ap_capture`-style count.
+  PROVEN (3/3): every boot a normal **RW** netboot retry, **0** RO recovery, **0**
+  "waiting for manual recovery".
 
 ## Hard-won gotchas (see memory: gale-verify-boot-wedged-bench)
 
-- `verify-boot` **0 bytes = the AP never booted** (bench wedge), NEVER "no
-  console". The E87 console works fine. PoE cold-boot the whole bench and retry.
+- **The un-park recipe = EC `reboot` → `sysjump RW` → `gale power off/on`.** A
+  cold-booted gale EC comes up PARKED in RO; `gale power on` from RO is
+  refused/no-op (the AP power sequencing lives in RW), so the AP silently never
+  boots. `reboot` un-parks + `sysjump RW` reaches RW; then a `gale power off/on`
+  cycle boots it. `verify_boot` now does this (the old `reboot`-only landed in RO
+  and 0-byted every time). After heavy churn the whole bench still wedges — give
+  it a real power-off/rest, not just a rig PoE cycle.
+- `verify-boot` **0 bytes = the AP never booted**, NEVER "no console" — either the
+  EC is in RO (un-park, above) or the bench is wedged (full power-off + retry).
+  The E87 console works fine.
+- **Recovery boots run the RO depthcharge** (`60d1b1c`), which the fleet never
+  flashes; normal boots run the RW depthcharge (`9ff56ab`, `FW_MAIN_A/B`). A
+  recovery-behaviour fix must live in the RW payload path (see the vboot
+  `VbTryLoadKernel` reboot-retry patch), not `VbBootRecovery`.
 - The console IS bidirectional over `if1` (interactive root shell confirmed).

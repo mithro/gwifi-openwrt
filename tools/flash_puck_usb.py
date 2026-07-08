@@ -789,87 +789,100 @@ def _wait_device(present, deadline_s, what):
 
 
 def verify_boot(log, timeout_s=120.0, observe_s=5.0):
-    """EC `reboot` (a clean MCU reset) over libusb, then capture the AP boot log
-    and classify. The reboot RE-ENUMERATES the USB device and the PD charger
-    renegotiation auto-powers the AP ~1 s later (a normal-mode cold boot). This
-    also recovers a wedged EC. Returns the boot_classify dict."""
+    """EC `reboot` + `sysjump RW` over libusb, power-cycle the AP, capture the log.
+
+    The AP power sequencing lives in the EC's RW firmware. A cold-booted EC comes
+    up PARKED in RO, where `gale power on` is refused/no-op -- a silent no-boot
+    that reads as a 0-byte "no console" capture. So un-park with `reboot`, jump to
+    RW with `sysjump RW`, re-open, then power-cycle the AP off->on explicitly (no
+    PD auto-power on a USB-A SuzyQ rig) and capture on a fresh handle. Returns
+    boot_classify."""
     dev = open_device(log)
     ec = Console(dev, "ec", log)
     ec.sync()
     try:
-        info("EC pre-reboot: %s"
+        info("EC pre-sysjump: %s"
              % parse_flags_line(ec.cmd("sysinfo", until=has_flags_line)))
     except FatalError:
-        info("EC pre-reboot: sysinfo unavailable (EC may be wedged; rebooting anyway)")
-    info("sending EC reboot (device re-enumerates; PD auto-powers the AP)...")
+        info("EC pre-sysjump: sysinfo unavailable (EC may be wedged; jumping anyway)")
+    # A cold-booted EC comes up PARKED in RO: `gale power on` is refused (no OK)
+    # and the AP power sequencing lives in RW. Un-park + reach RW in two steps:
+    # `reboot` (a clean MCU reset that un-parks and reliably drops+re-enumerates
+    # from any state -> RO), then `sysjump RW` (RO->RW). A bare `gale power on`
+    # from RO/parked is a silent no-boot -> a 0-byte "no console" capture.
+    info("sending EC reboot (un-park; device re-enumerates -> RO)...")
     try:
-        ec.drain()                             # clear the sysinfo tail -> clean prompt
+        ec.drain()
         ec.write(b"reboot\r\n")
-    except (usb.core.USBError, FatalError):
-        pass                                   # device may drop mid-write
-    # Dispose the old handle IMMEDIATELY -- do NOT read the reboot banner: a
-    # multi-second banner read would consume the ~1-2 s drop+re-enumerate window
-    # and leave us polling only after the device is already back (and a reused
-    # USB address makes "same address" ambiguous). We must be polling at T0.
-    try:
         ec.release()
         usb.util.dispose_resources(dev)
-    except Exception:                          # noqa: BLE001 - handle may be stale
+    except Exception:                          # noqa: BLE001 - device drops mid-reset
         pass
-
-    # Detect re-enumeration by disappear-then-reappear. Fast-poll from T0 so the
-    # drop window (>1 s during an MCU reset) can't slip past between polls; this
-    # is robust to the host REUSING the old USB address on re-enumeration.
-    info("waiting for EC re-enumeration (disappear-then-reappear)...")
+    info("waiting for EC re-enumeration after reboot (disappear-then-reappear)...")
     dev = None
     seen_gone = False
     end = time.monotonic() + 40
     while time.monotonic() < end:
         cand = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
         if cand is None:
-            seen_gone = True                   # the device dropped for the reset
+            seen_gone = True
         elif seen_gone:
-            dev = cand                         # back after the drop
+            dev = cand
             break
         time.sleep(0.05)
     if dev is None:
         raise FatalError("EC did not drop+re-enumerate within 40s of reboot")
-    info("re-enumerated: bus %d addr %d" % (dev.bus, dev.address))
-    # Claim if1 IMMEDIATELY (before the kernel usb-serial driver re-grabs it and
-    # buffers the early boot) so we capture the AP log from ~T0.
-    ap = Console(dev, "ap", log)
-    # Diagnostic: confirm the AP actually powered on after the reboot (0 bytes
-    # captured usually means the AP never booted, not a capture bug).
+    info("re-enumerated after reboot (RO): bus %d addr %d" % (dev.bus, dev.address))
+
+    # Now jump to RW (the AP power sequencing lives there). sysjump from RO
+    # re-enumerates; send it, settle, then re-open.
+    info("sending EC 'sysjump RW' (AP power-on only raises the rails from RW)...")
     try:
-        ecq = Console(dev, "ec", log)
-        ecq.sync()
+        ecj = Console(dev, "ec", log)
+        ecj.sync()
+        ecj.drain()
+        ecj.write(b"sysjump RW\r\n")
+        ecj.release()
+        usb.util.dispose_resources(dev)
+    except Exception:                          # noqa: BLE001 - device may drop mid-jump
+        pass
+    time.sleep(4)                              # let the sysjump + any re-enum settle
+
+    # Re-open the (possibly re-enumerated) device and confirm we're in RW.
+    dev = open_device(log)
+    ecq = Console(dev, "ec", log)
+    ecq.sync()
+    try:
+        info("EC post-sysjump: %s"
+             % parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line)))
+    except FatalError:
+        info("EC post-sysjump: sysinfo unavailable")
+
+    # Power-cycle the AP off->on for a clean, known-state boot (from RO/partial
+    # rails a bare power-on is acked but never starts the SoC -> 0-byte capture).
+    try:
         pw = ecq.cmd("gale power")
-        info("post-reboot EC 'gale power': %s" % " ".join(pw.split()))
-        # ALWAYS drive a FRESH power-on so the capture window covers a fresh
-        # boot. If the EC reset left the AP powered (rails not dropped), an
-        # already-booted AP emits nothing new -> a MISLEADING 0-byte capture
-        # that reads like "no console" when the AP simply booted before we
-        # started reading. So power it off first when it's already on.
-        fl = parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line))
-        if "power - on" in pw:
-            info("EC %s; AP already powered -> forcing off+on for a fresh boot" % fl)
-            ecq.cmd("gale power off", until=has_ok_line,
-                    deadline_s=PARK_DEADLINE_S, require=False)
-            time.sleep(0.5)
-        else:
-            info("EC %s; sending 'gale power on' to boot the AP" % fl)
-        # No PD auto-power on a USB-A SuzyQ rig -> boot the AP explicitly.
-        # The reboot leaves the EC unlocked, so the set is honored.
+        info("power-cycling the AP off->on for a fresh boot (was %s)"
+             % " ".join(pw.split()))
+        ecq.cmd("gale power off", until=has_ok_line,
+                deadline_s=PARK_DEADLINE_S, require=False)
+        time.sleep(2.0)
         r = ecq.cmd("gale power on", until=has_ok_line,
                     deadline_s=PARK_DEADLINE_S, require=False)
         if not has_ok_line(r):
-            info("'gale power on' NOT acknowledged (EC locked? no PD?): %r"
+            info("'gale power on' NOT acknowledged (EC locked?): %r"
                  % " ".join(r.split()))
         else:
             info("AP power-on acknowledged (OK)")
         ecq.release()
+        usb.util.dispose_resources(dev)
     except FatalError as e:
-        info("post-reboot EC query/power-on failed (continuing): %s" % e)
+        info("EC power-cycle failed (continuing): %s" % e)
+
+    # Open a FRESH handle AFTER power-on (matches the proven capture path) and
+    # claim if1 (the AP console) to read the boot log from the start of the boot.
+    dev = open_device(log)
+    ap = Console(dev, "ap", log)
     info("capturing AP boot log (up to %.0fs)..." % timeout_s)
 
     buf = bytearray()
