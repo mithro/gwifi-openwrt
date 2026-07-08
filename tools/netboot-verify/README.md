@@ -20,11 +20,17 @@ dump under `~/local/gwifi/fleet-flash/backups/`). Adjust before reuse elsewhere.
   `udhcpc` lease (hostname `OpenWrt`) and SSHs in. PROVEN: DHCP → `sent
   netboot.itb` → `DHCPACK ... OpenWrt` → live shell. Note SSH to the puck's WAN
   is REJECTed by OpenWrt's firewall; reach dropbear on the LAN (`192.168.1.1`).
-- **`reboot_retry_verify.sh`** — boots with NO server (blank eMMC) and watches
-  the WAN for PERIODIC DHCP bursts = the netboot→eMMC→reboot self-healing loop
-  (vs one burst then stuck). NOTE: the SuzyQ/EC rig can't demonstrate the loop —
-  `cold_reboot()` (SoC self-reset) doesn't re-trigger the EC's external power-on,
-  so the AP wedges after one cycle. Needs production-power hardware.
+- **`reboot_retry_verify.sh`** — EC-driven: boots the AP via `verify-boot` with
+  NO server (blank eMMC) and watches the WAN for periodic DHCP bursts. NOTE: the
+  SuzyQ/EC rig can't demonstrate the loop — `cold_reboot()` (SoC self-reset)
+  doesn't re-trigger the EC's external power-on, so the AP wedges after one cycle.
+  Kept for diagnostics; for the real validation use `reboot_loop_validate.sh`.
+- **`reboot_loop_validate.sh`** — the actual reboot-retry **validator**. Fully
+  passive: touches NO EC/power, just sniffs the WAN and counts DHCP-discover
+  bursts, with a PASS/FAIL verdict (≥3 evenly-spaced bursts = self-healing loop).
+  Run it with the gale on **normal USB-C PD power** (not the SuzyQ), eMMC blank,
+  no netboot server. Full procedure:
+  [`docs/reboot-retry-validation.md`](../../docs/reboot-retry-validation.md).
 - **`restore_rw_nvram.py`** — restore RW_NVRAM (`0x6f0000`, in the RW area) from
   the clean pre-flash dump to clear a persistent `RW_NO_KERNEL (0x5b)` vboot
   recovery loop (self-inflicted by repeated no-server verify-boots on stock
