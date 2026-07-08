@@ -25,12 +25,22 @@ dump under `~/local/gwifi/fleet-flash/backups/`). Adjust before reuse elsewhere.
   SuzyQ/EC rig can't demonstrate the loop — `cold_reboot()` (SoC self-reset)
   doesn't re-trigger the EC's external power-on, so the AP wedges after one cycle.
   Kept for diagnostics; for the real validation use `reboot_loop_validate.sh`.
-- **`reboot_loop_validate.sh`** — the actual reboot-retry **validator**. Fully
-  passive: touches NO EC/power, just sniffs the WAN and counts DHCP-discover
-  bursts, with a PASS/FAIL verdict (≥3 evenly-spaced bursts = self-healing loop).
-  Run it with the gale on **normal USB-C PD power** (not the SuzyQ), eMMC blank,
-  no netboot server. Full procedure:
+- **`reboot_loop_validate.sh`** — the actual reboot-retry **validator**. Sniffs
+  the WAN, counts DHCP-discover bursts, prints a live status line every 30s, and
+  gives a PASS/FAIL verdict (≥3 evenly-spaced bursts = self-healing loop). Run it
+  with the gale on **normal USB-C PD power** (not the SuzyQ), eMMC blank, no
+  netboot server. Optional 4th arg = a Tasmota plug host/IP: if given it
+  power-cycles the gale (off 5s, on) for a clean fresh boot before sniffing
+  (`... eth-gwan 240 44:07:0b 10.1.91.18`). Full procedure:
   [`docs/reboot-retry-validation.md`](../../docs/reboot-retry-validation.md).
+- **`plug_power_probe.py`** — pre-flight for the above. Power-cycles the gale via
+  its Tasmota plug and watches **real-power draw** as an AP-boot signal (no
+  EC/console needed): ~2W = EC+PHY only (**AP OFF/parked**); ≥4W = AP booting.
+  Use it to confirm the AP actually boots on PD before spending a full validator
+  window. NOTE (2026-07-08): a PD-only gale left parked by prior CCD/SuzyQ work
+  stays at ~2W even after a 60s AC drain — un-parking needs an EC reboot over
+  CCD, which the single USB-C port can't do while a plain PD adapter is attached.
+  A PD-capable servo (CCD+PD together) is the way to validate the loop.
 - **`restore_rw_nvram.py`** — restore RW_NVRAM (`0x6f0000`, in the RW area) from
   the clean pre-flash dump to clear a persistent `RW_NO_KERNEL (0x5b)` vboot
   recovery loop (self-inflicted by repeated no-server verify-boots on stock

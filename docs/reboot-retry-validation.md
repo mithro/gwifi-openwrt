@@ -33,16 +33,36 @@ whole blocker is autonomous power — give the gale that and it works.
 4. Ensure there is **no netboot/DHCP server** on that WAN segment (stop dnsmasq;
    remove the `192.168.50.1` provisioning IP) — netboot must fail every cycle.
 
+## Prerequisite: confirm the AP actually boots on PD
+
+A gale that was last driven over CCD (SuzyQ) can be left **parked** — the EC runs
+but the AP is held off, and a plain AC power-cycle does **not** un-park it (an EC
+reboot over CCD does). A parked, PD-only gale draws only ~2 W (EC + WAN PHY) and
+never netboots. Before a validator run, confirm the AP powers up:
+
+```sh
+tools/netboot-verify/plug_power_probe.py 10.1.91.18 60 150
+```
+
+- **≥4 W peak** → AP booting → proceed.
+- **~2 W peak** → AP OFF/parked. A plain PD adapter can't clear this (single
+  USB-C port can't do CCD + PD at once). Use a **PD-capable servo** (CCD to issue
+  the EC un-park, PD to keep it powered) — see the console section below.
+
 ## Run
 
 On the rig (or any host with the gale's WAN cabled):
 
 ```sh
-sudo tools/netboot-verify/reboot_loop_validate.sh eth-gwan 300
+# passive (gale already booting on PD):
+tools/netboot-verify/reboot_loop_validate.sh eth-gwan 300
+# or auto power-cycle first, via the Tasmota plug host (4th arg):
+tools/netboot-verify/reboot_loop_validate.sh eth-gwan 240 44:07:0b 10.1.91.18
 ```
 
-It passively sniffs the WAN for 300 s and counts the puck's DHCP-discover
-**bursts**. It never touches the EC or power.
+It sniffs the WAN, prints a live status line every 30 s, and counts the puck's
+DHCP-discover **bursts**. With no plug arg it never touches power; with one it
+power-cycles the gale (off 5 s, on) for a clean fresh boot first.
 
 ## Pass / fail
 
