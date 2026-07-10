@@ -21,7 +21,9 @@ What the old pd_netboot_test.py got wrong (and this fixes):
     dongles, so a swapped-interface bug is caught, not silently fatal.
 
 Run ON THE RIG with /usr/bin/python3 (needs the pyusb tool + sudo).
-Usage: autonomous_boot_test.py [WATCH_S]
+Usage: autonomous_boot_test.py [WATCH_S] [WAN_IF]
+  WAN_IF: which dongle the netboot server binds (default eth-gwan; run 1 on
+  rpi4-gwifi proved that bench has the puck's netboot port on eth-glan).
 """
 import os
 import re
@@ -33,7 +35,8 @@ sys.path.insert(0, "/home/tim/local/gwifi/gwifi-openwrt/tools")
 import flash_puck_usb as F  # noqa: E402
 
 ND = "/home/tim/gale-netboot"
-CONF = ND + "/dnsmasq-gale.conf"
+BASE_CONF = ND + "/dnsmasq-gale.conf"
+CONF = ND + "/dnsmasq-auto.conf"
 FIT = ND + "/tftp/netboot.itb"
 LEASES = ND + "/leases"
 DM = ND + "/dnsmasq_auto.log"
@@ -41,6 +44,7 @@ AP_OUT = ND + "/ap_auto.txt"
 TD = {"eth-gwan": ND + "/tcpdump_auto_gwan.log",
       "eth-glan": ND + "/tcpdump_auto_glan.log"}
 WATCH_S = int(sys.argv[1]) if len(sys.argv) > 1 else 240
+WAN_IF = sys.argv[2] if len(sys.argv) > 2 else "eth-gwan"
 RAILS = ("VDD_3P3_EN", "VDD_3P3_2G_EN", "VDD_1P8_EN", "VDD_1P35_EN",
          "VDD_1P1_CPU_EN")
 
@@ -86,11 +90,15 @@ def rails_state(gpioget_text):
 
 
 # ---- [0] preflight: netboot server on eth-gwan, sniffers on BOTH dongles ---
-say("=== [0] preflight: server assets + interfaces ===")
-for path in (CONF, FIT):
+say("=== [0] preflight: server assets + interfaces (serving on %s) ===" % WAN_IF)
+for path in (BASE_CONF, FIT):
     if not os.path.exists(path):
         say("FATAL: missing %s" % path)
         sys.exit(2)
+# bench-local conf: same as the base conf but bound to WAN_IF
+base = open(BASE_CONF).read()
+with open(CONF, "w") as f:
+    f.write(re.sub(r"(?m)^interface=.*$", "interface=%s" % WAN_IF, base))
 say("  netboot FIT: %s (%d bytes)" % (FIT, os.path.getsize(FIT)))
 for f in (DM,) + tuple(TD.values()):
     open(f, "w").close()
@@ -99,10 +107,11 @@ try:
 except FileNotFoundError:
     pass
 sh(["sudo", "pkill", "-f", "dnsmasq-gale.conf"])
+sh(["sudo", "pkill", "-f", "dnsmasq-auto.conf"])
 for ifc in TD:
     sh(["sudo", "ip", "link", "set", ifc, "up"])
-sh(["sudo", "ip", "addr", "del", "192.168.50.1/24", "dev", "eth-gwan"])
-sh(["sudo", "ip", "addr", "add", "192.168.50.1/24", "dev", "eth-gwan"], check=True)
+    sh(["sudo", "ip", "addr", "del", "192.168.50.1/24", "dev", ifc])
+sh(["sudo", "ip", "addr", "add", "192.168.50.1/24", "dev", WAN_IF], check=True)
 sniffers = [subprocess.Popen(
     ["sudo", "timeout", str(WATCH_S + 120), "tcpdump", "-i", ifc, "-n", "-l",
      "udp port 67 or udp port 68 or udp port 69"],
@@ -212,7 +221,9 @@ say("  depthcharge start: %d" % txt.count("Starting depthcharge"))
 say("  DHCPDISCOVER     : %d   DHCPACK: %d" % (disc, count(DM, "DHCPACK")))
 say("  TFTP netboot.itb : %d" % tftp)
 say("  OpenWrt lease    : %s" % (openwrt_lease() or "(none)"))
-if glan_dhcp:
+other_if = next((i for i in TD if i != WAN_IF), None)
+other_dhcp = count(TD[other_if], "BOOTP/DHCP") if other_if else 0
+if glan_dhcp and WAN_IF != "eth-glan":
     say("  !! DHCP seen on eth-glan -- interface identity bug in earlier tests")
 if openwrt_lease():
     say("  => PASS: parked RO EC + set_ap_power(1) -> netboot -> OpenWrt, "
@@ -221,8 +232,12 @@ elif tftp:
     say("  => PARTIAL: TFTP served but OpenWrt lease not seen -- read %s" % AP_OUT)
 elif disc:
     say("  => PARTIAL: DHCP ran but no TFTP -- check dnsmasq log %s" % DM)
+elif other_dhcp:
+    say("  => WRONG-IF: AP booted and is DHCPing on %s, but the server is on "
+        "%s -- rerun with WAN_IF=%s" % (other_if, WAN_IF, other_if))
 elif len(raw) == 0:
-    say("  => FAIL: rails up but AP console silent -- AP did not boot")
+    say("  => FAIL: rails up but AP console silent and no DHCP anywhere -- "
+        "AP did not reach netboot")
 else:
     say("  => FAIL: AP booted but never reached DHCP -- read %s" % AP_OUT)
 say("  ---- last 800 chars of AP console ----")
