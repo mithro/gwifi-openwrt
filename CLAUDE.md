@@ -58,7 +58,13 @@ autonomous test watches both dongles and says which one the puck is on.
 - SYS_PWR_EN also powers the ethernet PHYs: **carrier proves nothing** about
   the AP being alive on a parked puck.
 - Autonomous-boot verification: `tools/netboot-verify/autonomous_boot_test.py
-  [WATCH_S] [WAN_IF]` (run on the bench with /usr/bin/python3).
+  [WATCH_S] [WAN_IF] [DOWN_IF]` (run on the bench with /usr/bin/python3;
+  `WAN_IF=none` proves the no-server eMMC-fallback path).
+- **Dual-port netboot TX wedge:** if BOTH puck ethernet ports have link,
+  depthcharge's netboot sits RX-only forever (the `dhcp_send_packet` hang
+  noted in netboot.c) — no DHCP TX, no fallback, no reboot. Keep the netboot
+  port the ONLY linked port (e.g. `ip link set eth-gwan down` on the bench)
+  until the payload bounds dhcp_send_packet. Proven runs 4 vs 5, 2026-07-10.
 
 ## Key hardware tools (all on `tools/`)
 
