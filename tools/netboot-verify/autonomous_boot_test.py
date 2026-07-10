@@ -255,12 +255,17 @@ if NO_SERVER:
     say("  netboot->vboot fallthru: %d" % fallthru)
     say("  manual-recovery stalls : %d (want 0)" % stuck_rec)
     say("  unanswered DHCP on wire: %d" % wire)
+    emmc_os = ("Linux version" in txt or "br-lan" in txt
+               or "UBI: attached" in txt)
     if stuck_rec:
         say("  => FAIL-FALLBACK: latched into manual recovery (RW_NVRAM?)")
+    elif fallthru and emmc_os:
+        say("  => PASS-FALLBACK-EMMC: netboot went unanswered (%d wire "
+            "DHCPs), fell through, and the eMMC OS booted" % wire)
     elif cycles >= 2 and reboots >= 1:
-        say("  => PASS-FALLBACK: netboot times out, falls through, and the "
-            "puck reboot-retries autonomously (%d cycles in %ds)"
-            % (cycles, WATCH_S))
+        say("  => PASS-FALLBACK-RETRY: netboot times out, falls through, "
+            "eMMC has no kernel, and the puck reboot-retries autonomously "
+            "(%d cycles in %ds)" % (cycles, WATCH_S))
     else:
         say("  => UNDECIDED-FALLBACK: cycles=%d reboots=%d fallthru=%d -- "
             "read %s" % (cycles, reboots, fallthru, AP_OUT))
