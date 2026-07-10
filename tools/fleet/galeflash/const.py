@@ -45,7 +45,7 @@ GBB_ROFRID_SPAN = (0x301000, 0x0DF000)   # GBB + RO_FRID, stops exactly at RO_VP
 # (git describe of depthcharge-ipq4019/depthcharge).  Update this when the
 # payload is rebuilt — firmware.depthcharge_version() pairs it with the ELF's
 # sha256 so the sheet value is both human-readable and verifiable.
-DEPTHCHARGE_GIT = "c02e0cd"
+DEPTHCHARGE_GIT = "081853e"
 
 # Off-site firmware backup archive (per-puck captures + flashed images).
 BIG_STORAGE_HOST = "big-storage.welland.mithis.com"
