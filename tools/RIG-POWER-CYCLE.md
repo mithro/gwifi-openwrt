@@ -6,9 +6,9 @@ wedged/offline (e.g. its USB NICs died — everything on an rpi3b hangs off one
 USB controller), cut and restore its PoE port to cold-boot it.
 
 **Control and probing is done over SNMP** (not the switch's legacy-crypto SSH
-CLI). **No credentials in this file**: reads work with the standard read
-community; the **write community** (needed for the actual power cycle) comes
-from the usual secrets store / Tim — never write it into files.
+CLI). The switch uses the **standard SNMP community defaults** — read `public`,
+write `private` — which are not real secrets, so the script bakes them in as
+defaults (override with `RIG_SNMP_{READ,WRITE}_COMMUNITY` if they ever change).
 
 ## The script (use this)
 
@@ -18,15 +18,15 @@ the manual SNMP steps below** (those remain as reference / for debugging). It is
 a `uv` (PEP-723) script; run it directly (it's executable) or via `uv run`.
 
 ```sh
-export RIG_SNMP_WRITE_COMMUNITY=...        # from the secrets store / Tim; never a file
 tools/rig_power_cycle.py --dry-run         # validate switch + port only, change nothing
 tools/rig_power_cycle.py                   # clean shutdown -> PoE off/on -> wait for ssh
 tools/rig_power_cycle.py --force           # hard-cycle even if the rig can't be shut down
 ```
 
-- Reads use `RIG_SNMP_READ_COMMUNITY` (default `public`); the actual cycle needs
-  `RIG_SNMP_WRITE_COMMUNITY` in the environment (checked with a harmless no-op
-  set **before** the rig is halted, so a wrong community never strands it off).
+- Communities default to the switch's standard values — read `public`, write
+  `private` — so no env is needed; override with `RIG_SNMP_{READ,WRITE}_COMMUNITY`
+  if they change. The write community is confirmed with a harmless no-op set
+  **before** the rig is halted, so a wrong one never strands it powered-off.
 - **`--force`** is required *only* when the rig can't be reached to run
   `shutdown`; without it the script aborts rather than hard-cutting a live Pi.
 - It **polls** (never blind-sleeps), prints progress at least every ~30 s

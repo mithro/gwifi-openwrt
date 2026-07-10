@@ -20,9 +20,10 @@ Order of operations:
 
 Deliberately does NOT touch USB / the gale EC -- verifying that is a separate job.
 
-Communities come from the environment, NEVER a file:
+Communities default to the switch's standard values and can be overridden via
+the environment (these are the well-known SNMP defaults, not real secrets):
   RIG_SNMP_READ_COMMUNITY   (default 'public')
-  RIG_SNMP_WRITE_COMMUNITY  (required to cycle power; not needed for --dry-run)
+  RIG_SNMP_WRITE_COMMUNITY  (default 'private')
 
 The switch and the rig are reliable: if a cycle misbehaves, the bug is in THIS
 script (a too-short timeout, a missed poll, a mis-parsed response) -- fix it here.
@@ -55,7 +56,7 @@ OID_POE_DETECT = "1.3.6.1.2.1.105.1.1.1.6.1"   # pethPsePortDetectionStatus.1.<p
 OID_SYSUP = "1.3.6.1.2.1.1.3.0"                # sysUpTime.0 (reachability probe)
 
 READ = os.environ.get("RIG_SNMP_READ_COMMUNITY", "public")
-WRITE = os.environ.get("RIG_SNMP_WRITE_COMMUNITY")
+WRITE = os.environ.get("RIG_SNMP_WRITE_COMMUNITY", "private")
 
 
 def log(msg):
