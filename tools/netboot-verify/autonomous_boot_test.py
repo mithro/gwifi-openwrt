@@ -55,6 +55,12 @@ TD = {"eth-gwan": ND + "/tcpdump_auto_gwan.log",
 WATCH_S = int(sys.argv[1]) if len(sys.argv) > 1 else 240
 WAN_IF = sys.argv[2] if len(sys.argv) > 2 else "eth-gwan"
 NO_SERVER = WAN_IF == "none"
+# Optional: force this dongle admin-DOWN for the whole run (kills link on the
+# puck port it is cabled to). Lets us reproduce a single-port-cabled bench:
+# run 4 suggested depthcharge's ipq40xx TX path wedges when BOTH puck ports
+# have link (rpi3b, single-cabled, netboots fine; rpi4, dual-cabled, hangs
+# RX-only in dhcp_send_packet -- the known hang in netboot.c).
+DOWN_IF = sys.argv[3] if len(sys.argv) > 3 else None
 RAILS = ("VDD_3P3_EN", "VDD_3P3_2G_EN", "VDD_1P8_EN", "VDD_1P35_EN",
          "VDD_1P1_CPU_EN")
 
@@ -119,9 +125,14 @@ except FileNotFoundError:
     pass
 sh(["sudo", "pkill", "-f", "dnsmasq-gale.conf"])
 sh(["sudo", "pkill", "-f", "dnsmasq-auto.conf"])
+if DOWN_IF is not None and DOWN_IF in TD:
+    del TD[DOWN_IF]
 for ifc in TD:
     sh(["sudo", "ip", "link", "set", ifc, "up"])
     sh(["sudo", "ip", "addr", "del", "192.168.50.1/24", "dev", ifc])
+if DOWN_IF:
+    say("  forcing %s DOWN (single-port-cabled experiment)" % DOWN_IF)
+    sh(["sudo", "ip", "link", "set", DOWN_IF, "down"], check=True)
 sniffers = [subprocess.Popen(
     ["sudo", "timeout", str(WATCH_S + 120), "tcpdump", "-i", ifc, "-n", "-l",
      "udp port 67 or udp port 68 or udp port 69"],
@@ -205,8 +216,8 @@ while time.monotonic() - t0 < WATCH_S:
         disc = count(DM, "DHCPDISCOVER")
         ack = count(DM, "DHCPACK")
         tftp = count(DM, "netboot.itb")
-        gwan = count(TD["eth-gwan"], "BOOTP/DHCP")
-        glan = count(TD["eth-glan"], "BOOTP/DHCP")
+        gwan = count(TD.get("eth-gwan", ""), "BOOTP/DHCP")
+        glan = count(TD.get("eth-glan", ""), "BOOTP/DHCP")
         verdict_ow = openwrt_lease()
         say("  [+%3ds] ap=%6dB boots=%d | dhcp disc=%d ack=%d tftp=%d | "
             "wire gwan=%d glan=%d %s"
@@ -225,7 +236,7 @@ with open(AP_OUT, "w") as f:
 say("=== [4] verdict ===")
 disc = count(DM, "DHCPDISCOVER")
 tftp = count(DM, "netboot.itb")
-glan_dhcp = count(TD["eth-glan"], "BOOTP/DHCP")
+glan_dhcp = count(TD.get("eth-glan", ""), "BOOTP/DHCP")
 say("  AP console bytes : %d (saved to %s)" % (len(raw), AP_OUT))
 say("  verstage starts  : %d" % txt.count("verstage starting"))
 say("  depthcharge start: %d" % txt.count("Starting depthcharge"))
