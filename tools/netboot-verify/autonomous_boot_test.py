@@ -30,6 +30,9 @@ Run ON THE RIG with /usr/bin/python3 (needs the pyusb tool + sudo).
 Usage: autonomous_boot_test.py [WATCH_S] [WAN_IF]
   WAN_IF: which dongle the netboot server binds (default eth-gwan; run 1 on
   rpi4-gwifi proved that bench has the puck's netboot port on eth-glan).
+  WAN_IF=none: NO netboot server -- proves the fallback path instead: netboot
+  must time out, try eMMC, and (if eMMC has no bootable kernel) reboot-retry
+  forever. Verdict counts boot cycles + fall-through markers on the console.
 """
 import os
 import re
@@ -51,6 +54,7 @@ TD = {"eth-gwan": ND + "/tcpdump_auto_gwan.log",
       "eth-glan": ND + "/tcpdump_auto_glan.log"}
 WATCH_S = int(sys.argv[1]) if len(sys.argv) > 1 else 240
 WAN_IF = sys.argv[2] if len(sys.argv) > 2 else "eth-gwan"
+NO_SERVER = WAN_IF == "none"
 RAILS = ("VDD_3P3_EN", "VDD_3P3_2G_EN", "VDD_1P8_EN", "VDD_1P35_EN",
          "VDD_1P1_CPU_EN")
 
@@ -97,14 +101,15 @@ def rails_state(gpioget_text):
 
 # ---- [0] preflight: netboot server on eth-gwan, sniffers on BOTH dongles ---
 say("=== [0] preflight: server assets + interfaces (serving on %s) ===" % WAN_IF)
-for path in (BASE_CONF, FIT):
-    if not os.path.exists(path):
-        say("FATAL: missing %s" % path)
-        sys.exit(2)
-# bench-local conf: same as the base conf but bound to WAN_IF
-base = open(BASE_CONF).read()
-with open(CONF, "w") as f:
-    f.write(re.sub(r"(?m)^interface=.*$", "interface=%s" % WAN_IF, base))
+if not NO_SERVER:
+    for path in (BASE_CONF, FIT):
+        if not os.path.exists(path):
+            say("FATAL: missing %s" % path)
+            sys.exit(2)
+    # bench-local conf: same as the base conf but bound to WAN_IF
+    base = open(BASE_CONF).read()
+    with open(CONF, "w") as f:
+        f.write(re.sub(r"(?m)^interface=.*$", "interface=%s" % WAN_IF, base))
 say("  netboot FIT: %s (%d bytes)" % (FIT, os.path.getsize(FIT)))
 for f in (DM,) + tuple(TD.values()):
     open(f, "w").close()
@@ -117,26 +122,29 @@ sh(["sudo", "pkill", "-f", "dnsmasq-auto.conf"])
 for ifc in TD:
     sh(["sudo", "ip", "link", "set", ifc, "up"])
     sh(["sudo", "ip", "addr", "del", "192.168.50.1/24", "dev", ifc])
-sh(["sudo", "ip", "addr", "add", "192.168.50.1/24", "dev", WAN_IF], check=True)
 sniffers = [subprocess.Popen(
     ["sudo", "timeout", str(WATCH_S + 120), "tcpdump", "-i", ifc, "-n", "-l",
      "udp port 67 or udp port 68 or udp port 69"],
     stdout=open(TD[ifc], "w"), stderr=subprocess.STDOUT) for ifc in TD]
-dns = subprocess.Popen(["sudo", "/usr/sbin/dnsmasq", "-d", "-C", CONF],
-                       stdout=open(DM, "w"), stderr=subprocess.STDOUT)
-deadline = time.monotonic() + 8
-while time.monotonic() < deadline:
-    if count(DM, "TFTP root is") or count(DM, "DHCP, IP range"):
-        break
-    if dns.poll() is not None:
-        say("FATAL: dnsmasq exited: %s" % open(DM, errors="replace").read()[:400])
-        sys.exit(2)
-    time.sleep(0.5)
+if NO_SERVER:
+    say("  NO netboot server (fallback-proof mode): DHCP must go unanswered")
 else:
-    say("FATAL: dnsmasq did not report startup in 8s: %s"
-        % open(DM, errors="replace").read()[:400])
-    sys.exit(2)
-say("  dnsmasq up (DHCP range + TFTP root confirmed in log)")
+    sh(["sudo", "ip", "addr", "add", "192.168.50.1/24", "dev", WAN_IF], check=True)
+    dns = subprocess.Popen(["sudo", "/usr/sbin/dnsmasq", "-d", "-C", CONF],
+                           stdout=open(DM, "w"), stderr=subprocess.STDOUT)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if count(DM, "TFTP root is") or count(DM, "DHCP, IP range"):
+            break
+        if dns.poll() is not None:
+            say("FATAL: dnsmasq exited: %s" % open(DM, errors="replace").read()[:400])
+            sys.exit(2)
+        time.sleep(0.5)
+    else:
+        say("FATAL: dnsmasq did not report startup in 8s: %s"
+            % open(DM, errors="replace").read()[:400])
+        sys.exit(2)
+    say("  dnsmasq up (DHCP range + TFTP root confirmed in log)")
 
 # ---- [1] EC pre-state: must be the autonomous cold-boot parked state -------
 say("=== [1] EC pre-state (want: RO, unlocked, rails DOWN) ===")
@@ -224,6 +232,32 @@ say("  depthcharge start: %d" % txt.count("Starting depthcharge"))
 say("  DHCPDISCOVER     : %d   DHCPACK: %d" % (disc, count(DM, "DHCPACK")))
 say("  TFTP netboot.itb : %d" % tftp)
 say("  OpenWrt lease    : %s" % (openwrt_lease() or "(none)"))
+if NO_SERVER:
+    cycles = txt.count("verstage starting")
+    reboots = txt.lower().count("doing a cold reboot")
+    fallthru = (txt.count("falling through to vboot")
+                + txt.count("no link; letting caller fall through"))
+    stuck_rec = txt.count("waiting for manual recovery")
+    wire = sum(count(TD[i], "BOOTP/DHCP") for i in TD)
+    say("  boot cycles (verstage) : %d" % cycles)
+    say("  cold reboots           : %d" % reboots)
+    say("  netboot->vboot fallthru: %d" % fallthru)
+    say("  manual-recovery stalls : %d (want 0)" % stuck_rec)
+    say("  unanswered DHCP on wire: %d" % wire)
+    if stuck_rec:
+        say("  => FAIL-FALLBACK: latched into manual recovery (RW_NVRAM?)")
+    elif cycles >= 2 and reboots >= 1:
+        say("  => PASS-FALLBACK: netboot times out, falls through, and the "
+            "puck reboot-retries autonomously (%d cycles in %ds)"
+            % (cycles, WATCH_S))
+    else:
+        say("  => UNDECIDED-FALLBACK: cycles=%d reboots=%d fallthru=%d -- "
+            "read %s" % (cycles, reboots, fallthru, AP_OUT))
+    say("  ---- last 800 chars of AP console ----")
+    say(txt[-800:])
+    say("AUTONOMOUS_BOOT_TEST_DONE")
+    sys.exit(0)
+
 other_if = next((i for i in TD if i != WAN_IF), None)
 other_dhcp = count(TD[other_if], "BOOTP/DHCP") if other_if else 0
 if glan_dhcp and WAN_IF != "eth-glan":
