@@ -10,6 +10,41 @@ CLI). **No credentials in this file**: reads work with the standard read
 community; the **write community** (needed for the actual power cycle) comes
 from the usual secrets store / Tim — never write it into files.
 
+## The script (use this)
+
+`tools/rig_power_cycle.py` does the whole thing safely — pre-flight, port
+validation, clean shutdown, PoE cycle, and **polled** recovery. **Prefer it over
+the manual SNMP steps below** (those remain as reference / for debugging). It is
+a `uv` (PEP-723) script; run it directly (it's executable) or via `uv run`.
+
+```sh
+export RIG_SNMP_WRITE_COMMUNITY=...        # from the secrets store / Tim; never a file
+tools/rig_power_cycle.py --dry-run         # validate switch + port only, change nothing
+tools/rig_power_cycle.py                   # clean shutdown -> PoE off/on -> wait for ssh
+tools/rig_power_cycle.py --force           # hard-cycle even if the rig can't be shut down
+```
+
+- Reads use `RIG_SNMP_READ_COMMUNITY` (default `public`); the actual cycle needs
+  `RIG_SNMP_WRITE_COMMUNITY` in the environment (checked with a harmless no-op
+  set **before** the rig is halted, so a wrong community never strands it off).
+- **`--force`** is required *only* when the rig can't be reached to run
+  `shutdown`; without it the script aborts rather than hard-cutting a live Pi.
+- It **polls** (never blind-sleeps), prints progress at least every ~30 s
+  (every line flushed), and tolerates the boot window where ssh is refused /
+  timing out.
+- It fails cleanly and says why for: welland VPN down / switch unreachable,
+  missing or rejected ssh key (`authfail`), wrong read/write community, or a
+  port that no longer validates (moved / mis-cabled).
+- It deliberately **does not** check USB / the gale EC — that's a separate step
+  (`flash_puck_usb.py ec sysinfo`; see the flash runbook).
+- Flags: `--ifindex N` (override, still validated), `--off-seconds S` (default 8),
+  `--recovery-timeout S` (default 240). Exit codes: `0` ok / `2`
+  validation-or-reachability / `3` back-but-no-ssh / `4` needs-`--force` /
+  `5` write-community-missing-or-rejected.
+
+The sections below document the underlying SNMP so the script can be maintained
+(and for hand-driving when debugging the switch itself).
+
 ## The switch
 
 | what | value |
