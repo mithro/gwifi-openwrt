@@ -183,6 +183,10 @@ if any(pre[r] for r in RAILS):
     sys.exit(2)
 
 # ---- [2] the charger-equivalent trigger ------------------------------------
+# Attach the AP console BEFORE the trigger so the EARLIEST boot output lands
+# in the EC's uart->usb queue for us instead of being drained at attach
+# (attach-after-trigger cost runs 3/4 their first ~seconds of console).
+ap = F.Console(dev, "ap", log)
 say("=== [2] trigger: `gale power on` (== pd charger path set_ap_power(1)) ===")
 resp = ec.cmd("gale power on", until=lambda t: "OK" in t)
 say("  EC ack: %r" % resp.strip().replace("\r", ""))
@@ -202,7 +206,6 @@ ec.release()
 
 # ---- [3] watch: AP console + DHCP/TFTP on both dongles ---------------------
 say("=== [3] watch %ds: AP console + dnsmasq + per-dongle DHCP ===" % WATCH_S)
-ap = F.Console(dev, "ap", log)
 raw = b""
 verdict_ow = ""
 next_prog = 10
