@@ -60,11 +60,15 @@ autonomous test watches both dongles and says which one the puck is on.
 - Autonomous-boot verification: `tools/netboot-verify/autonomous_boot_test.py
   [WATCH_S] [WAN_IF] [DOWN_IF]` (run on the bench with /usr/bin/python3;
   `WAN_IF=none` proves the no-server eMMC-fallback path).
-- **Dual-port netboot TX wedge:** if BOTH puck ethernet ports have link,
-  depthcharge's netboot sits RX-only forever (the `dhcp_send_packet` hang
-  noted in netboot.c) — no DHCP TX, no fallback, no reboot. Keep the netboot
-  port the ONLY linked port (e.g. `ip link set eth-gwan down` on the bench)
-  until the payload bounds dhcp_send_packet. Proven runs 4 vs 5, 2026-07-10.
+- **Do not touch the EC/AP consoles during the AP's first seconds of boot.**
+  The only netboot "wedges" ever seen (RX-only, no DHCP TX, runs 3/4 on
+  2026-07-10) happened when the harness claimed the AP console interface
+  (clear_halt) and polled `gpioget` while the SBL was reading the EC-shared
+  SPI flash — the same perturbation class as the gale SPI wedge. With the
+  trigger-then-hands-off ordering: 16/16 consecutive autonomous
+  netboot→OpenWrt boots, incl. 6/6 with ALL USB closed after the trigger
+  (`hands_off_boot_test.py`) and dual-port cabling throughout. Attach
+  consoles BEFORE the power-on trigger, or not at all.
 
 ## Key hardware tools (all on `tools/`)
 
