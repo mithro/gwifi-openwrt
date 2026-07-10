@@ -20,6 +20,12 @@ What the old pd_netboot_test.py got wrong (and this fixes):
   - it trusted eth-gwan to be the puck's WAN. Here tcpdump watches BOTH
     dongles, so a swapped-interface bug is caught, not silently fatal.
 
+EC lock gotcha (discovered by this test's run 2): WP_L is sensed from the
+SYS_PWR domain, so `gale power off` (which drops SYS_PWR_EN) locks the EC
+and the console power path stays refused until an EC cold reboot restores
+the SYS_PWR_EN=high default. The charger path (pd_set_input_current_limit)
+has no lock gate, so real-adapter operation is unaffected.
+
 Run ON THE RIG with /usr/bin/python3 (needs the pyusb tool + sudo).
 Usage: autonomous_boot_test.py [WATCH_S] [WAN_IF]
   WAN_IF: which dongle the netboot server binds (default eth-gwan; run 1 on
@@ -146,19 +152,16 @@ say("  " + next((l.strip() for l in pdstate.splitlines() if "Port" in l), "?"))
 pre = rails_state(ec.cmd("gpioget"))
 say("  rails pre : %s" % pre)
 if any(pre[r] for r in RAILS):
-    say("  rails already up -> `gale power off` for a clean cold AP start")
-    ec.cmd("gale power off", until=lambda t: "OK" in t)
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        pre = rails_state(ec.cmd("gpioget"))
-        if not any(pre[r] for r in RAILS):
-            break
-        time.sleep(0.5)
-    else:
-        say("FATAL: rails did not drop after `gale power off`: %s" % pre)
-        sys.exit(2)
-    say("  rails now down; AP is cold. settling 3s")
-    time.sleep(3)
+    # Do NOT `gale power off` here: set_ap_power_off() also drops SYS_PWR_EN,
+    # and WP_L is sensed from the SYS_PWR domain -- so power-off makes
+    # system_is_locked() true and the console can never power the AP back on
+    # (proven on rpi4-gwifi 2026-07-10). Only an EC cold reboot (which
+    # restores SYS_PWR_EN's GPIO_OUT_HIGH default) recovers. Keep this script
+    # single-USB-session: tell the operator to reboot the EC and rerun.
+    say("FATAL: AP rails already up. Cold-reboot the EC first (restores the")
+    say("  parked+unlocked default state), then rerun:")
+    say("    /usr/bin/python3 ../flash_puck_usb.py ec reboot --deadline 2")
+    sys.exit(2)
 
 # ---- [2] the charger-equivalent trigger ------------------------------------
 say("=== [2] trigger: `gale power on` (== pd charger path set_ap_power(1)) ===")
