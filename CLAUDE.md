@@ -33,6 +33,33 @@ tools/rig_power_cycle.py --force       # hard-cycle even if the rig can't be shu
   `tools/flash_puck_usb.py ec sysinfo`.
 - Full detail + the underlying SNMP: `tools/RIG-POWER-CYCLE.md`.
 
+## The second bench: rpi4-gwifi
+
+`rpi4-gwifi.iot.welland.mithis.com` — Pi 4 with the dev gale puck, same layout
+(EC bridge `18d1:500f`, `eth-gwan`/`eth-glan` dongles). Provisioned 2026-07-10
+(tools tree, `~/gale-netboot`, dnsmasq installed with the system service
+disabled, udev rule for the bridge). **On this bench the puck's netboot port
+is cabled to `eth-glan`** — never assume dongle names match cabling; the
+autonomous test watches both dongles and says which one the puck is on.
+
+## gale EC power/lock gotchas (hardware-proven 2026-07-10)
+
+- **WP_L is sensed from the SYS_PWR domain.** `gale power off` drops
+  SYS_PWR_EN ⇒ WP_L=0 ⇒ `system_is_locked()` ⇒ every console `gale ...` set
+  is refused (status prints, no `OK`) until an **EC cold reboot** restores
+  the SYS_PWR_EN=high default. Never `gale power off` in scripts; reset a
+  running AP with `flash_puck_usb.py ec reboot --deadline 2` (expect the USB
+  pipe error, reopen in a new process).
+- A freshly cold-booted puck is **parked + unlocked**; `gale power on` works
+  from RO and is the exact console equivalent of the autonomous charger
+  trigger (`pd_set_input_current_limit(5V, >2.5A)` → `set_ap_power(1)`,
+  which has **no lock gate**). SuzyQ = SNK_ACCESSORY ⇒ parked by design; a
+  5V/3A supply powers the AP autonomously.
+- SYS_PWR_EN also powers the ethernet PHYs: **carrier proves nothing** about
+  the AP being alive on a parked puck.
+- Autonomous-boot verification: `tools/netboot-verify/autonomous_boot_test.py
+  [WATCH_S] [WAN_IF]` (run on the bench with /usr/bin/python3).
+
 ## Key hardware tools (all on `tools/`)
 
 - **`flash_puck_usb.py`** — the single, verified libusb tool for ALL gale
