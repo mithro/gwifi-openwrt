@@ -70,6 +70,17 @@ autonomous test watches both dongles and says which one the puck is on.
   (`hands_off_boot_test.py`) and dual-port cabling throughout. Attach
   consoles BEFORE the power-on trigger, or not at all.
 
+## Final no-SuzyQ proof — ARMED (2026-07-10)
+
+`tools/netboot-verify/final_pd_verify.py` is running on rpi4-gwifi
+(log `~/gale-netboot/final_pd.log`), netboot server live on eth-glan,
+Tasmota (10.1.91.18) AC on. **The one human step:** unplug the SuzyQ from
+the puck's USB-C and plug in the stock Google Wifi adapter (adapter AC
+side in the Tasmota plug). Everything after is automatic: it detects the
+first autonomous adapter-powered boot, then runs 5 unattended AC
+cold-plug cycles and prints the N/N verdict — the literal production
+scenario (no debug cable, plain 5V/3A supply), judged from the wire.
+
 ## Key hardware tools (all on `tools/`)
 
 - **`flash_puck_usb.py`** — the single, verified libusb tool for ALL gale
