@@ -221,12 +221,12 @@ no-dhcp-interface=br-wifi
 
 ### Task 2.1: Pre-move audit
 
-- [ ] **Step 1:** On wisp, hunt hardcoded 10.1.5.2 / old-VLAN assumptions:
+- [x] **Step 1:** On wisp, hunt hardcoded 10.1.5.2 / old-VLAN assumptions:
   `ssh wisp.welland.mithis.com 'sudo grep -rn "10\.1\.5\.2" /etc /opt /home/tim --include="*" -l 2>&1 | grep -v Binary'`
   and check OpenWISP settings (`~/openwisp/`, supervisor configs, influxdb,
   nginx vhosts). Record findings; anything binding or advertising 10.1.5.2
   must be listed for fix-up in Step 2 of Task 2.4.
-- [ ] **Step 2:** Identify the LE cert renewal path:
+- [x] **Step 2:** Identify the LE cert renewal path:
   `ssh wisp.welland.mithis.com 'sudo ls /etc/letsencrypt/renewal/ && sudo cat /etc/letsencrypt/renewal/*.conf'`
   → note authenticator (HTTP-01 via nginx vs DNS-01). If HTTP-01: renewal
   needs port 80 reachable at whatever IP `wisp.welland.mithis.com` resolves to
@@ -236,7 +236,7 @@ no-dhcp-interface=br-wifi
   was issued via DNS-01 (certbot-hook-dnsmasq), nothing IP-related matters.
   **Record the answer in the runbook.** If HTTP-01 AND publicly port-forwarded
   to 10.1.5.2, the forward must be retargeted to 10.1.4.2 — add to Task 2.4.
-- [ ] **Step 3:** Snapshot rollback data: `sudo virsh dumpxml wisp > tmp/wisp-pre-move.xml`
+- [x] **Step 3:** Snapshot rollback data: `sudo virsh dumpxml wisp > tmp/wisp-pre-move.xml`
   (on ten64, copy home); note current netplan yaml content (already captured:
   match `02:00:0a:01:05:02`, dhcp4, set-name net0).
 
@@ -246,12 +246,12 @@ no-dhcp-interface=br-wifi
 - Create: `/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg`
 - Replace: `/etc/netplan/50-cloud-init.yaml`
 
-- [ ] **Step 1:** Prevent cloud-init from regenerating network config:
+- [x] **Step 1:** Prevent cloud-init from regenerating network config:
   ```yaml
   # /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
   network: {config: disabled}
   ```
-- [ ] **Step 2:** Replace `/etc/netplan/50-cloud-init.yaml` (mode 0600 — netplan
+- [x] **Step 2:** Replace `/etc/netplan/50-cloud-init.yaml` (mode 0600 — netplan
   warns on world-readable):
   ```yaml
   # Static config — wisp lives on VLAN 4 (wifi, 10.1.4.0/24) and is itself
@@ -278,7 +278,7 @@ no-dhcp-interface=br-wifi
   ```
   (Resolver = ten64's internal dnsmasq on br-wifi itself — D7; it serves DNS
   on 10.1.4.1 as of Task 1.3, on-link, no routed-query caveats.)
-- [ ] **Step 3:** `sudo netplan generate` → no errors (config is staged but the
+- [x] **Step 3:** `sudo netplan generate` → no errors (config is staged but the
   new MAC doesn't exist yet, so nothing changes at runtime). Do **not**
   `netplan apply`.
 
@@ -288,9 +288,9 @@ OpenWISP goes down for the duration (~1 min). Confirm with the user before
 starting. Console recovery path: `ssh ten64.welland.mithis.com` →
 `sudo virsh console wisp` (serial getty on ttyAMA0 is enabled).
 
-- [ ] **Step 1:** `sudo virsh shutdown wisp` and poll `sudo virsh list --all`
+- [x] **Step 1:** `sudo virsh shutdown wisp` and poll `sudo virsh list --all`
   until `shut off` (≤60 s; if stuck, investigate before forcing).
-- [ ] **Step 2:** Edit the persistent XML — replace in the `<interface
+- [x] **Step 2:** Edit the persistent XML — replace in the `<interface
   type='bridge'>` block: `<source bridge='br-net'/>` → `br-wifi`, and
   `<mac address='02:00:0a:01:05:02'/>` → `02:00:0a:01:04:02`. Non-interactive:
   ```sh
@@ -299,39 +299,39 @@ starting. Console recovery path: `ssh ten64.welland.mithis.com` →
   sudo virsh define /tmp/wisp.xml
   sudo virsh dumpxml --inactive wisp | grep -A3 "interface type='bridge'"  # verify both edits
   ```
-- [ ] **Step 3:** `sudo virsh start wisp`.
-- [ ] **Step 4:** Gate checks (from desktop):
+- [x] **Step 3:** `sudo virsh start wisp`.
+- [x] **Step 4:** Gate checks (from desktop):
   - `ping -c2 10.1.4.2` OK; `ssh tim@10.1.4.2 hostname` → `wisp.welland.mithis.com`
   - guest: `ip -br addr show net0` → `10.1.4.2/24` + v6; `ip route` → default via 10.1.4.1
   - resolver: `resolvectl query google.com` on wisp succeeds (on-link query
     to ten64's br-wifi listener at 10.1.4.1 — D7)
   - OpenWISP: `curl -sk https://10.1.4.2/ -o /dev/null -w '%{http_code}'` →
     200/302 (cert name mismatch by-IP is fine here; full check in Task 2.4)
-- [ ] **Step 5:** If any gate fails and can't be fixed within the session:
+- [x] **Step 5:** If any gate fails and can't be fixed within the session:
   rollback = shutdown, `virsh define` the saved pre-move XML, restore the
   original netplan yaml, start, verify 10.1.5.2 works again.
 
 ### Task 2.4: Move the DNS record + re-verify service
 
-- [ ] **Step 1:** Update wisp's row in the `Welland - IP Allocation` sheet tab
+- [x] **Step 1:** Update wisp's row in the `Welland - IP Allocation` sheet tab
   (gid 1476589425): VLAN/network `net` → `wifi`, IP `10.1.5.2` → `10.1.4.2`.
   Reuse the Task 1.1 script pattern (find the row by hostname `wisp`, update
   the VLAN + IP cells via `values:update`). Read the tab's header row first to
   find the exact columns — do not guess.
-- [ ] **Step 2:** Regenerate + deploy on ten64 (documented procedure):
+- [x] **Step 2:** Regenerate + deploy on ten64 (documented procedure):
   ```sh
   ssh ten64.welland.mithis.com 'cd /opt/gdoc2netcfg && uv run gdoc2netcfg fetch && uv run gdoc2netcfg generate --force'
   # then the README copy steps for internal/generated + external/generated
   # and: sudo systemctl restart dnsmasq@internal dnsmasq@external
   ```
-- [ ] **Step 3:** Verify: `dig wisp.welland.mithis.com @10.1.5.1` → `10.1.4.2`;
+- [x] **Step 3:** Verify: `dig wisp.welland.mithis.com @10.1.5.1` → `10.1.4.2`;
   AAAA → `2404:e80:a137:104::2`. From desktop:
   `curl -s https://wisp.welland.mithis.com/ -o /dev/null -w '%{http_code}'` →
   200/302 with **valid cert** (v4 and v6: `curl -4` and `curl -6`).
-- [ ] **Step 4:** Fix anything the Task 2.1 audit flagged (old-IP references,
+- [x] **Step 4:** Fix anything the Task 2.1 audit flagged (old-IP references,
   port-forward retarget). Re-run a certbot dry-run if the renewal path was
   HTTP-01: `sudo certbot renew --dry-run`.
-- [ ] **Step 5:** Update the memory/runbook notes: wisp is now 10.1.4.2.
+- [x] **Step 5:** Update the memory/runbook notes: wisp is now 10.1.4.2.
 
 ---
 
