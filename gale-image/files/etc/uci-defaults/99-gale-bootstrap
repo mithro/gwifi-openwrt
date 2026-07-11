@@ -47,16 +47,21 @@ if [ -z "$brdev" ]; then
 	exit 1
 fi
 uci set "network.$brdev.name"='br-mgmt'
-# lan is already a port; add the other wired port + mesh mgmt. STP on:
-# both puck ports end up in one bridge — a double-cabled puck must not
-# loop the switch.
+# lan is already a port; add the other wired port + mesh mgmt.
+#
+# NO STP — field finding (puck12, 2026-07-12): with stp='1' the puck's
+# port went deaf ~10 min after every boot (link up, FDB populated, RX
+# dead; the ipq40xx DSA driver is known to misprogram port STP states),
+# while every STP-less image was stable. Tradeoff: a DOUBLE-cabled puck
+# would loop the switch — the fleet is single-cabled; do not cable both
+# ports.
 uci -q del_list "network.$brdev.ports"='lan'
 uci add_list "network.$brdev.ports"='lan'
 uci -q del_list "network.$brdev.ports"='wan'
 uci add_list "network.$brdev.ports"='wan'
 uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-uci set "network.$brdev.stp"='1'
+uci -q delete "network.$brdev.stp"
 # batman mgmt sub-iface (the tag exists only inside the mesh)
 uci set network.bat_mgmt="device"
 uci set network.bat_mgmt.type='8021q'
