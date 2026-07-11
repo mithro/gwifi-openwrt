@@ -1,0 +1,115 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# gale eMMC auto-installer — runs from the netbooted initramfs.
+# See gwifi-openwrt docs/wisp-netboot-install-design.md section 5.5.
+#
+# Flow: derive server from the tftpserverip= cmdline arg (appended by the
+# depthcharge netboot payload) -> fetch manifest -> compare the installed
+# /etc/gwifi-image-id marker (idempotence) -> fetch + sha256-verify +
+# dd factory image -> verify marker on the new rootfs -> phone home ->
+# reboot. ANY failure (including phone-home delivery failure, even on an
+# already-current result) => report if possible and STAY UP: serial shell
+# reachable, puck still netbootable for a retry cycle, no reboot loops.
+
+log() { echo "gale-autoinstall: $*"; }
+
+SERVER=$(sed -n 's/.*tftpserverip=\([0-9.]*\).*/\1/p' /proc/cmdline)
+[ -n "$SERVER" ] || { log "no tftpserverip in cmdline; aborting"; exit 1; }
+API="http://$SERVER:8080"
+
+# Guarded reads: NEVER `VAR=$(cat f 2>&1 || fallback)` — that captures the
+# error text into VAR when f is missing. Test readability first instead.
+MAC=""
+for f in /sys/class/net/wan/address /sys/class/net/eth0/address \
+         /sys/class/net/eth1/address; do
+    [ -r "$f" ] && MAC=$(cat "$f") && break
+done
+[ -n "$MAC" ] || { log "no MAC readable"; exit 1; }
+SERIAL=unknown
+# device-tree serial-number is NUL-terminated; tr strips it (busybox has
+# no strings applet)
+[ -r /proc/device-tree/serial-number ] \
+    && SERIAL=$(tr -d '\0' < /proc/device-tree/serial-number)
+
+phone_home() {  # $1=result $2=detail $3=image_id
+    uclient-fetch -q -O - --post-data \
+      "{\"serial\":\"$SERIAL\",\"mac\":\"$MAC\",\"result\":\"$1\",\"detail\":\"$2\",\"image_id\":\"$3\"}" \
+      "$API/phone-home"
+}
+
+wait_net() {  # wan comes up via DHCP (default OpenWrt initramfs behavior)
+    i=0
+    while [ $i -lt 30 ]; do
+        ip -4 addr show 2>&1 | grep -q "inet 10\." && return 0
+        sleep 2
+        i=$((i + 1))
+    done
+    # last resort: force a dhcp client on whichever port has carrier
+    for dev in eth0 eth1 wan lan; do
+        [ -e "/sys/class/net/$dev" ] && udhcpc -n -q -i "$dev" && return 0
+    done
+    return 1
+}
+
+log "server=$SERVER mac=$MAC serial=$SERIAL"
+wait_net || { log "no network after timeout; staying up"; exit 1; }
+
+MANIFEST=$(uclient-fetch -q -O - "$API/manifest") \
+    || { log "manifest fetch failed; staying up"; exit 1; }
+# busybox-safe JSON field extraction — the manifest is guaranteed FLAT by
+# gwifi-netboot's publish step (no jq in this image).
+jfield() { echo "$MANIFEST" | sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -1; }
+IMAGE_ID=$(jfield image_id); FILENAME=$(jfield filename); SHA=$(jfield sha256)
+[ -n "$IMAGE_ID" ] && [ -n "$FILENAME" ] && [ -n "$SHA" ] \
+    || { log "bad manifest: '$MANIFEST'"; exit 1; }
+
+# Idempotence: read the installed marker, then UNMOUNT (nothing may hold
+# the device during dd).
+CURRENT=""
+mkdir -p /tmp/p2
+if mount -o ro /dev/mmcblk0p2 /tmp/p2; then
+    [ -r /tmp/p2/etc/gwifi-image-id ] && CURRENT=$(cat /tmp/p2/etc/gwifi-image-id)
+    umount /tmp/p2
+fi
+
+# NOTE: matches the MAC anywhere in the manifest body, not just the
+# "force" array — safe ONLY because publish.py guarantees a flat manifest
+# where no other field may contain MAC text.
+FORCE=$(echo "$MANIFEST" | grep -io "\"$MAC\"" || true)
+if [ "$CURRENT" = "$IMAGE_ID" ] && [ -z "$FORCE" ]; then
+    log "already current ($IMAGE_ID)"
+    phone_home already-current "marker match" "$IMAGE_ID" \
+        || { log "phone-home unreachable; staying up (no reboot loop)"; exit 1; }
+    log "rebooting to eMMC"
+    reboot; exit 0
+fi
+
+log "installing $IMAGE_ID (was: ${CURRENT:-none})"
+uclient-fetch -O /tmp/factory.bin "http://$SERVER/$FILENAME" \
+    || { phone_home failed "image fetch" "$IMAGE_ID"; exit 1; }
+GOT=$(sha256sum /tmp/factory.bin | cut -d' ' -f1)
+[ "$GOT" = "$SHA" ] \
+    || { phone_home failed "sha256 mismatch got=$GOT" "$IMAGE_ID"; exit 1; }
+log "image verified ($GOT); writing to eMMC"
+
+dd if=/tmp/factory.bin of=/dev/mmcblk0 bs=4M conv=fsync \
+    || { phone_home failed "dd write" "$IMAGE_ID"; exit 1; }
+sync
+if command -v partx > /dev/null; then
+    partx -u /dev/mmcblk0 || true
+else
+    blockdev --rereadpt /dev/mmcblk0 || true
+fi
+
+mount -o ro /dev/mmcblk0p2 /tmp/p2 \
+    || { phone_home failed "post-flash mount" "$IMAGE_ID"; exit 1; }
+VERIFY=""
+[ -r /tmp/p2/etc/gwifi-image-id ] && VERIFY=$(cat /tmp/p2/etc/gwifi-image-id)
+umount /tmp/p2
+[ "$VERIFY" = "$IMAGE_ID" ] \
+    || { phone_home failed "post-flash marker '$VERIFY'" "$IMAGE_ID"; exit 1; }
+
+phone_home success "flashed+verified" "$IMAGE_ID" \
+    || { log "flashed OK but phone-home unreachable; staying up"; exit 1; }
+log "success — rebooting to eMMC"
+reboot

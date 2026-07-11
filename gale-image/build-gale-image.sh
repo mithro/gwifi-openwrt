@@ -24,6 +24,14 @@ find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__OPENWISP_URL__|$ou|g" {} +
 chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap"
 
+# 1b) stamp the image id — the netboot installer's idempotence marker.
+# The same id is emitted as a sidecar next to factory.bin so the publish
+# step (gwifi-netboot publish) keeps manifest and baked marker in sync.
+# See docs/wisp-netboot-install-design.md section 5.5.
+IMAGE_ID="gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git -C "$HERE" rev-parse --short HEAD)"
+printf '%s\n' "$IMAGE_ID" > "$OWRT/files/etc/gwifi-image-id"
+echo "image id: $IMAGE_ID"
+
 # 2) seed config: stock device config + our fragment
 { printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n';
 	cat "$HERE/gale.config"; } > "$OWRT/.config"
@@ -31,4 +39,9 @@ chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap"
 
 # 3) build
 ( cd "$OWRT" && make -j"${JOBS:-6}" )
+
+# 4) sidecar for the publish step
+BIN="$OWRT/bin/targets/ipq40xx/chromium/openwrt-ipq40xx-chromium-google_wifi-squashfs-factory.bin"
+printf '%s\n' "$IMAGE_ID" > "$BIN.image-id"
 echo "images: $OWRT/bin/targets/ipq40xx/chromium/"
+echo "sidecar: $BIN.image-id ($IMAGE_ID)"
