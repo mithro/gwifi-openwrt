@@ -719,7 +719,7 @@ error; copies factory.bin into images_dir under a content-addressed name
  "filename": "factory-abc123def456.bin",
  "sha256": "<full>", "size": 123456789, "force": []}
 ```
-- [ ] Failing tests (tmpdir images dir; atomicity = old manifest intact if
+- [x] Failing tests (tmpdir images dir; atomicity = old manifest intact if
   copy interrupted — write manifest last) → implement → green → commit.
 
 ### Task 6.2: Bake `/etc/gwifi-image-id` into the production factory image
@@ -727,15 +727,15 @@ error; copies factory.bin into images_dir under a content-addressed name
 **Files:** Modify `gale-image/build-gale-image.sh` (+ its `files/` overlay
 handling), `gale-image/README.md`.
 
-- [ ] **Step 1:** Read `gale-image/build-gale-image.sh` and `gale.config`
+- [x] **Step 1:** Read `gale-image/build-gale-image.sh` and `gale.config`
   to learn the overlay mechanism (it stages `files/` into the OpenWrt build).
-- [ ] **Step 2:** Stamp a **build id** (the image's own sha can't be baked
+- [x] **Step 2:** Stamp a **build id** (the image's own sha can't be baked
   into itself): the build writes
   `gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git rev-parse --short HEAD)`
   to `files/etc/gwifi-image-id` AND emits it as `<factory.bin>.image-id`
   next to the artifact; `publish` reads that sidecar (Task 6.1's contract)
   so manifest and baked marker always match.
-- [ ] **Step 3:** Rebuild the factory image (long: run in background, log,
+- [x] **Step 3:** Rebuild the factory image (long: run in background, log,
   progress every 60 s). Verify the marker is inside:
   `openwrt/build_dir/...` or extract from the built squashfs
   (`unsquashfs -cat <rootfs> etc/gwifi-image-id`). Commit build-script change.
@@ -846,30 +846,30 @@ reboot
 `sed`/`grep` JSON parsing is acceptable because *we* control the flat manifest
 format; document that constraint in `publish.py`.)
 
-- [ ] **Step 1:** Write files above. RAM check (spec open item): initramfs
+- [x] **Step 1:** Write files above. RAM check (spec open item): initramfs
   OpenWrt on gale has ~410 MiB free in /tmp (512 MiB RAM − ~100 MiB
   kernel+rootfs); factory.bin ≈ 40–60 MiB → comfortably fits. Verify the
   actual numbers during the pilot and record.
-- [ ] **Step 2:** `build-installer.sh`: reuse the netboot build (config +
+- [x] **Step 2:** `build-installer.sh`: reuse the netboot build (config +
   `openwrt-patches/0001-…-emit-raw-netboot-fit.patch` already applied in
   `/home/tim/local/gwifi/openwrt`) with `FILES=<abs path>/gale-installer/files`
   make override producing `…initramfs-fit-zImage.itb`; copy out as
   `gale-installer-<buildid>.itb` + stable symlink name `gale-installer.itb`.
   Long build → background + log + progress.
-- [ ] **Step 3:** Sanity: `xxd -l4 gale-installer.itb` → `d00dfeed` (raw FIT,
+- [x] **Step 3:** Sanity: `xxd -l4 gale-installer.itb` → `d00dfeed` (raw FIT,
   NOT `.itb.vboot`); confirm the overlay is inside
   (`dumpimage -l` shows the FIT; extract initramfs is awkward — instead
   verify via build tree `build_dir/target-*/root-ipq40xx/usr/sbin/gale-autoinstall`).
-- [ ] **Step 4:** Commit (`gale-installer/` scripts; the .itb itself is a
+- [x] **Step 4:** Commit (`gale-installer/` scripts; the .itb itself is a
   build artifact — gitignored like other bins).
 
 ### Task 6.4: Stage artifacts on wisp
 
-- [ ] **Step 1:** `uv run … cli.py publish <factory.bin>` output staged
+- [x] **Step 1:** `uv run … cli.py publish <factory.bin>` output staged
   locally, then rsync `/srv/gwifi/images/` (manifest + factory-<sha>.bin) and
   `scp gale-installer.itb wisp:/srv/gwifi/tftp/gale-installer.itb`.
   Fold both into `deploy.sh` as a `--artifacts` mode.
-- [ ] **Step 2:** Verify from desktop: `curl http://10.1.4.2/manifest.json`
+- [x] **Step 2:** Verify from desktop: `curl http://10.1.4.2/manifest.json`
   (wait — manifest is served by nginx from images/ root: URL is
   `http://10.1.4.2/manifest.json`, while the API serves `GET /manifest` on
   :8080 by reading the same file. Both must return identical bytes; the
