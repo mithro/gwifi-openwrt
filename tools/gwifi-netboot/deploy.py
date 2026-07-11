@@ -52,11 +52,12 @@ def main() -> int:
         "/var/lib/gwifi-netboot && "
         "sudo rsync -a --delete --exclude state.json "
         "~/gwifi-netboot-staging/gwifi_netboot /opt/gwifi-netboot/ && "
-        "sudo install -m 0644 ~/gwifi-netboot-staging/systemd/"
-        "gwifi-netboot.service /etc/systemd/system/gwifi-netboot.service && "
+        "sudo install -m 0644 ~/gwifi-netboot-staging/systemd/*.service "
+        "/etc/systemd/system/ && "
         "sudo systemctl daemon-reload && "
-        "sudo systemctl enable gwifi-netboot && "
-        "sudo systemctl restart gwifi-netboot")
+        "for u in ~/gwifi-netboot-staging/systemd/*.service; do "
+        "  n=$(basename $u); sudo systemctl enable $n; "
+        "  sudo systemctl restart $n; done")
 
     if args.artifacts:
         for sub in ("images", "tftp"):
