@@ -1,15 +1,14 @@
-# Radios ship DISABLED (option disabled '1') — field finding 2026-07-12:
-# boot-time wireless/mesh bring-up is the prime suspect for the puck12
-# crash/wedge cycle (the wifi-less installer is stable across dozens of
-# boots). OpenWISP enables wifi via pulled config; the mesh work owns
-# re-enabling 802.11s/batman at first boot once the crash is root-caused.
+# Radios + 802.11s mesh ship ENABLED — proven live on puck07+puck12
+# 2026-07-12 (mesh plink ESTAB both ways, clean ath10k bring-up). The
+# earlier boot-crash was kmod-batman-adv alone, not wifi. batman/L2-mesh
+# fabric returns with the mesh work after bench root-cause.
 config wifi-device 'radio0'
 	option type 'mac80211'
 	option path 'platform/soc/a000000.wifi'
 	option channel '6'
 	option band '2g'
 	option htmode 'HT20'
-	option disabled '1'
+	option disabled '0'
 
 config wifi-device 'radio1'
 	option type 'mac80211'
@@ -17,10 +16,10 @@ config wifi-device 'radio1'
 	option channel '36'
 	option band '5g'
 	option htmode 'VHT80'
-	option disabled '1'
+	option disabled '0'
 
 config wifi-iface 'mesh0'
-	option disabled '1'
+	option disabled '0'
 	option device 'radio1'
 	option mode 'mesh'
 	option mesh_id '__MESH_ID__'
