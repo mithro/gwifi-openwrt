@@ -37,16 +37,25 @@ phone_home() {  # $1=result $2=detail $3=image_id
       "$API/phone-home"
 }
 
-wait_net() {  # wan comes up via DHCP (default OpenWrt initramfs behavior)
+has_10_addr() { ip -4 addr show 2>&1 | grep -q "inet 10\."; }
+
+wait_net() {
+    # Cabled via the 'wan' port: netifd's own DHCP client gets an address.
     i=0
-    while [ $i -lt 30 ]; do
-        ip -4 addr show 2>&1 | grep -q "inet 10\." && return 0
+    while [ $i -lt 15 ]; do
+        has_10_addr && return 0
         sleep 2
         i=$((i + 1))
     done
-    # last resort: force a dhcp client on whichever port has carrier
-    for dev in eth0 eth1 wan lan; do
-        [ -e "/sys/class/net/$dev" ] && udhcpc -n -q -i "$dev" && return 0
+    # Cabled via the 'lan' port (fleet reality — the gale label MAC maps
+    # to Linux 'wan', but either physical port may hold the cable): lan is
+    # enslaved in br-lan (static 192.168.1.1). DHCP must run on the BRIDGE
+    # — udhcpc on the enslaved port sends DISCOVERs but never sees the
+    # offers (verified live on puck12, 2026-07-12). -n -q: exit after
+    # lease or a few tries; the default script installs the address.
+    for dev in wan br-lan; do
+        [ -e "/sys/class/net/$dev" ] && udhcpc -n -q -i "$dev"
+        has_10_addr && return 0
     done
     return 1
 }
@@ -95,11 +104,15 @@ log "image verified ($GOT); writing to eMMC"
 dd if=/tmp/factory.bin of=/dev/mmcblk0 bs=4M conv=fsync \
     || { phone_home failed "dd write" "$IMAGE_ID"; exit 1; }
 sync
-if command -v partx > /dev/null; then
-    partx -u /dev/mmcblk0 || true
-else
+# Full-table re-read (blockdev), NOT partx -u: the incremental update
+# against a completely replaced GPT left a half-old half-missing device
+# view on puck12 (2026-07-12). Retry while the kernel settles.
+i=0
+until [ -b /dev/mmcblk0p2 ] || [ $i -ge 10 ]; do
     blockdev --rereadpt /dev/mmcblk0 || true
-fi
+    sleep 1
+    i=$((i + 1))
+done
 
 mount -o ro /dev/mmcblk0p2 /tmp/p2 \
     || { phone_home failed "post-flash mount" "$IMAGE_ID"; exit 1; }
