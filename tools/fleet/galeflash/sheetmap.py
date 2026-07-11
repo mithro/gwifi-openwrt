@@ -45,6 +45,17 @@ FIELD_TO_HEADER: dict[str, str] = {
 # field.  The wifi-MAC columns J=wlan0/K=wlan1 stay empty (no wifi MACs in
 # inventory), so they are intentionally absent from FIELD_TO_HEADER.
 
+# Fields that legitimately CHANGE on every reflash.  compute_updates() may be
+# told (allow_overwrite=FLASH_AUDIT_FIELDS) to replace differing non-empty
+# cells for these; identity fields (serial/MLB/region/MACs/HWID) and ro_frid
+# (unchanged by our RO-preserving flash) are never overwritten — a differing
+# identity cell always signals a real problem, not a reflash.
+FLASH_AUDIT_FIELDS: frozenset[str] = frozenset({
+    "rw_fwid", "depthcharge_version", "ec_version",
+    "flash_date", "flash_status",
+    "backup_path", "backup_sha256", "image_archive", "image_sha256",
+})
+
 
 # ---------------------------------------------------------------------------
 # Return types
@@ -175,6 +186,7 @@ def compute_updates(
     records: list[dict],
     header: list[str],
     rows: list[list[str]],
+    allow_overwrite: frozenset[str] = frozenset(),
 ) -> tuple[list[Update], list[Conflict], list[str]]:
     """Compute per-cell writes and conflicts for a batch of inventory records.
 
@@ -188,6 +200,11 @@ def compute_updates(
         Sheet data rows, *excluding* the header row (``rows[0]`` = sheet row 2).
         Each inner list may be shorter than ``len(header)`` if trailing cells are
         empty (Google Sheets omits them).
+    allow_overwrite:
+        Field names whose differing non-empty cells become Updates instead of
+        Conflicts (pass FLASH_AUDIT_FIELDS when syncing a reflash — the new
+        flash is newer truth for those columns).  Empty by default: every
+        differing non-empty cell is a Conflict.
 
     Returns
     -------
@@ -248,7 +265,7 @@ def compute_updates(
 
             if current == new_val:
                 continue  # idempotent — already correct
-            elif current == "":
+            elif current == "" or field in allow_overwrite:
                 updates.append(Update(row=row_idx, col=col_idx, value=new_val))
             else:
                 conflicts.append(

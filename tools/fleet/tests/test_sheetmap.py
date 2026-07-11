@@ -12,6 +12,7 @@ from galeflash.sheetmap import (
     grid_dimensions_needed,
     Update,
     Conflict,
+    FLASH_AUDIT_FIELDS,
 )
 
 
@@ -136,6 +137,61 @@ def test_differing_nonempty_cell_is_conflict():
     # The same cell must NOT appear in updates.
     eth0_updates = [u for u in updates if u.row == 2 and u.col == ETH0_COL]
     assert eth0_updates == []
+
+
+# ---------------------------------------------------------------------------
+# Test: reflash overwrites — FLASH_AUDIT_FIELDS may replace differing cells
+# when explicitly allowed; identity fields never may (2026-07-11: the pilot's
+# reflash could not update its own audit columns because every differing
+# non-empty cell was a hard conflict)
+# ---------------------------------------------------------------------------
+
+_REFLASH_HEADER = HEADER + ["MLB Serial", "Flash Date", "Flash Status"]
+_MLB_COL = len(HEADER)
+_FLASH_DATE_COL = len(HEADER) + 1
+_REFLASH_ROWS = [
+    ["1", "AC-1304", "Google Original", "SER001", "AA:BB:CC:DD:EE:FF",
+     "setupAAA", "codeA", "AA:BB:CC:DD:EE:FF", "", "", "",
+     "MLB-OLD-01", "2026-07-07", "flashed+boot-verified"],
+]
+
+
+def test_flash_audit_overwrite_turns_conflict_into_update():
+    """With allow_overwrite=FLASH_AUDIT_FIELDS a differing Flash Date cell is
+    an Update (a reflash is newer truth), not a Conflict."""
+    records = [dict(_BASE_RECORD, serial_number="SER001",
+                    flash_date="2026-07-11")]
+    updates, conflicts, unmatched = compute_updates(
+        records, _REFLASH_HEADER, _REFLASH_ROWS,
+        allow_overwrite=FLASH_AUDIT_FIELDS)
+
+    date_updates = [u for u in updates if u.col == _FLASH_DATE_COL]
+    assert len(date_updates) == 1 and date_updates[0].value == "2026-07-11"
+    assert [c for c in conflicts if c.col == _FLASH_DATE_COL] == []
+
+
+def test_identity_field_still_conflicts_despite_overwrite_flag():
+    """allow_overwrite=FLASH_AUDIT_FIELDS must NOT unlock identity columns."""
+    records = [dict(_BASE_RECORD, serial_number="SER001",
+                    mlb_serial_number="MLB-DIFFERENT")]
+    updates, conflicts, unmatched = compute_updates(
+        records, _REFLASH_HEADER, _REFLASH_ROWS,
+        allow_overwrite=FLASH_AUDIT_FIELDS)
+
+    assert [u for u in updates if u.col == _MLB_COL] == []
+    mlb_conflicts = [c for c in conflicts if c.col == _MLB_COL]
+    assert len(mlb_conflicts) == 1 and mlb_conflicts[0].current == "MLB-OLD-01"
+
+
+def test_default_no_overwrite_keeps_flash_audit_conflicts():
+    """Without the flag, a differing Flash Date is still a Conflict."""
+    records = [dict(_BASE_RECORD, serial_number="SER001",
+                    flash_date="2026-07-11")]
+    updates, conflicts, unmatched = compute_updates(
+        records, _REFLASH_HEADER, _REFLASH_ROWS)
+
+    assert [u for u in updates if u.col == _FLASH_DATE_COL] == []
+    assert len([c for c in conflicts if c.col == _FLASH_DATE_COL]) == 1
 
 
 # ---------------------------------------------------------------------------

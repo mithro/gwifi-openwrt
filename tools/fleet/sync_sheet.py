@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from galeflash.sheetmap import (
     FIELD_TO_HEADER,
+    FLASH_AUDIT_FIELDS,
     compute_updates,
     format_mac,
     get_extended_header,
@@ -268,6 +269,14 @@ def main() -> None:
         action="store_true",
         help="Apply updates to the live sheet (default: dry run, read-only).",
     )
+    parser.add_argument(
+        "--update-flash",
+        action="store_true",
+        help="Reflash mode: overwrite differing FLASH-AUDIT cells (RW/EC/"
+             "Depthcharge firmware ids, Flash Date/Status, Backup/Image "
+             "paths+sha256s) instead of treating them as conflicts.  "
+             "Identity columns are still conflict-guarded.",
+    )
     args = parser.parse_args()
 
     mode = "WRITE" if args.write else "DRY-RUN"
@@ -308,7 +317,11 @@ def main() -> None:
     records = prepare_records(records)
 
     # --- Compute updates -----------------------------------------------------
-    updates, conflicts, unmatched = compute_updates(records, header, rows)
+    allow = FLASH_AUDIT_FIELDS if args.update_flash else frozenset()
+    if args.update_flash:
+        print("Reflash mode: differing flash-audit cells will be OVERWRITTEN.")
+    updates, conflicts, unmatched = compute_updates(records, header, rows,
+                                                    allow_overwrite=allow)
     extended_header    = get_extended_header(header)
     new_col_start      = len(header)
 

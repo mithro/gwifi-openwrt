@@ -133,10 +133,15 @@ def _archive_to_bigstorage(local: Path) -> str:  # pragma: no cover
 def _sync_sheet(inventory_dir: Path) -> None:  # pragma: no cover
     """Step 6: push the inventory (identity + flash bookkeeping) to the
     'Google WiFi Pucks' sheet.  Raises CalledProcessError on failure — the
-    operator must know the sheet was NOT updated."""
+    operator must know the sheet was NOT updated.
+
+    --update-flash: a pipeline sync always carries a fresh flash, so the
+    flash-audit columns (firmware ids, date/status, backup/image paths+shas)
+    legitimately replace the previous flash's values.  Identity columns stay
+    conflict-guarded inside sync_sheet."""
     _run_hw(
         [const.UV, "run", str(FLEET / "sync_sheet.py"), "--write",
-         "--inventory", str(inventory_dir)],
+         "--update-flash", "--inventory", str(inventory_dir)],
         "sync sheet",
     )
 
