@@ -134,7 +134,10 @@ Brief OpenWISP downtime is acceptable (no pucks are under management yet).
 - **Guest networking:** match the guest's existing network manager (verify at
   implementation; systemd-networkd is running): **static** `10.1.4.2/24`
   (VLAN 4 has no DHCP server other than wisp itself), gateway `10.1.4.1`,
-  IPv6 `2404:e80:a137:104::2/64`. Resolver: ten64's internal dnsmasq via a
+  IPv6 `2404:e80:a137:104::2/64` **with static v6 gateway
+  `2404:e80:a137:104::1`** (RA is off on br-wifi, so without it wisp would
+  publish an AAAA yet have no v6 default route — v6-preferring clients would
+  hang on HTTPS). Resolver: ten64's internal dnsmasq via a
   routed listen address (e.g. `10.1.5.1`) — ten64's dnsmasq deliberately does
   not serve br-wifi, and wisp's own dnsmasq must not be a boot dependency of
   the guest's resolver. Verify routed queries are answered (no
@@ -161,9 +164,13 @@ Brief OpenWISP downtime is acceptable (no pucks are under management yet).
     `domain=wifi.welland.mithis.com,10.1.4.0/24`.
   - `conf-dir=/etc/dnsmasq.d/gwifi-generated` — owned by gwifi-netboot.
   - `log-dhcp` + leasefile under `/var/lib/misc/` (defaults).
-- **nginx:** additional server block, `listen 10.1.4.2:80`, root
-  `/srv/gwifi/images/` (autoindex off, exact-file serving). The OpenWISP vhost
-  is untouched.
+- **nginx:** additional server block, `listen 10.1.4.2:80 default_server`,
+  root `/srv/gwifi/images/` (autoindex off, exact-file serving). It **must**
+  be the default server for that socket: the installer fetches by IP literal
+  (Host = `10.1.4.2`), and with both vhosts now sharing the single address
+  (D6), a non-default images block would let the OpenWISP vhost swallow
+  `/images/` requests. The OpenWISP vhost keeps name-based routing for
+  `wisp.welland.mithis.com`.
 
 ### 5.3 Identity flow: gdoc2netcfg `gwifi_pucks` generator
 
