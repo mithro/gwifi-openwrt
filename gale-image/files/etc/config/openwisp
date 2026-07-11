@@ -4,4 +4,9 @@ config controller 'http'
 	option interval '120'
 	option verify_ssl '1'
 	option management_interface 'br-mgmt'
+	# Device identity MAC = the wan port (the printed label MAC that
+	# OpenWISP devices are pre-created with). The default (br-lan)
+	# no longer exists and fell back to a random bridge MAC, creating
+	# junk devices (found live on puck12, 2026-07-12).
+	option mac_interface 'wan'
 	option uuid ''
