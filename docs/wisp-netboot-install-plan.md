@@ -153,48 +153,66 @@ ConfigureWithoutCarrier=yes
   refused/timeout is expected at this point (bind-dynamic hasn't been told to
   listen, but see Task 1.3 for the explicit exclusion).
 
-### Task 1.3: ten64 dnsmasq — deliberate ignore + zone forward + README
+### Task 1.3: ten64 dnsmasq — DNS-serve + DHCP-ignore VLAN 4 + README (D7)
+
+> **Revised during execution (D7):** the original zone-forward approach is
+> impossible — the internal instance is authoritative for the parent
+> `welland.mithis.com` (`auth-zone`), so nested `server=/wifi…/` forwards are
+> pre-empted by authoritative NXDOMAIN (verified: dead forward target still
+> returned instant NXDOMAIN). Instead ten64 serves DNS on br-wifi itself
+> (host-records generated in Phase 3) and only DHCP/boot is wisp's.
 
 **Files (on ten64, root):**
-- Create: `/etc/dnsmasq.d/internal/network-04-wifi-IGNORED.conf`
-- Modify: `/etc/dnsmasq.d/internal/03-zone-forwarders.conf`,
-  `/etc/dnsmasq.d/README`
+- Create: `/etc/dnsmasq.d/internal/network-04-wifi.conf`
+- Modify: `/etc/dnsmasq.d/README`
+- Remove (installed by the first, pre-D7 version of this task):
+  `/etc/dnsmasq.d/internal/network-04-wifi-IGNORED.conf` and the two
+  `server=/wifi…/` + `server=/4.1.10…/` lines in `03-zone-forwarders.conf`.
 
-`network-04-wifi-IGNORED.conf` (the name keeps it adjacent to the other
-`network-NN` files so nobody "fixes" the gap):
+`network-04-wifi.conf` (per-VLAN file pattern, but **no DHCP**):
 ```ini
-# VLAN 4 (wifi, 10.1.4.0/24) is DELIBERATELY not served by this dnsmasq.
-# wisp.welland.mithis.com (10.1.4.2) provides DHCP + TFTP + DNS for the
-# gale puck fleet there — the netboot-first puck firmware must only ever
-# see wisp's DHCP answers (bootfile steering / eMMC fallback).
-# See gwifi-openwrt docs/wisp-netboot-install-design.md.
-# bind-dynamic would otherwise auto-listen on new interfaces:
-except-interface=br-wifi
+# wifi: WiFi AP management (gale pucks)
+# 10.1.4.0/24, VLAN 4
+#
+# SPLIT-ROLE VLAN — see gwifi-openwrt docs/wisp-netboot-install-design.md:
+#   ten64 (this dnsmasq): DNS + routing. Puck host-records are generated
+#     by gdoc2netcfg into generated/gwifi-pucks-dns.conf.
+#   wisp (10.1.4.2): DHCP + TFTP netboot steering. The netboot-first puck
+#     firmware must ONLY ever see wisp's DHCP answers (bootfile steering /
+#     eMMC fallback), so this instance must NEVER serve DHCP here.
+
+interface=br-wifi
+listen-address=10.1.4.1
+listen-address=2404:e80:a137:104::1
+domain=wifi.welland.mithis.com,10.1.4.0/24
+auth-zone=wifi.welland.mithis.com
+
+# NO dhcp-range on purpose; belt-and-braces:
 no-dhcp-interface=br-wifi
 ```
 
-Append to `03-zone-forwarders.conf`:
-```ini
-
-# wifi VLAN (gale pucks) — authoritative dnsmasq on wisp (10.1.4.2)
-server=/wifi.welland.mithis.com/10.1.4.2
-server=/4.1.10.in-addr.arpa/10.1.4.2
-```
-
-- [ ] **Step 1:** Install both changes (staging + `sudo install` / `sudo tee -a`).
-- [ ] **Step 2:** Update `/etc/dnsmasq.d/README`: add the new file to the
-  directory-layout section and a line in the network list noting VLAN 4 is
-  wisp-served (keep the existing comment style).
+- [ ] **Step 1:** Install `network-04-wifi.conf`; remove
+  `network-04-wifi-IGNORED.conf`; restore `03-zone-forwarders.conf` to its
+  monarto-only content.
+- [ ] **Step 2:** Update `/etc/dnsmasq.d/README`: directory-layout entry for
+  `network-04-wifi.conf` describing the split-role VLAN (keep the existing
+  comment style; drop any wifi zone-forward mention).
 - [ ] **Step 3:** Syntax check: `sudo dnsmasq --test -C /etc/dnsmasq.d/dnsmasq.internal.conf`
   → `syntax check OK`.
 - [ ] **Step 4:** `sudo systemctl restart dnsmasq@internal` then verify:
   `dig @127.0.0.1 google.com` still resolves (instance healthy);
-  `journalctl -u dnsmasq@internal -n20` shows no br-wifi listener;
-  `dig +time=2 +tries=1 @10.1.4.1 anything.wifi.welland.mithis.com` →
-  REFUSED/timeout (not listening on br-wifi).
-- [ ] **Step 5:** The zone-forward will only work once wisp's dnsmasq exists
-  (Phase 4); note that `dig wifi-test.wifi.welland.mithis.com @10.1.5.1`
-  currently returns SERVFAIL — record as expected-pending in the task notes.
+  `dig @10.1.4.1 google.com` from the desktop resolves (DNS served on
+  br-wifi — pucks' resolver works); `dig @10.1.4.1 ten64.welland.mithis.com`
+  resolves (local data reachable via that listener).
+- [ ] **Step 5:** Verify NO DHCP on br-wifi: `sudo ss -ulpn | grep ':67'` on
+  ten64 → dnsmasq's :67 sockets exist (other VLANs) but a DHCPDISCOVER on
+  br-wifi gets no answer — full proof comes at Task 7.1 (ten64 journal shows
+  nothing for the puck MACs); here confirm `no-dhcp-interface=br-wifi` is
+  loaded via config dump: `sudo dnsmasq --test -C /etc/dnsmasq.d/dnsmasq.internal.conf`
+  passing plus the file being in conf-dir is sufficient.
+- [ ] **Step 6:** Puck names resolve only after Phase 3 lands the generated
+  host-records — `dig @10.1.4.1 puck12.wifi.welland.mithis.com` returning
+  NXDOMAIN now is expected; re-check in Task 5.7.
 
 ---
 
@@ -255,10 +273,10 @@ server=/4.1.10.in-addr.arpa/10.1.4.2
           - to: default
             via: 2404:e80:a137:104::1
         nameservers:
-          addresses: [10.1.5.1]
+          addresses: [10.1.4.1]
   ```
-  (Resolver = ten64's internal dnsmasq via its routed br-net address, per spec
-  §5.2; verified in Task 2.4 Step 3.)
+  (Resolver = ten64's internal dnsmasq on br-wifi itself — D7; it serves DNS
+  on 10.1.4.1 as of Task 1.3, on-link, no routed-query caveats.)
 - [ ] **Step 3:** `sudo netplan generate` → no errors (config is staged but the
   new MAC doesn't exist yet, so nothing changes at runtime). Do **not**
   `netplan apply`.
@@ -284,10 +302,8 @@ starting. Console recovery path: `ssh ten64.welland.mithis.com` →
 - [ ] **Step 4:** Gate checks (from desktop):
   - `ping -c2 10.1.4.2` OK; `ssh tim@10.1.4.2 hostname` → `wisp.welland.mithis.com`
   - guest: `ip -br addr show net0` → `10.1.4.2/24` + v6; `ip route` → default via 10.1.4.1
-  - resolver: `resolvectl query google.com` on wisp succeeds (proves ten64's
-    dnsmasq answers routed queries from 10.1.4.2 — if REFUSED, dnsmasq has
-    `local-service` semantics in play; fix by adding VLAN-4 to permitted
-    ranges or switch wisp's nameserver to a public resolver, and record it)
+  - resolver: `resolvectl query google.com` on wisp succeeds (on-link query
+    to ten64's br-wifi listener at 10.1.4.1 — D7)
   - OpenWISP: `curl -sk https://10.1.4.2/ -o /dev/null -w '%{http_code}'` →
     200/302 (cert name mismatch by-IP is fine here; full check in Task 2.4)
 - [ ] **Step 5:** If any gate fails and can't be fixed within the session:
@@ -409,10 +425,24 @@ deterministic JSON (sorted by number, 2-space indent, trailing newline):
 idempotent deploys.) File written as `pucks.json` in the `wisp` output dir —
 follow how other generators name their output files in `cmd_generate`.
 
-- [ ] Steps: failing test (golden JSON for fixture rows, determinism =
-  byte-identical on second call) → run → implement → wire CLI + toml → test
-  `uv run gdoc2netcfg generate --stdout gwifi_pucks` against the live sheet →
-  suite green → commit.
+**Second output (D7)** — `generate_gwifi_pucks_dns(pucks) -> str`, registered
+as generator `gwifi_pucks_dns` with `output_dir = "internal"` so it lands in
+ten64's `internal/generated/` via the normal copy procedure; file
+`gwifi-pucks-dns.conf`:
+```ini
+# Generated by gdoc2netcfg gwifi_pucks_dns — puck names for the wifi VLAN.
+# host-record provides A + PTR. DHCP for these devices lives on wisp
+# (see gwifi-openwrt docs/wisp-netboot-install-design.md D7).
+host-record=puck04.wifi.welland.mithis.com,10.1.4.104
+```
+(one line per puck, sorted by number; same header comment style as other
+generated dnsmasq fragments).
+
+- [ ] Steps: failing tests for BOTH outputs (golden JSON + golden dnsmasq
+  fragment for fixture rows, determinism = byte-identical on second call) →
+  run → implement → wire CLI + toml (two registry entries) → test
+  `uv run gdoc2netcfg generate --stdout gwifi_pucks` and
+  `--stdout gwifi_pucks_dns` against the live sheet → suite green → commit.
 
 ### Task 3.5: Deploy to ten64 + push
 
@@ -446,24 +476,16 @@ follow how other generators name their output files in `cmd_generate`.
   ```sh
   sudo systemctl mask dnsmasq && sudo apt-get install -y dnsmasq
   ```
-- [ ] **Step 2:** Write `/etc/dnsmasq.d/gwifi.conf`:
+- [ ] **Step 2:** Write `/etc/dnsmasq.d/gwifi.conf` (**DHCP+TFTP only, no
+  DNS — D7**; ten64 at 10.1.4.1 is the VLAN's DNS server and resolver):
   ```ini
-  # gale puck netboot + wifi VLAN DNS/DHCP — wisp is the only server on
-  # VLAN 4. See gwifi-openwrt docs/wisp-netboot-install-design.md.
+  # gale puck netboot — wisp serves DHCP + TFTP on VLAN 4 ONLY; DNS and
+  # routing are ten64's (10.1.4.1). See gwifi-openwrt
+  # docs/wisp-netboot-install-design.md (D7).
+  port=0
+  # ^ no DNS at all: never shadows systemd-resolved, never answers :53.
   bind-dynamic
   interface=net0
-  except-interface=lo
-  # DNS only on net0; do not shadow systemd-resolved on localhost.
-
-  domain-needed
-  bogus-priv
-  expand-hosts
-
-  # Authoritative zone for the wifi VLAN
-  domain=wifi.welland.mithis.com,10.1.4.0/24
-  auth-zone=wifi.welland.mithis.com,10.1.4.0/24
-  auth-server=wifi.welland.mithis.com,net0
-  host-record=wisp.wifi.welland.mithis.com,10.1.4.2
 
   # DHCP — .3-.99 reserved static/infra, .100-.199 pucks (fixed via
   # dhcp-host from gwifi-generated/) + dynamic fallback for unknown gale
@@ -471,7 +493,7 @@ follow how other generators name their output files in `cmd_generate`.
   dhcp-authoritative
   dhcp-rapid-commit
   dhcp-option=option:router,10.1.4.1
-  dhcp-option=option:dns-server,10.1.4.2
+  dhcp-option=option:dns-server,10.1.4.1
   log-dhcp
 
   # TFTP for the installer FIT
@@ -486,22 +508,13 @@ follow how other generators name their output files in `cmd_generate`.
   which does NOT recurse into `gwifi-generated/` — hence the explicit
   `conf-dir=` line above. Create `/etc/dnsmasq.d/gwifi-generated/` with a
   placeholder `pucks.conf` containing only a comment header.
-- [ ] **Step 3:** Also neutralize the Debian default DNS behavior: create
-  `/etc/dnsmasq.d/00-no-wildcard.conf` with `port=53` comment... **No** —
-  `bind-dynamic` + `interface=net0` already scopes sockets to net0 (+lo is
-  excluded). Instead verify after start (Step 5) that nothing listens on
-  127.0.0.1:53. Upstream resolution: dnsmasq forwards using
-  `/etc/resolv.conf` (127.0.0.53 → systemd-resolved → 10.1.5.1) — circular?
-  No: resolved queries 10.1.5.1 directly. But dnsmasq reading resolv.conf
-  pointing at 127.0.0.53 (resolved) is fine — resolved is the upstream. If
-  `resolv.conf` is the stub file, set `resolv-file=/run/systemd/resolve/resolv.conf`
-  in `gwifi.conf` (the real-upstreams file) to avoid the loop. **Add that line.**
+- [ ] **Step 3:** (Removed by D7 — `port=0` eliminates all DNS/resolved
+  interaction; no resolv-file needed since dnsmasq never resolves.)
 - [ ] **Step 4:** `sudo dnsmasq --test` → OK. `sudo systemctl unmask dnsmasq && sudo systemctl enable --now dnsmasq`.
-- [ ] **Step 5:** Verify: `ss -ulpn | grep -E ':53|:67|:69'` → dnsmasq bound
-  to 10.1.4.2 (and link-local) only, not 127.0.0.1:53; `resolvectl query
-  google.com` still works (resolved unharmed);
-  `dig @10.1.4.2 wisp.wifi.welland.mithis.com` → 10.1.4.2; from desktop
-  `dig wisp.wifi.welland.mithis.com` → 10.1.4.2 (proves ten64 zone-forward).
+- [ ] **Step 5:** Verify: `sudo ss -ulpn | grep -E ':53|:67|:69'` → dnsmasq on
+  :67/:69 only (no :53 anywhere); `resolvectl query google.com` still works
+  (resolved untouched); from desktop `dig @10.1.4.1 google.com` works (ten64
+  is the VLAN DNS — established in Task 1.3).
 - [ ] **Step 6:** TFTP smoke: `echo hi | sudo tee /srv/gwifi/tftp/probe.txt`,
   from desktop `curl -s tftp://10.1.4.2/probe.txt` → `hi`; remove probe.
 
@@ -663,12 +676,10 @@ tools/gwifi-netboot/
 - [ ] Deploy real `pucks.json` (Task 3.5 output). `gwifi-netboot status`
   lists all OpenWRT pucks, none armed. Inspect
   `/etc/dnsmasq.d/gwifi-generated/pucks.conf` — dhcp-host lines present, no
-  dhcp-boot. `dig @10.1.4.2 puck12.wifi.welland.mithis.com` → 10.1.4.112
-  (dnsmasq serves dhcp-host names for its authoritative zone once
-  `expand-hosts`+`domain` are set; **verify** — if dhcp-host names only
-  resolve after a lease exists, switch renderer to also emit
-  `host-record=<name>.wifi.welland.mithis.com,<ip>` lines — encode whichever
-  is true in the golden test and note it). Commit any renderer fix.
+  dhcp-boot. DNS (D7 — served by ten64 from the Phase-3 generated
+  host-records): `dig @10.1.4.1 puck12.wifi.welland.mithis.com` → 10.1.4.112
+  and `dig -x 10.1.4.112 @10.1.4.1` → puck12 name; from desktop plain
+  `dig puck12.wifi.welland.mithis.com` resolves too.
 
 ---
 
