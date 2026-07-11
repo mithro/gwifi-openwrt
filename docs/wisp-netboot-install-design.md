@@ -20,8 +20,9 @@ production server side:
 - A new **VLAN 4 "wifi"** (10.1.4.0/24) for wireless-AP management. ten64
   routes it like every other trusted VLAN, but its dnsmasq **deliberately does
   not serve it**.
-- **wisp.welland.mithis.com** (the OpenWISP VM) gets a second NIC on VLAN 4 and
-  owns DHCP + TFTP + HTTP + DNS for the pucks.
+- **wisp.welland.mithis.com** (the OpenWISP VM) **moves onto VLAN 4**
+  (10.1.5.2 → 10.1.4.2, single NIC) and owns DHCP + TFTP + HTTP + DNS for the
+  pucks. Other VLANs reach OpenWISP via normal ten64 routing.
 - **gdoc2netcfg** gains a generator that pushes puck *identity* (names, MACs,
   fixed IPs) to wisp. Identity only — no runtime state.
 - A **`gwifi-netboot`** service on wisp owns all runtime state: which pucks are
@@ -41,6 +42,7 @@ production server side:
 | D3a | kexec alternative | **Rejected** after investigation | Buildable (OpenWrt `CONFIG_KERNEL_KEXEC` + `kexec-tools` exist for ARM32) but requires stripping the CHROMEOS keyblock from eMMC p1, FIT parsing, kernel-cmdline recovery from the vboot config region, and an unproven kexec path on IPQ4019 (SCM/TZ secondary-core bringup, EDMA re-init). Also makes every production boot depend on wisp TFTP (~8 MB + an extra kernel boot ≈ 20–40 s). |
 | D4 | Puck management interface | Untagged VLAN 4 on the wired port | Depthcharge netboot speaks untagged DHCP only; one switch-port config (PVID 4) serves both install and production. **Revises the 2026-06-05 autoprovision-mesh design R2** (mgmt was tagged VLAN 5); that doc is updated by the mesh work, not here. |
 | D5 | Config service split | gdoc2netcfg pushes identity → wisp owns runtime | User decision: gdoc2netcfg stays a pure sheet→file pipeline; image state, arming, upgrades and phone-home are wisp-internal. |
+| D6 | wisp VM homing | **Move** wisp onto VLAN 4 (single NIC, 10.1.4.2 static) rather than adding a second NIC | User decision: wisp is the wifi-management controller — everything it serves belongs to this VLAN; avoids dual-homing. Static addressing because VLAN 4 has no DHCP server other than wisp itself (chicken-and-egg). Other VLANs reach it routed via ten64. |
 
 ## 3. Non-goals
 
@@ -93,8 +95,8 @@ production server side:
  dnsmasq fragment (per-MAC dhcp-host + install tags)
         │ reload
         ▼
- dnsmasq on wisp net1 (10.1.4.2, VLAN 4): DHCP + TFTP + auth DNS wifi.welland
- nginx  on wisp 10.1.4.2:80: /images/ (factory.bin, manifest)
+ dnsmasq on wisp (single NIC, 10.1.4.2, VLAN 4): DHCP + TFTP + auth DNS wifi.welland
+ nginx  on wisp 10.1.4.2:80: /images/ (factory.bin, manifest)  [+ OpenWISP vhost]
 
  puck power-cycle ─► DHCP ─► armed?  ──yes──► TFTP gale-installer.itb ─► RAM
                               │no                    OpenWrt installer:
@@ -120,17 +122,36 @@ production server side:
   - Update `/etc/dnsmasq.d/README` accordingly.
 - **Switch:** puck ports = PVID 4 untagged. Pilot: s1 port 46.
 
-### 5.2 wisp VM plumbing
+### 5.2 wisp VM migration + plumbing
 
-- **libvirt:** `virsh attach-interface … --persistent` a second virtio NIC on
-  `br-wifi`, MAC `02:00:0a:01:04:02` (encodes 10.1.4.2, matching the net0
-  convention). Hotplug — no VM downtime.
+wisp moves from VLAN 5 to VLAN 4 (D6): single NIC, `10.1.5.2` → `10.1.4.2`.
+Brief OpenWISP downtime is acceptable (no pucks are under management yet).
+
+- **libvirt (ten64):** retarget the existing interface — `<source bridge>`
+  `br-net` → `br-wifi`, MAC `02:00:0a:01:05:02` → `02:00:0a:01:04:02` (the
+  MAC-encodes-IP convention). Applied with the guest shut down; recovery path
+  if the guest comes up unreachable is `virsh console wisp`.
 - **Guest networking:** match the guest's existing network manager (verify at
-  implementation; VM is cloud-image based): static `10.1.4.2/24`, **no
-  gateway/DNS** on this interface (default route and resolver stay on net0).
+  implementation; systemd-networkd is running): **static** `10.1.4.2/24`
+  (VLAN 4 has no DHCP server other than wisp itself), gateway `10.1.4.1`,
+  IPv6 `2404:e80:a137:104::2/64`. Resolver: ten64's internal dnsmasq via a
+  routed listen address (e.g. `10.1.5.1`) — ten64's dnsmasq deliberately does
+  not serve br-wifi, and wisp's own dnsmasq must not be a boot dependency of
+  the guest's resolver. Verify routed queries are answered (no
+  `local-service` restriction) during implementation; fall back to public
+  resolvers if not. Guest config staged **before** the libvirt retarget,
+  keyed to the new MAC.
+- **Sheet + DNS record:** update wisp's row in the IP-allocation data
+  (VLAN net→wifi, IP 10.1.4.2); gdoc2netcfg regeneration moves the
+  `wisp.welland.mithis.com` A/AAAA records. TLS: the LE certificate is tied
+  to the *name*, not the IP — verify the renewal path (DNS-01/HTTP-01) still
+  works from the new VLAN during implementation.
+- **Ordering:** ten64 VLAN plumbing (5.1) must exist before the retarget;
+  post-move gate = OpenWISP HTTPS reachable from int + cert valid + ssh via
+  the new address.
 - **dnsmasq (new package install, single instance):**
   - Binds only the VLAN-4 interface (`bind-dynamic` + `interface=` scoping so
-    it cannot shadow systemd-resolved or serve net0).
+    it cannot shadow systemd-resolved on localhost).
   - `dhcp-range=10.1.4.100,10.1.4.199` + `dhcp-authoritative`; 10.1.4.3–99
     reserved for static/infra, .100+ for pucks (fixed per-MAC assignments from
     identity, range doubles as fallback for unknown gale MACs — see 5.4).
@@ -240,8 +261,8 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
 - Pucks: `puck<NN>.wifi.welland.mithis.com` → fixed IP (dnsmasq dhcp-host +
   auth-zone on wisp).
 - Site-wide resolution via the ten64 zone-forward (5.1).
-- wisp's VLAN-4 address: `wisp.wifi.welland.mithis.com` → 10.1.4.2 (static
-  host-record in the wisp dnsmasq config).
+- `wisp.welland.mithis.com` itself resolves to 10.1.4.2 after the migration
+  (gdoc2netcfg-generated record; no extra alias needed).
 
 ## 6. Failure modes
 
@@ -254,12 +275,14 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
 | Stale/duplicate MAC in sheet | gdoc2netcfg constraints stage fails generation loudly; wisp keeps last-good pucks.json. |
 | Unknown gale plugged into VLAN 4 | Dynamic lease from .100–.199 range, **no bootfile** (no identity → not armed) → boots its eMMC. |
 | Rendered dnsmasq fragment invalid | `dnsmasq --test` gate; last-good config stays live. |
+| wisp guest misconfigured after migration | Static config, no DHCP dependency; recover via `virsh console wisp` on ten64. |
 | Puck 1–2 (stock Google) on VLAN 4 | Not in identity; same as unknown gale. Stock firmware doesn't netboot anyway. |
 
 ## 7. Security posture
 
 - VLAN 4 is a trusted-tier management VLAN; DHCP/TFTP/HTTP (all unauthenticated
-  by nature) are scoped to `br-wifi`/net1 only — never the public or other
+  by nature) are scoped to `br-wifi` / wisp's VLAN-4 interface only — never
+  the public or other
   VLANs. `except-interface` on ten64 and `interface=` scoping on wisp are both
   explicit.
 - Phone-home is unauthenticated but only mutates state toward *disarm* on
@@ -275,6 +298,8 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
 
 Judge **from the wire** (console capture currently mute):
 
+0. VM migration gate (5.2): OpenWISP HTTPS + ssh reachable at 10.1.4.2 from
+   int, cert valid, `wisp.welland.mithis.com` resolving to the new address.
 1. Move s1 port 46 to PVID 4 untagged; confirm link + dynamic-range DHCP
    *before* identity/arming (proves VLAN path + deliberate-ignore on ten64:
    ten64's dnsmasq log shows nothing for the puck's MACs).
@@ -301,12 +326,18 @@ Judge **from the wire** (console capture currently mute):
 - **`gdoc2netcfg` branch `gwifi-pucks-generator`:** generator + constraints +
   tests + README/procedure update.
 - **Host changes (ten64/wisp), applied during implementation and captured in
-  the runbook:** networkd units, libvirt NIC, dnsmasq configs, nginx block,
-  `/etc/dnsmasq.d/README` update, VLAN sheet row.
+  the runbook:** networkd units, libvirt NIC retarget (wisp VM move to
+  VLAN 4), guest static network config, dnsmasq configs, nginx block,
+  `/etc/dnsmasq.d/README` update, VLAN sheet row + wisp IP-allocation move.
 
 ## 10. Open items deferred to implementation
 
 - Verify wisp guest's network manager flavor before writing its config.
+- Verify ten64's internal dnsmasq answers routed DNS queries from 10.1.4.2
+  (wisp's post-move resolver), and that the LE cert renewal path for
+  `wisp.welland.mithis.com` works from VLAN 4.
+- Audit for anything that hardcodes wisp's old 10.1.5.2 address (OpenWISP
+  settings, monitoring, firewall rules, ssh configs) before the move.
 - Verify installer RAM headroom for factory.bin (initramfs + image in tmpfs on
   512 MB).
 - Choose the exact reload trigger for identity pushes (systemd path unit vs.
