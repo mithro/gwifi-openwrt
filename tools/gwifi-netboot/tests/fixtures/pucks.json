@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "generated_by": "gdoc2netcfg",
+  "pucks": [
+    {
+      "name": "puck04",
+      "number": 4,
+      "serial": "2831HW00VZA",
+      "eth0": "44:07:0B:01:87:B4",
+      "eth1": "44:07:0B:01:87:B5",
+      "ip": "10.1.4.104"
+    },
+    {
+      "name": "puck12",
+      "number": 12,
+      "serial": "2831HW00WGD",
+      "eth0": "44:07:0B:01:A2:21",
+      "eth1": "44:07:0B:01:A2:22",
+      "ip": "10.1.4.112"
+    }
+  ]
+}
