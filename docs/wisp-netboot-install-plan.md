@@ -470,14 +470,14 @@ generated dnsmasq fragments).
 - Create: `/etc/dnsmasq.d/gwifi.conf`, dir `/etc/dnsmasq.d/gwifi-generated/`,
   dirs `/srv/gwifi/tftp`, `/srv/gwifi/images`
 
-- [ ] **Step 1:** `sudo apt-get install -y dnsmasq` — Debian starts it
+- [x] **Step 1:** `sudo apt-get install -y dnsmasq` — Debian starts it
   immediately with defaults (listens on *:53 → conflicts with
   systemd-resolved's 127.0.0.53 stub only if it binds wildcard). Install with
   it masked first:
   ```sh
   sudo systemctl mask dnsmasq && sudo apt-get install -y dnsmasq
   ```
-- [ ] **Step 2:** Write `/etc/dnsmasq.d/gwifi.conf` (**DHCP+TFTP only, no
+- [x] **Step 2:** Write `/etc/dnsmasq.d/gwifi.conf` (**DHCP+TFTP only, no
   DNS — D7**; ten64 at 10.1.4.1 is the VLAN's DNS server and resolver):
   ```ini
   # gale puck netboot — wisp serves DHCP + TFTP on VLAN 4 ONLY; DNS and
@@ -509,17 +509,25 @@ generated dnsmasq fragments).
   which does NOT recurse into `gwifi-generated/` — hence the explicit
   `conf-dir=` line above. Create `/etc/dnsmasq.d/gwifi-generated/` with a
   placeholder `pucks.conf` containing only a comment header.
-- [ ] **Step 3:** (Removed by D7 — `port=0` eliminates all DNS/resolved
+- [x] **Step 3:** (Removed by D7 — `port=0` eliminates all DNS/resolved
   interaction; no resolv-file needed since dnsmasq never resolves.)
-- [ ] **Step 4:** `sudo dnsmasq --test` → OK. `sudo systemctl unmask dnsmasq && sudo systemctl enable --now dnsmasq`.
-- [ ] **Step 5:** Verify: `sudo ss -ulpn | grep -E ':53|:67|:69'` → dnsmasq on
+- [x] **Step 4:** `sudo dnsmasq --test` → OK. `sudo systemctl unmask dnsmasq && sudo systemctl enable --now dnsmasq`.
+- [x] **Step 5:** Verify: `sudo ss -ulpn | grep -E ':53|:67|:69'` → dnsmasq on
   :67/:69 only (no :53 anywhere); `resolvectl query google.com` still works
   (resolved untouched); from desktop `dig @10.1.4.1 google.com` works (ten64
   is the VLAN DNS — established in Task 1.3).
-- [ ] **Step 6:** TFTP smoke: `echo hi | sudo tee /srv/gwifi/tftp/probe.txt`,
+- [x] **Step 6:** TFTP smoke: `echo hi | sudo tee /srv/gwifi/tftp/probe.txt`,
   from desktop `curl -s tftp://10.1.4.2/probe.txt` → `hi`; remove probe.
 
 ### Task 4.2: nginx images vhost
+
+> **Revised during execution:** implemented with a dedicated
+> `server_name 10.1.4.2` on the shared wildcard :80 socket instead of
+> `default_server` — the vhost file already carries catch-all
+> `default_server` blocks, and the OpenWISP vhost had gained the bare IP as
+> a server_name alias (from the 10.1.5.2 fix-up), which would have swallowed
+> installer requests. The bare-IP alias was removed from the OpenWISP vhost;
+> invariant verified: by-IP :80 -> images, by-name -> OpenWISP (200).
 
 **Files (on wisp, root):** Create `/etc/nginx/sites-available/gwifi-images` +
 symlink in `sites-enabled`.
@@ -538,7 +546,7 @@ server {
 }
 ```
 
-- [ ] **Step 1:** Check the existing OpenWISP vhost's `listen` directives
+- [x] **Step 1:** Check the existing OpenWISP vhost's `listen` directives
   (`sudo nginx -T | grep -n listen`). If it has a bare `listen 80
   default_server`, the new block conflicts (duplicate default_server on the
   same addr:port set) — resolve by keeping OpenWISP's port-80 role for ACME
@@ -548,8 +556,8 @@ server {
   from what's actually there; the invariant to preserve: **IP-literal
   requests land in the images block; ACME HTTP-01 for
   wisp.welland.mithis.com still works** (if renewal is HTTP-01 per Task 2.1).
-- [ ] **Step 2:** Install, `sudo nginx -t`, `sudo systemctl reload nginx`.
-- [ ] **Step 3:** Verify: `echo test | sudo tee /srv/gwifi/images/probe.txt`;
+- [x] **Step 2:** Install, `sudo nginx -t`, `sudo systemctl reload nginx`.
+- [x] **Step 3:** Verify: `echo test | sudo tee /srv/gwifi/images/probe.txt`;
   from desktop `curl -s http://10.1.4.2/probe.txt` → `test`;
   `curl -s https://wisp.welland.mithis.com/` still OpenWISP. Remove probe.
 
