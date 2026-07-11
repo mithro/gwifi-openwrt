@@ -17,10 +17,14 @@ chmod 0755 "$OWRT/files/usr/sbin/gale-autoinstall" \
 
 BUILD_ID="gale-installer-$(date -u +%Y%m%d%H%M%S)-g$(git -C "$HERE" rev-parse --short HEAD)"
 
-# 2) stock device config only (initramfs FIT comes from the tree's
-#    netboot patch; see ../openwrt-patches/)
-printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n' \
-    > "$OWRT/.config"
+# 2) stock device config + partition-table tools (busybox has neither
+#    blockdev nor partx; the post-flash GPT re-read + marker verify need
+#    one — field failures on puck07/12 when the kernel kept stale
+#    partition offsets after dd rewrote the GPT)
+{
+    printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n'
+    printf 'CONFIG_PACKAGE_blockdev=y\nCONFIG_PACKAGE_partx-utils=y\n'
+} > "$OWRT/.config"
 ( cd "$OWRT" && make defconfig )
 
 # 3) build
