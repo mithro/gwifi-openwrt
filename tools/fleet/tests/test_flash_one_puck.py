@@ -6,6 +6,8 @@ step (imagebuild.build) are monkeypatched so main() wiring runs in-process.
 identity.from_dump is patched via the orchestrator module reference so no
 real SPI dump or futility binary is needed.
 """
+import subprocess
+
 import pytest
 
 import flash_one_puck
@@ -111,6 +113,72 @@ def test_refuse_gate_flash_not_called(tmp_path, monkeypatch):
         flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path)])
 
     assert flash_calls == [], f"flash should not run when refused, got: {flash_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Serial-hint gate: the attached puck must BE the hinted puck (2026-07-11:
+# WGD was flashed under --serial-hint 2712HW0072Z because the hint was never
+# compared against the dump's own RO_VPD serial)
+# ---------------------------------------------------------------------------
+
+_MISMATCH_ARGV = [
+    "--serial-hint", "SN-OTHER-99",
+    "--date", "2026-06-30",
+]
+
+
+def test_hint_mismatch_refuses_before_build_flash_archive(tmp_path, monkeypatch):
+    """Live serial != --serial-hint → SystemExit; no build/flash/archive."""
+    archive_calls = []
+    build_calls, flash_calls = _patch_hw(monkeypatch, tmp_path,
+                                         archive_calls=archive_calls)
+
+    with pytest.raises(SystemExit) as exc_info:
+        flash_one_puck.main(_MISMATCH_ARGV
+                            + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert exc_info.value.code not in (None, 0)
+    assert build_calls == []
+    assert flash_calls == []
+    assert archive_calls == [], "nothing may be archived under a wrong name"
+
+
+def test_hint_mismatch_renames_capture_to_live_serial(tmp_path, monkeypatch):
+    """The capture (named from the hint before the dump exists) is renamed to
+    the live serial so it cannot collide with the real puck's backup later."""
+    build_calls, flash_calls = _patch_hw(monkeypatch, tmp_path)
+
+    with pytest.raises(SystemExit):
+        flash_one_puck.main(_MISMATCH_ARGV
+                            + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    wrong = tmp_path / "backups" / "gale-SN-OTHER-99-2026-06-30-pre-flash.bin"
+    kept = tmp_path / "backups" / "gale-SN-TEST-01-2026-06-30-WRONG-PUCK.bin"
+    assert not wrong.exists()
+    assert kept.exists() and kept.read_bytes() == b"fake-capture-bytes"
+
+
+# ---------------------------------------------------------------------------
+# verify-boot failure: bookkeeping + sheet must still happen (mute-console
+# benches return UNDECIDED; the flash itself was already byte-verified)
+# ---------------------------------------------------------------------------
+
+def test_verify_boot_failure_still_syncs_sheet_and_exits_3(tmp_path, monkeypatch):
+    sheet_calls = []
+    build_calls, flash_calls = _patch_hw(monkeypatch, tmp_path,
+                                         sheet_calls=sheet_calls)
+
+    def undecided(log_path):
+        raise subprocess.CalledProcessError(3, ["verify-boot"])
+
+    monkeypatch.setattr(flash_one_puck, "_verify_boot", undecided)
+
+    with pytest.raises(SystemExit) as exc_info:
+        flash_one_puck.main(_COMMON_ARGV
+                            + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert exc_info.value.code == 3
+    assert len(sheet_calls) == 1, "sheet sync must run despite verify failure"
 
 
 # ---------------------------------------------------------------------------

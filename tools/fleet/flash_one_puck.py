@@ -23,8 +23,10 @@ Usage:
                               [--out-dir DIR] [--rekeyed-ok]
                               [--dry-run] [--skip-verify] [--no-sheet]
 
-The serial-hint must match the live puck's serial number exactly — the
-flash step's serial-guard re-reads the puck and aborts on any mismatch.
+The serial-hint must match the live puck's serial number exactly: the run
+refuses right after the identity read if the attached puck is not the hinted
+one (before anything is archived or flashed), and the flash step's
+serial-guard additionally re-reads the puck against the built image.
 """
 import argparse
 import json
@@ -250,12 +252,31 @@ def main(argv=None) -> None:
     # Step 1: backup (hardware)
     _backup_spi(backup)  # pragma: no cover
 
-    # Step 1.5: archive the irreplaceable pre-flash capture off-site FIRST — if
-    # anything later fails, the puck's original firmware is already safe.
-    capture_archive = _archive_to_bigstorage(backup)  # pragma: no cover
-
     # Step 2: extract identity + plan (one dump read; identity rides on the plan)
     p = orchestrator.plan(backup, rekeyed_ok=args.rekeyed_ok, date=args.date)
+
+    # Serial-hint gate: the capture file was named from the hint before the
+    # dump existed; the dump's own RO_VPD is ground truth.  A mismatch means
+    # the WRONG PUCK is on the SuzyQ — refuse before anything is archived
+    # under a wrong name or flashed.  (2026-07-11: WGD was flashed under
+    # --serial-hint 2712HW0072Z because this check did not exist; the flash
+    # step's serial-guard only proves image-serial == device-serial, which is
+    # trivially true when both derive from the attached device.)
+    live_serial = p.identity.get("serial_number", "")
+    if live_serial != args.serial_hint:
+        kept = backup.with_name(f"gale-{live_serial}-{args.date}-WRONG-PUCK.bin")
+        backup.rename(kept)
+        print(f"\nREFUSED: attached puck is {live_serial!r}, not --serial-hint "
+              f"{args.serial_hint!r} — the wrong puck is on the SuzyQ.  Its "
+              f"capture is kept at {kept}; nothing was archived or flashed.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Step 2.5: archive the irreplaceable pre-flash capture off-site before
+    # any write to the puck (the identity gate above must run first so the
+    # archive can never be filed under the wrong serial).
+    capture_archive = _archive_to_bigstorage(backup)  # pragma: no cover
+
     _write_inventory(p.identity, inventory_dir)
 
     if p.refuse:
@@ -288,7 +309,12 @@ def main(argv=None) -> None:
     _write_inventory({**p.identity, **bk}, inventory_dir)
 
     # Step 5: verify — EC reboot + AP boot capture, classified automatically.
+    # A non-GOOD verdict must not lose the bookkeeping/sheet steps: the flash
+    # itself was already byte-verified, and mute-console benches (e.g. the
+    # WGD/rpi3b combo) return UNDECIDED with 0 bytes even on good boots —
+    # judge those from the wire (dnsmasq DHCP/TFTP lines).
     print(_EXIT_CRITERIA)
+    verify_failed = False
     if args.skip_verify:
         print("verify-boot SKIPPED (--skip-verify); puck is parked.  To power "
               "it on, reboot the EC (NOT `gale power on` — refused while "
@@ -298,10 +324,17 @@ def main(argv=None) -> None:
         log_path = (args.out_dir / "logs"
                     / f"gale-{p.expected_serial}-{args.date}-boot.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        _verify_boot(log_path)  # pragma: no cover
-        bk = inventory.bookkeeping(
-            p.image_path, backup, args.date, "flashed+boot-verified", **fw)
-        _write_inventory({**p.identity, **bk}, inventory_dir)
+        try:
+            _verify_boot(log_path)  # pragma: no cover
+        except subprocess.CalledProcessError as e:
+            verify_failed = True
+            print(f"verify-boot did not return GOOD (exit {e.returncode}); "
+                  "sheet status stays 'flashed'.  Judge from the wire and "
+                  "re-run verify-boot when in doubt.", file=sys.stderr)
+        else:
+            bk = inventory.bookkeeping(
+                p.image_path, backup, args.date, "flashed+boot-verified", **fw)
+            _write_inventory({**p.identity, **bk}, inventory_dir)
 
     # Step 6: sheet — push identity + bookkeeping to 'Google WiFi Pucks'.
     if args.no_sheet:
@@ -312,6 +345,8 @@ def main(argv=None) -> None:
 
     print(f"Done.  backup: {backup}")
     print(f"       image : {p.image_path}")
+    if verify_failed:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
