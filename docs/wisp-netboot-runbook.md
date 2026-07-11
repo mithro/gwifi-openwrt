@@ -83,6 +83,9 @@ move — see `tools/RIG-POWER-CYCLE.md` conventions on the fleet branch).
 | Unknown gale on VLAN 4 | Gets a dynamic lease, **no bootfile**, boots its own eMMC. Appears in dnsmasq log only |
 | dnsmasq won't restart on wisp | Fragment gated by `dnsmasq --test` — but check `journalctl -u dnsmasq`; last-good fragment stays if render failed |
 | Puck DNS name doesn't resolve site-wide | `gwifi-pucks-dns.conf` missing from ten64 `internal/generated/` — run the identity update above |
+| Phone-home serial is "unknown" | Normal — gale has no `/proc/device-tree/serial-number`; identity is MAC-keyed |
+| Installed puck silent on VLAN 4 | The production image's bootstrap still assumes tagged-VLAN-5 mgmt (pre-D7 mesh design) — pending the mesh-image revision. Netboot/reinstall still works (firmware is VLAN-agnostic) |
+| Switch fabric changes needed for a new puck port | VLAN 4 must exist end-to-end: see `create_vlan4.py` pattern (Q-BRIDGE via SNMP; FASTPATH agents answer commitFailed on sets they APPLY — always verify by read-back) |
 | wisp itself unreachable | Static 10.1.4.2 on VLAN 4 (no DHCP dependency); recover via `sudo virsh console wisp` on ten64 |
 
 ## Cert / resolver notes (from the VLAN-4 migration, 2026-07-11)

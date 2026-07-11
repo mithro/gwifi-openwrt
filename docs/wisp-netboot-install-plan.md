@@ -880,6 +880,28 @@ format; document that constraint in `publish.py`.)
 
 ## Phase 7 — Pilot validation (puck 12 / WGD, s1 port 46) — spec §8
 
+> **Pilot PASSED 2026-07-12** (fully wire-judged). Execution notes:
+> - Fabric VLAN 4 had to be *created* (not just port moves): m4300-24x
+>   (tagged ports 1+2; port-1 alias "trunk.sw-cisco-shed" is STALE — that
+>   switch is gone, port 1 is ten64) and s1 (tagged 49, untagged 46,
+>   PVID 46=4, 46 removed from VLAN 1). Script: create_vlan4.py (SNMP
+>   Q-BRIDGE, verify-by-readback — FASTPATH answers commitFailed on sets
+>   it applies).
+> - Unarmed: firmware DHCPs as puck12/10.1.4.112, empty-file TFTP
+>   ("unsupported request"), clean eMMC fallback. ten64 dnsmasq: zero
+>   sightings of the puck MACs.
+> - Armed: TFTP install ran; three field bugs found+fixed (installer
+>   br-lan DHCP fallback, uclient-fetch chunked POST handling in httpd,
+>   blockdev --rereadpt instead of partx -u).
+> - Re-arm cycle fully unattended: TFTP → br-lan DHCP → marker match →
+>   already-current phone-home 200 → auto-disarm → reboot → eMMC.
+> - Caveats: gale has no /proc/device-tree/serial-number (serial reports
+>   "unknown"; identity is MAC-keyed so harmless). The installed
+>   production image is network-silent on VLAN 4 — its bootstrap still
+>   assumes tagged-VLAN-5 mgmt (pre-D7 mesh design; that revision is the
+>   mesh work's, per spec D4). WGD's pre-pilot eMMC was unbootable
+>   (netboot retry loop) — the install fixed it.
+
 Wire-judged (console capture is mute). All dnsmasq observations via
 `ssh wisp… 'journalctl -u dnsmasq -f'`; SNMP PoE-cycle of s1 port 46 per the
 `rig_power_cycle.py`/RIG-POWER-CYCLE.md manual-fallback pattern (validate the
@@ -888,7 +910,7 @@ ifIndex for port 46 first — hardware moves ports; community via
 eth1 `44:07:0B:01:A2:22`; expected IP 10.1.4.112.
 
 ### Task 7.1: Switch port → VLAN 4 ⚠ STOP-AND-CONFIRM
-- [ ] Confirm with user, then set s1 port 46 PVID 4 untagged (manual netgear
+- [x] Confirm with user, then set s1 port 46 PVID 4 untagged (manual netgear
   UI/CLI acceptable; record exact steps in the runbook). Verify: PoE-cycle →
   wisp dnsmasq journal shows DHCPDISCOVER from `44:07:0b:01:a2:2x` in the
   dynamic range (identity may already pin it — either is a pass); **ten64**
@@ -896,7 +918,7 @@ eth1 `44:07:0B:01:A2:22`; expected IP 10.1.4.112.
   ignore proven).
 
 ### Task 7.2: Unarmed behavior (no bootfile → eMMC)
-- [ ] With identity deployed and puck12 **unarmed**: PoE-cycle. Expect on
+- [x] With identity deployed and puck12 **unarmed**: PoE-cycle. Expect on
   wisp: DHCPACK 10.1.4.112 `puck12`, **no TFTP RRQ** for gale-installer.itb
   (grep the journal window), and (~1 min later) a *second* DHCP from the
   same MAC — the **booted eMMC OpenWrt** wan client. `ping 10.1.4.112`,
@@ -906,29 +928,29 @@ eth1 `44:07:0B:01:A2:22`; expected IP 10.1.4.112.
   step 7.3 will install.)
 
 ### Task 7.3: Armed install round-trip
-- [ ] `gwifi-netboot arm puck12` (via ssh) → confirm generated conf gained
+- [x] `gwifi-netboot arm puck12` (via ssh) → confirm generated conf gained
   `set:install` + dhcp-boot line. PoE-cycle. Expect journal sequence: DHCPACK
   with bootfile → TFTP transfer of gale-installer.itb completes → (~2–4 min)
   phone-home `success` in `gwifi-netboot status` / service journal → state
   auto-disarmed → dnsmasq restarted (conf no longer has set:install).
-- [ ] PoE-cycle again → no TFTP RRQ; eMMC boots the **new** image; ssh in
+- [x] PoE-cycle again → no TFTP RRQ; eMMC boots the **new** image; ssh in
   (default OpenWrt: root, no pw on LAN side — the image is the production
   gale-image build; use its configured access) and
   `cat /etc/gwifi-image-id` matches the manifest. Record boot-to-ssh timing.
 
 ### Task 7.4: Idempotence + re-arm
-- [ ] Re-arm puck12 without publishing a new image; PoE-cycle. Expect: TFTP
+- [x] Re-arm puck12 without publishing a new image; PoE-cycle. Expect: TFTP
   of installer, then phone-home `already-current` (no dd — journal gap is
   short), auto-disarm, reboot to eMMC. This proves the stale-armed-state
   self-heal (spec §6).
 
 ### Task 7.5: Runbook + docs + wrap-up
-- [ ] Write `docs/wisp-netboot-runbook.md`: arm/disarm, publish a new image,
+- [x] Write `docs/wisp-netboot-runbook.md`: arm/disarm, publish a new image,
   re-arm fleet, port-VLAN steps, troubleshooting table (no-DHCP / TFTP storm
   symptoms from fleet lore / phone-home missing / API down ⇒ parked
   installer), pilot timings, cert/renewal + resolver notes from Phase 2.
-- [ ] Update `docs/wisp-netboot-install-design.md` status line → Implemented
+- [x] Update `docs/wisp-netboot-install-design.md` status line → Implemented
   (pilot passed) with date.
-- [ ] Final commits; push branch `wisp-netboot-install`; report fleet-rollout
+- [x] Final commits; push branch `wisp-netboot-install`; report fleet-rollout
   readiness (arming remaining pucks is a user decision — sheet Firmware
   column governs identity; pucks 1–2 stay untouched).

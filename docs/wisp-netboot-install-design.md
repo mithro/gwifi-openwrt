@@ -2,7 +2,12 @@
 # wisp.welland netboot-install infrastructure — Design Spec
 
 - **Date:** 2026-07-11
-- **Status:** Approved by user (brainstorming session); pending spec review.
+- **Status:** **Implemented — pilot passed 2026-07-12** (puck 12: unarmed
+  eMMC fallback, armed netboot-install to eMMC, already-current
+  idempotence + auto-disarm, all unattended and wire-verified). See the
+  plan's Phase 7 notes and `wisp-netboot-runbook.md`. Remaining: merge
+  gdoc2netcfg PR #14 (identity/DNS pipeline on ten64); production image
+  bootstrap still assumes tagged-VLAN-5 mgmt (mesh work, per D4).
 - **Goal:** Power-cycling a fleet-firmware gale puck on the wifi VLAN gets OpenWrt
   installed to its eMMC automatically, then boots from eMMC on every later cycle.
 - **Depends on:** fleet netboot-first depthcharge payload `cd5ffa6` (already
