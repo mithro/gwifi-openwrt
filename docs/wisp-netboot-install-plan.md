@@ -7,14 +7,15 @@
 to its eMMC automatically and boots from eMMC on every later cycle.
 
 **Spec:** `docs/wisp-netboot-install-design.md` (approved). Decision numbers
-(D1–D6) and section numbers (§5.1–§8) below refer to that document.
+(D1–D7) and section numbers (§5.1–§8) below refer to that document.
 
-**Architecture:** New VLAN 4 `wifi` (10.1.4.0/24) routed by ten64 but deliberately
-unserved by its dnsmasq; the wisp VM migrates onto it (single NIC, static
-10.1.4.2) and runs DHCP+TFTP (dnsmasq) + HTTP (nginx + a small API) for the
-pucks; gdoc2netcfg pushes puck identity (`pucks.json`); a `gwifi-netboot`
-service owns armed-state, phone-home, and the generated per-MAC dnsmasq config;
-an idempotent installer initramfs flashes the eMMC.
+**Architecture:** New VLAN 4 `wifi` (10.1.4.0/24): ten64 routes it and serves
+DNS (gdoc2netcfg-generated puck host-records) but deliberately serves **no
+DHCP/boot** there (D7); the wisp VM migrates onto it (single NIC, static
+10.1.4.2) and runs DHCP+TFTP (dnsmasq, `port=0`) + HTTP (nginx + a small API)
+for the pucks; gdoc2netcfg pushes puck identity (`pucks.json` + DNS fragment);
+a `gwifi-netboot` service owns armed-state, phone-home, and the generated
+per-MAC dnsmasq config; an idempotent installer initramfs flashes the eMMC.
 
 **Tech stack:** systemd-networkd + libvirt + netplan (infra), dnsmasq, nginx,
 Python 3.11+/uv + pytest (services, both repos), OpenWrt 25.12 ipq40xx build
@@ -57,7 +58,7 @@ has write access to this spreadsheet (it is what `sync_sheet.py --write` uses).
 lives on the unmerged `fleet-firmware-flash` branch; read it at
 `/home/tim/local/gwifi/gwifi-openwrt/.worktrees/fleet-firmware-flash/tools/fleet/`.
 
-- [ ] **Step 1:** Write `tmp/add_vlan4_row.py` (PEP-723 script, deps
+- [x] **Step 1:** Write `tmp/add_vlan4_row.py` (PEP-723 script, deps
   `google-auth`,`requests`) that appends one row to the tab via the Sheets API
   `values:append` on range `'Welland - VLAN Allocations'!A:I`:
   `["4","wifi","10.X.4.X","255.255.255.0","/24","","","","WiFi AP management (see gwifi-openwrt docs/wisp-netboot-install-design.md)"]`
@@ -68,17 +69,17 @@ lives on the unmerged `fleet-firmware-flash` branch; read it at
   bottom is acceptable but verify gdoc2netcfg's `vlan_parser` doesn't require
   numeric ordering (read `src/gdoc2netcfg/sources/vlan_parser.py` first; if it
   does, insert the row after VLAN 1 instead using `batchUpdate`).
-- [ ] **Step 2:** Run it: `cd tmp && uv run add_vlan4_row.py`. Expected: HTTP
+- [x] **Step 2:** Run it: `cd tmp && uv run add_vlan4_row.py`. Expected: HTTP
   200, updated range printed.
-- [ ] **Step 3:** Verify the published CSV shows the row (publish lag can be a
+- [x] **Step 3:** Verify the published CSV shows the row (publish lag can be a
   few minutes; retry):
   `curl -sL 'https://docs.google.com/spreadsheets/d/e/2PACX-1vR5j6yiZCEv5YNoeVNLM4MMsxzBVjG4OtViBz7tXXF1LydHd8bCOOVWt7MvfVEPZtK0TeWgyxF3i9Tj/pub?gid=208407908&single=true&output=csv' | grep '^4,wifi'`
-- [ ] **Step 4:** On ten64, confirm gdoc2netcfg still validates with the new
+- [x] **Step 4:** On ten64, confirm gdoc2netcfg still validates with the new
   VLAN: `ssh ten64.welland.mithis.com 'cd /opt/gdoc2netcfg && uv run gdoc2netcfg fetch && uv run gdoc2netcfg validate'`
   Expected: exit 0, no new constraint errors. (VLAN 4 has no hosts yet — that
   must be fine; if the validator objects to a hostless VLAN, note it and fix in
   Phase 3's repo work.)
-- [ ] **Step 5:** Delete `tmp/add_vlan4_row.py`; commit nothing (no repo change).
+- [x] **Step 5:** Delete `tmp/add_vlan4_row.py`; commit nothing (no repo change).
 
 ### Task 1.2: ten64 networkd units for vlan-wifi + br-wifi
 
@@ -135,20 +136,20 @@ IPv6SendRA=no
 ConfigureWithoutCarrier=yes
 ```
 
-- [ ] **Step 1:** Write the four files on ten64 (scp from a local `tmp/`
+- [x] **Step 1:** Write the four files on ten64 (scp from a local `tmp/`
   staging dir, then `sudo install -m 0644 -o root -g root`).
-- [ ] **Step 2:** Add `VLAN=vlan-wifi` to `br-raw.network`'s `[Network]` VLAN
+- [x] **Step 2:** Add `VLAN=vlan-wifi` to `br-raw.network`'s `[Network]` VLAN
   list (after `VLAN=vlan-store`): `sudo` edit.
-- [ ] **Step 3:** Apply: `sudo networkctl reload`. (`reload` creates new
+- [x] **Step 3:** Apply: `sudo networkctl reload`. (`reload` creates new
   netdevs on current systemd; if br-wifi doesn't appear, fall back to
   `sudo systemctl restart systemd-networkd` — warn user first: brief blip on
   all ten64 interfaces.)
-- [ ] **Step 4:** Verify: `ip -br addr show br-wifi` → `UP 10.1.4.1/24 2404:e80:a137:104::1/64`;
+- [x] **Step 4:** Verify: `ip -br addr show br-wifi` → `UP 10.1.4.1/24 2404:e80:a137:104::1/64`;
   `ip -br link show vlan-wifi` → `UP` with master br-raw... (vlan-wifi's
   master is br-wifi; it rides br-raw). `bridge vlan` not needed (Linux vlan
   subif, not vlan-aware bridge). From desktop: `ping -c2 10.1.4.1` succeeds
   (routed via existing paths).
-- [ ] **Step 5:** Confirm dnsmasq is NOT yet answering there:
+- [x] **Step 5:** Confirm dnsmasq is NOT yet answering there:
   `dig +time=2 +tries=1 @10.1.4.1 wisp.welland.mithis.com` → connection
   refused/timeout is expected at this point (bind-dynamic hasn't been told to
   listen, but see Task 1.3 for the explicit exclusion).
@@ -191,26 +192,26 @@ auth-zone=wifi.welland.mithis.com
 no-dhcp-interface=br-wifi
 ```
 
-- [ ] **Step 1:** Install `network-04-wifi.conf`; remove
+- [x] **Step 1:** Install `network-04-wifi.conf`; remove
   `network-04-wifi-IGNORED.conf`; restore `03-zone-forwarders.conf` to its
   monarto-only content.
-- [ ] **Step 2:** Update `/etc/dnsmasq.d/README`: directory-layout entry for
+- [x] **Step 2:** Update `/etc/dnsmasq.d/README`: directory-layout entry for
   `network-04-wifi.conf` describing the split-role VLAN (keep the existing
   comment style; drop any wifi zone-forward mention).
-- [ ] **Step 3:** Syntax check: `sudo dnsmasq --test -C /etc/dnsmasq.d/dnsmasq.internal.conf`
+- [x] **Step 3:** Syntax check: `sudo dnsmasq --test -C /etc/dnsmasq.d/dnsmasq.internal.conf`
   → `syntax check OK`.
-- [ ] **Step 4:** `sudo systemctl restart dnsmasq@internal` then verify:
+- [x] **Step 4:** `sudo systemctl restart dnsmasq@internal` then verify:
   `dig @127.0.0.1 google.com` still resolves (instance healthy);
   `dig @10.1.4.1 google.com` from the desktop resolves (DNS served on
   br-wifi — pucks' resolver works); `dig @10.1.4.1 ten64.welland.mithis.com`
   resolves (local data reachable via that listener).
-- [ ] **Step 5:** Verify NO DHCP on br-wifi: `sudo ss -ulpn | grep ':67'` on
+- [x] **Step 5:** Verify NO DHCP on br-wifi: `sudo ss -ulpn | grep ':67'` on
   ten64 → dnsmasq's :67 sockets exist (other VLANs) but a DHCPDISCOVER on
   br-wifi gets no answer — full proof comes at Task 7.1 (ten64 journal shows
   nothing for the puck MACs); here confirm `no-dhcp-interface=br-wifi` is
   loaded via config dump: `sudo dnsmasq --test -C /etc/dnsmasq.d/dnsmasq.internal.conf`
   passing plus the file being in conf-dir is sufficient.
-- [ ] **Step 6:** Puck names resolve only after Phase 3 lands the generated
+- [x] **Step 6:** Puck names resolve only after Phase 3 lands the generated
   host-records — `dig @10.1.4.1 puck12.wifi.welland.mithis.com` returning
   NXDOMAIN now is expected; re-check in Task 5.7.
 
