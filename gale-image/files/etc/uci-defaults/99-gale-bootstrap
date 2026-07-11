@@ -62,6 +62,21 @@ uci add_list "network.$brdev.ports"='wan'
 uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci -q delete "network.$brdev.stp"
+# Pin br-mgmt's MAC to the wan/label MAC: the bridge otherwise picks a
+# MAC by member-join timing (sometimes a random locally-administered
+# one), and BOTH the DHCP identity and the openwisp registration MAC
+# come from br-mgmt (the agent ignores mac_interface — verified
+# 2026-07-12; puck07 registered a junk random-MAC device).
+i=0
+while devname=$(uci -q get "network.@device[$i].name"); do
+	if [ "$devname" = "wan" ]; then
+		label_mac=$(uci -q get "network.@device[$i].macaddr")
+		[ -n "$label_mac" ] && \
+			uci set "network.$brdev.macaddr"="$label_mac"
+		break
+	fi
+	i=$((i + 1))
+done
 # batman mgmt sub-iface (the tag exists only inside the mesh)
 uci set network.bat_mgmt="device"
 uci set network.bat_mgmt.type='8021q'
