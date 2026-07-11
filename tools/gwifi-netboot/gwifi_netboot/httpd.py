@@ -118,12 +118,33 @@ def make_server(app: App, host: str, port: int) -> ThreadingHTTPServer:
             else:
                 self._send_json(404, {"error": "not found"})
 
+        def _read_body(self) -> bytes:
+            # uclient-fetch (the installer's client) POSTs with
+            # Transfer-Encoding: chunked and no Content-Length — verified
+            # live on puck12 2026-07-12. Support both framings.
+            if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+                chunks = []
+                while True:
+                    size_line = self.rfile.readline().strip()
+                    size = int(size_line.split(b";")[0], 16)
+                    if size == 0:
+                        self.rfile.readline()  # trailing CRLF
+                        break
+                    chunks.append(self.rfile.read(size))
+                    self.rfile.readline()  # chunk-terminating CRLF
+                return b"".join(chunks)
+            length = int(self.headers.get("Content-Length", 0))
+            return self.rfile.read(length)
+
         def do_POST(self):
             if self.path != "/phone-home":
                 self._send_json(404, {"error": "not found"})
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            raw = self.rfile.read(length)
+            try:
+                raw = self._read_body()
+            except (ValueError, OSError) as e:
+                self._send_json(400, {"error": f"bad request body: {e}"})
+                return
             try:
                 doc = json.loads(raw)
                 if not isinstance(doc, dict):

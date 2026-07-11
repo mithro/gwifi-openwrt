@@ -147,6 +147,27 @@ def test_unknown_path_404(server):
     assert e.value.code == 404
 
 
+def test_phone_home_chunked_body(server, app):
+    # uclient-fetch (the installer's HTTP client) POSTs without
+    # Content-Length using chunked transfer-encoding — verified live on
+    # puck12 2026-07-12 (curl 200 vs uclient-fetch 400 differential).
+    import http.client
+    host, port = server.replace("http://", "").split(":")
+    conn = http.client.HTTPConnection(host, int(port))
+    body = json.dumps({
+        "serial": "s", "mac": PUCK12_ETH0, "result": "failed",
+        "image_id": "x", "detail": "chunked probe",
+    }).encode()
+    conn.putrequest("POST", "/phone-home")
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
+    conn.send(b"%x\r\n%s\r\n0\r\n\r\n" % (len(body), body))
+    resp = conn.getresponse()
+    assert resp.status == 200
+    assert app.state.puck_state(PUCK12_ETH0)["last_phone_home"][
+        "detail"] == "chunked probe"
+
+
 def test_status_flags_unknown_state_macs(server, app):
     app.state.record_phone_home("de:ad:be:ef:00:01", result="success",
                                 image_id="x", serial="s", detail="d")
