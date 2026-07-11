@@ -86,6 +86,11 @@ move — see `tools/RIG-POWER-CYCLE.md` conventions on the fleet branch).
 | Phone-home serial is "unknown" | Normal — gale has no `/proc/device-tree/serial-number`; identity is MAC-keyed |
 | Installed puck silent on VLAN 4 | The production image's bootstrap still assumes tagged-VLAN-5 mgmt (pre-D7 mesh design) — pending the mesh-image revision. Netboot/reinstall still works (firmware is VLAN-agnostic) |
 | Switch fabric changes needed for a new puck port | VLAN 4 must exist end-to-end: see `create_vlan4.py` pattern (Q-BRIDGE via SNMP; FASTPATH agents answer commitFailed on sets they APPLY — always verify by read-back) |
+| Installed image boots but goes silent | Two proven killers (2026-07-12, puck12): **kmod-batman-adv** panics boot (image never reaches network — disabled in gale.config pending bench root-cause) and **stp='1' on br-mgmt** kills the DSA port RX ~10 min in (link stays up, FDB populated, host deaf — do not re-enable; fleet must stay single-cabled) |
+| Agent registers as a junk random-MAC device | `openwisp.http.mac_interface` must be `wan` (label MAC, matches the pre-created G-NN devices); default br-lan fell back to a random bridge MAC. Baked in the overlay |
+| Agent: curl exit 6/7, AAAA-only DNS | OpenWrt rebind protection drops RFC1918 A answers — `rebind_domain 'mithis.com'` is baked in the bootstrap |
+| Agent crash-loop "must specify --uuid and --key, or --shared-secret" | openwisp-config CONSUMES shared_secret on registration (replaces with uuid+key). If you wipe uuid/key to force re-registration you must restore the secret (from gale-secrets.conf) |
+| Stale G-NN config template | The 'gwifi-puck' template predates D7 (would move the lan port into br-roam!) — detached from G12 2026-07-12; the mesh work owns its revision. 'SSH Keys' template alone is safe |
 | wisp itself unreachable | Static 10.1.4.2 on VLAN 4 (no DHCP dependency); recover via `sudo virsh console wisp` on ten64 |
 
 ## Cert / resolver notes (from the VLAN-4 migration, 2026-07-11)
