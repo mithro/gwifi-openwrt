@@ -177,10 +177,12 @@ deployed to wisp with systemd units. Responsibilities:
     sha256, size, `image_id`, optional per-MAC `force` list. Written by the
     image-publish step (see 5.5), served verbatim by the manifest endpoint.
 - **Renders `/etc/dnsmasq.d/gwifi-generated/pucks.conf`:**
-  - Every known puck: `dhcp-host=<eth0>,<eth1>,<ip>,<name>` (both MACs — a
-    puck may be cabled by either port).
-  - Armed pucks: `dhcp-host=<eth0>,<eth1>,set:install` tag +  a single
-    `dhcp-boot=tag:install,gale-installer.itb` line.
+  - One `dhcp-host` line per puck (both MACs — a puck may be cabled by either
+    port): unarmed `dhcp-host=<eth0>,<eth1>,<ip>,<name>`, armed
+    `dhcp-host=<eth0>,<eth1>,<ip>,<name>,set:install` — a **single combined
+    line**, never two lines for the same MAC (dnsmasq's duplicate-dhcp-host
+    behavior is surprising and `--test` would not catch it).
+  - A single `dhcp-boot=tag:install,gale-installer.itb` line.
   - Unarmed pucks get an offer with **no bootfile** → firmware falls back to
     eMMC (D3).
   - After render: `dnsmasq --test` the fragment, then reload dnsmasq; refuse
@@ -209,7 +211,8 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
 - **Flow (init script, runs once network is up via `wan` DHCP):**
   1. Fetch `GET :8080/manifest`.
   2. Read the installed image id: mount eMMC p2 (squashfs) read-only, read
-     `/etc/gwifi-image-id`. Unreadable/absent (blank or corrupt eMMC) ⇒
+     `/etc/gwifi-image-id`, **then unmount** (nothing may hold the device
+     when step 5 rewrites it). Unreadable/absent (blank or corrupt eMMC) ⇒
      treat as stale.
   3. `image_id` matches manifest and MAC not in `force` ⇒ phone-home
      `already-current`, reboot. (Guards against stale armed state — D3.)
@@ -220,7 +223,11 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
      re-read `/etc/gwifi-image-id` as write-verification.
   6. Phone-home `success` (serial from VPD/cmdline, MACs, image_id), reboot.
   - Any error: phone-home `failed` with detail, **stay up** (serial shell
-    reachable, puck still netbootable for a retry cycle).
+    reachable, puck still netbootable for a retry cycle). This includes
+    phone-home delivery failure itself (e.g. dnsmasq up but the :8080 API
+    down, even on an `already-current` result): the installer **stays up**
+    rather than rebooting, so an armed-but-current puck parks in the RAM
+    installer instead of hot-looping netboot until the API returns.
 - **Production image marker:** the fleet factory image build bakes
   `/etc/gwifi-image-id` (e.g. `gale-openwrt-<version>-<date>-<shortsha>`), and
   the publish step writes the matching `manifest.json` + copies factory.bin
@@ -243,6 +250,7 @@ Built from the existing OpenWrt netboot build (raw initramfs FIT, per
 | wisp down / dnsmasq dead | Puck DHCP times out (bounded resends) → eMMC fallback. Production pucks unaffected beyond a boot delay. |
 | Armed but image fetch/verify fails | Phone-home `failed`, puck stays in RAM installer with serial shell; next power cycle retries (still armed). |
 | Phone-home lost after successful flash | State stays armed → next boot re-enters installer, which sees `already-current`, phones home, disarms. Self-healing (D3). |
+| dnsmasq/TFTP up but :8080 API down | Armed puck boots installer, phone-home fails → installer stays up (no reboot loop); disarm resolves on the next cycle after the API returns. Unarmed pucks unaffected. |
 | Stale/duplicate MAC in sheet | gdoc2netcfg constraints stage fails generation loudly; wisp keeps last-good pucks.json. |
 | Unknown gale plugged into VLAN 4 | Dynamic lease from .100–.199 range, **no bootfile** (no identity → not armed) → boots its eMMC. |
 | Rendered dnsmasq fragment invalid | `dnsmasq --test` gate; last-good config stays live. |
