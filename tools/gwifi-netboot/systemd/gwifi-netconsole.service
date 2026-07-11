@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# Netconsole receiver for the gale fleet's kernel logs (no field serial).
+[Unit]
+Description=gale fleet netconsole receiver (UDP 6666 -> /var/log/gale-netconsole)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gwifi-netboot
+ExecStart=/usr/bin/python3 -m gwifi_netboot.netconsole_rx
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
