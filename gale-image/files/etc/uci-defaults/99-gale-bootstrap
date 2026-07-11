@@ -36,19 +36,27 @@ while name=$(uci -q get "network.@device[$i].name"); do
 	[ "$name" = "br-lan" ] && brdev="@device[$i]" && break
 	i=$((i + 1))
 done
-if [ -n "$brdev" ]; then
-	uci set "network.$brdev.name"='br-mgmt'
-	# lan is already a port; add the other wired port + mesh mgmt. STP on:
-	# both puck ports end up in one bridge — a double-cabled puck must not
-	# loop the switch.
-	uci -q del_list "network.$brdev.ports"='lan'
-	uci add_list "network.$brdev.ports"='lan'
-	uci -q del_list "network.$brdev.ports"='wan'
-	uci add_list "network.$brdev.ports"='wan'
-	uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-	uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-	uci set "network.$brdev.stp"='1'
+# Field lesson (puck12, 2026-07-12): on the true first boot this script can
+# run before the board network config exists — br-lan is absent, and a
+# silent skip self-deletes the script with the job half done. Exit NONZERO
+# instead: uci-defaults keeps the script and retries next boot until the
+# board config is there.
+if [ -z "$brdev" ]; then
+	echo "gale-bootstrap: br-lan device not found (board config not" \
+	     "generated yet?) — will retry next boot" >&2
+	exit 1
 fi
+uci set "network.$brdev.name"='br-mgmt'
+# lan is already a port; add the other wired port + mesh mgmt. STP on:
+# both puck ports end up in one bridge — a double-cabled puck must not
+# loop the switch.
+uci -q del_list "network.$brdev.ports"='lan'
+uci add_list "network.$brdev.ports"='lan'
+uci -q del_list "network.$brdev.ports"='wan'
+uci add_list "network.$brdev.ports"='wan'
+uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
+uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
+uci set "network.$brdev.stp"='1'
 # batman mgmt sub-iface (the tag exists only inside the mesh)
 uci set network.bat_mgmt="device"
 uci set network.bat_mgmt.type='8021q'
