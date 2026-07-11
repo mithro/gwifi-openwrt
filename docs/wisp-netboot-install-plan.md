@@ -612,29 +612,29 @@ tools/gwifi-netboot/
 - `serve` binds `10.1.4.2:8080` (configurable `--bind` for tests: 127.0.0.1:0).
 
 ### Task 5.1: Scaffold + identity module (TDD)
-- [ ] Failing tests: valid fixture loads (names/ips/macs), version≠1 rejected,
+- [x] Failing tests: valid fixture loads (names/ips/macs), version≠1 rejected,
   duplicate MAC rejected, MACs normalized lowercase for dnsmasq. → implement
   `identity.py` → green → commit.
 
 ### Task 5.2: State module (TDD)
-- [ ] Failing tests: fresh state file auto-created; arm/disarm idempotent;
+- [x] Failing tests: fresh state file auto-created; arm/disarm idempotent;
   phone-home transitions per contract above; unknown MAC path; atomic write
   (tmp+rename, survives simulated crash = no partial file); bounded history
   (keep last 20 events/puck). → implement `state.py` → green → commit.
 
 ### Task 5.3: Renderer (TDD, golden test)
-- [ ] Failing tests: golden fragment for fixture (2 pucks, one armed);
+- [x] Failing tests: golden fragment for fixture (2 pucks, one armed);
   no-armed → no dhcp-boot line; byte-determinism. → implement `render.py` →
   green → commit.
 
 ### Task 5.4: dnsmasqctl (TDD with injected runner)
-- [ ] Failing tests: happy path calls `dnsmasq --test` then atomic install
+- [x] Failing tests: happy path calls `dnsmasq --test` then atomic install
   then `systemctl restart dnsmasq`; --test failure → no install, no restart,
   raises; runner injected as callable so tests never exec real commands. →
   implement → green → commit.
 
 ### Task 5.5: HTTP API (TDD against a live 127.0.0.1 server thread)
-- [ ] Failing tests: `GET /manifest` returns the manifest file bytes
+- [x] Failing tests: `GET /manifest` returns the manifest file bytes
   (404 when absent); `GET /status` JSON merges identity+state;
   `POST /phone-home` happy/failed/unknown-mac per contract, triggers
   render+restart via injected dnsmasqctl, malformed JSON → 400.
@@ -652,10 +652,10 @@ tools/gwifi-netboot/
   green → commit.
 
 ### Task 5.6: CLI + systemd unit + deploy
-- [ ] Failing tests for CLI arg handling (arm/disarm/status/render call the
+- [x] Failing tests for CLI arg handling (arm/disarm/status/render call the
   right functions; `render --check` exits nonzero on invalid identity file).
   → implement `cli.py` → green → commit.
-- [ ] Write `systemd/gwifi-netboot.service`:
+- [x] Write `systemd/gwifi-netboot.service`:
   ```ini
   [Unit]
   Description=gwifi puck netboot state + phone-home API
@@ -675,14 +675,22 @@ tools/gwifi-netboot/
   (Verify `uv` exists on wisp — `ssh wisp which uv`; if absent, deploy.sh
   installs it or the unit uses a venv made by deploy.sh. Decide at deploy,
   record in runbook.)
-- [ ] Write `deploy.sh` (idempotent: rsync `tools/gwifi-netboot/` →
+- [x] Write `deploy.sh` (idempotent: rsync `tools/gwifi-netboot/` →
   `wisp:/opt/gwifi-netboot`, install unit, `systemctl daemon-reload`,
   `enable --now`, then `curl -s http://10.1.4.2:8080/status` smoke).
-- [ ] Run deploy; smoke-test `status` (empty identity OK until Phase 3 lands);
+- [x] Run deploy; smoke-test `status` (empty identity OK until Phase 3 lands);
   commit.
 
 ### Task 5.7: End-to-end config integration on wisp
-- [ ] Deploy real `pucks.json` (Task 3.5 output). `gwifi-netboot status`
+
+> **Execution notes:** wisp has no `uv`; the tool is pure stdlib so the unit
+> runs `/usr/bin/python3 -m gwifi_netboot.cli serve` from
+> `WorkingDirectory=/opt/gwifi-netboot` (no venv). `deploy.py` (python, not
+> deploy.sh) stages via $HOME + sudo rsync (rsync had to be apt-installed on
+> wisp). Identity was hand-deployed from a local generate pending the
+> gdoc2netcfg PR #14 merge; the `dig @10.1.4.1 puck12...` check re-runs after
+> the merge lands the ten64 host-records (tracked in Task 3.5).
+- [x] Deploy real `pucks.json` (Task 3.5 output). `gwifi-netboot status`
   lists all OpenWRT pucks, none armed. Inspect
   `/etc/dnsmasq.d/gwifi-generated/pucks.conf` — dhcp-host lines present, no
   dhcp-boot. DNS (D7 — served by ten64 from the Phase-3 generated

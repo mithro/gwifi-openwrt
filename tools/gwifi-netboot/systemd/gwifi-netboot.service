@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+# gale puck netboot state + phone-home API — see gwifi-openwrt
+# docs/wisp-netboot-install-design.md (section 5.4).
+[Unit]
+Description=gwifi puck netboot state + phone-home API
+After=network-online.target dnsmasq.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gwifi-netboot
+# Pure-stdlib tool: system python3, no venv. Root: writes
+# /etc/dnsmasq.d/gwifi-generated and restarts dnsmasq.
+ExecStart=/usr/bin/python3 -m gwifi_netboot.cli serve --bind 10.1.4.2:8080
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
