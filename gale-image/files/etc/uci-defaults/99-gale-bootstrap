@@ -74,6 +74,12 @@ uci commit network
 
 # No local DHCP server on the (removed) lan; wisp serves the mgmt VLAN.
 uci -q set dhcp.lan.ignore='1'
+# DNS rebind protection drops RFC1918 A answers from upstream — which is
+# every internal record, including the OpenWISP controller (found live on
+# puck12: agent starved with curl exit 6/7, AAAA-only resolution).
+# Whitelist the site domain.
+uci -q del_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
+uci add_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
 uci -q commit dhcp
 
 # Firewall: mgmt joins the trusted zone (zone 0 = 'lan' in the default
