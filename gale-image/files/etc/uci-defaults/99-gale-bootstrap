@@ -87,6 +87,16 @@ uci -q del_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
 uci add_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
 uci -q commit dhcp
 
+# Remote syslog to wisp (UDP 6666, per-puck files in
+# /var/log/gale-netconsole/ via gwifi-netconsole.service): the fleet has
+# no field serial; logd forwards system AND kernel logs. (netconsole
+# proper is a dead end here: DSA/ipqess lack usable netpoll TX —
+# verified 2026-07-12; panics still escape, ramoops is the follow-up.)
+uci set system.@system[0].log_ip='10.1.4.2'
+uci set system.@system[0].log_port='6666'
+uci set system.@system[0].log_proto='udp'
+uci commit system
+
 # Firewall: mgmt joins the trusted zone (zone 0 = 'lan' in the default
 # config) so ssh + the openwisp agent work; the stale 'lan' member is
 # removed with the interface it referenced.
