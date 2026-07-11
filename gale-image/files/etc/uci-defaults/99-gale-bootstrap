@@ -49,19 +49,22 @@ fi
 uci set "network.$brdev.name"='br-mgmt'
 # lan is already a port; add the other wired port + mesh mgmt.
 #
-# NO STP — field finding (puck12, 2026-07-12): with stp='1' the puck's
-# port went deaf ~10 min after every boot (link up, FDB populated, RX
-# dead; the ipq40xx DSA driver is known to misprogram port STP states),
-# while every STP-less image was stable. Tradeoff: a DOUBLE-cabled puck
-# would loop the switch — the fleet is single-cabled; do not cable both
-# ports.
+# STP ON — protects the fleet from L2 loops (double-cabled puck, or a
+# future mesh path bridged to the wire). History: with the stock kernel,
+# stp='1' killed the port's RX ~10 min after boot (puck12, 2026-07-11).
+# Root cause was kernel patch 707: qca8k_phy_loopback_on_off()'s
+# lookup-state rmw calls used the state VALUE as the register MASK (the
+# DISABLED restore was a literal no-op), leaving ports misprogrammed
+# after the probe-time PSGMII calibration self-test — the same defect
+# escalated to a PHY-loopback broadcast storm on 2026-07-11. STP itself
+# was never the fault; this image's kernel carries the fix.
 uci -q del_list "network.$brdev.ports"='lan'
 uci add_list "network.$brdev.ports"='lan'
 uci -q del_list "network.$brdev.ports"='wan'
 uci add_list "network.$brdev.ports"='wan'
 uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-uci -q delete "network.$brdev.stp"
+uci set "network.$brdev.stp"='1'
 # Pin br-mgmt's MAC to the wan/label MAC: the bridge otherwise picks a
 # MAC by member-join timing (sometimes a random locally-administered
 # one), and BOTH the DHCP identity and the openwisp registration MAC

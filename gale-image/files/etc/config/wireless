@@ -1,7 +1,13 @@
-# Radios + 802.11s mesh ship ENABLED — proven live on puck07+puck12
-# 2026-07-12 (mesh plink ESTAB both ways, clean ath10k bring-up). The
-# earlier boot-crash was kmod-batman-adv alone, not wifi. batman/L2-mesh
-# fabric returns with the mesh work after bench root-cause.
+# Radios ship ENABLED — proven live on puck07+puck12 2026-07-11 (clean
+# ath10k bring-up, mesh plink ESTAB both ways during the pilot test).
+#
+# mesh0 ships DISABLED: with two wired pucks meshed, any bridging of
+# mesh traffic onto the wire forms an L2 loop — the 2026-07-11 mesh
+# pilot ended in a broadcast storm that took down VLAN 4 (see
+# docs/wisp-netboot-runbook.md). Mesh returns with the mesh design's R3
+# loop protection (batman-adv BLA), blocked on the kmod-batman-adv
+# boot-panic root-cause. Earlier note stands: that panic was batman
+# alone, not wifi.
 config wifi-device 'radio0'
 	option type 'mac80211'
 	option path 'platform/soc/a000000.wifi'
@@ -19,7 +25,7 @@ config wifi-device 'radio1'
 	option disabled '0'
 
 config wifi-iface 'mesh0'
-	option disabled '0'
+	option disabled '1'
 	option device 'radio1'
 	option mode 'mesh'
 	option mesh_id '__MESH_ID__'
