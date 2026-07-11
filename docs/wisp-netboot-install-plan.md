@@ -616,6 +616,10 @@ tools/gwifi-netboot/
   (404 when absent); `GET /status` JSON merges identity+state;
   `POST /phone-home` happy/failed/unknown-mac per contract, triggers
   render+restart via injected dnsmasqctl, malformed JSON → 400.
+  Also verify (here or at latest in the pilot) that `uclient-fetch` exits
+  nonzero on HTTP 4xx/5xx — the installer's "non-200 = delivery failure,
+  stay up" behavior depends on that exit-code mapping; if it doesn't, the
+  installer must check the response body instead.
   Wire-compat details the installer relies on: the body is parsed as JSON
   **regardless of Content-Type** (`uclient-fetch --post-data` sends
   `application/x-www-form-urlencoded`), and response codes are pinned —
@@ -697,18 +701,12 @@ handling), `gale-image/README.md`.
 
 - [ ] **Step 1:** Read `gale-image/build-gale-image.sh` and `gale.config`
   to learn the overlay mechanism (it stages `files/` into the OpenWrt build).
-- [ ] **Step 2:** Make the build stamp `files/etc/gwifi-image-id` at build
-  time with `gale-openwrt-<sha-to-be>` — chicken/egg: the sha isn't known
-  until the image exists. Resolution: stamp a **build id** instead
-  (`gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git -C . rev-parse --short HEAD)`)
-  and have `publish` read the id **out of the built image** rather than
-  hashing: `publish --image-id-from-build <id>`... Simpler and robust:
-  publish extracts `/etc/gwifi-image-id` from factory.bin is overkill.
-  **Decision (already encoded in Task 6.1's contract):** the build writes the
-  id (`gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git rev-parse --short HEAD)`)
-  to `files/etc/gwifi-image-id` AND emits it as `<factory.bin>.image-id` next
-  to the artifact; `publish` reads that sidecar so manifest and baked marker
-  always match.
+- [ ] **Step 2:** Stamp a **build id** (the image's own sha can't be baked
+  into itself): the build writes
+  `gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git rev-parse --short HEAD)`
+  to `files/etc/gwifi-image-id` AND emits it as `<factory.bin>.image-id`
+  next to the artifact; `publish` reads that sidecar (Task 6.1's contract)
+  so manifest and baked marker always match.
 - [ ] **Step 3:** Rebuild the factory image (long: run in background, log,
   progress every 60 s). Verify the marker is inside:
   `openwrt/build_dir/...` or extract from the built squashfs
@@ -786,6 +784,9 @@ if mount -o ro /dev/mmcblk0p2 /tmp/p2; then
     [ -r /tmp/p2/etc/gwifi-image-id ] && CURRENT=$(cat /tmp/p2/etc/gwifi-image-id)
     umount /tmp/p2          # nothing may hold the device during dd
 fi
+# NOTE: matches the MAC anywhere in the manifest body, not just the "force"
+# array — safe ONLY because publish.py fully controls the flat manifest and
+# no other field may contain MAC text. Revisit if the manifest grows fields.
 FORCE=$(echo "$MANIFEST" | grep -io "\"$MAC\"" || true)
 if [ "$CURRENT" = "$IMAGE_ID" ] && [ -z "$FORCE" ]; then
     log "already current ($IMAGE_ID)"
