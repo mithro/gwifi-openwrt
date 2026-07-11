@@ -29,9 +29,14 @@ tree (installer image), POSIX sh (installer init script).
   files — `/usr/sbin` is not in the non-root PATH).
 - Anything >60 s: run in background with a log and report progress ~every 60 s.
 
-**Phase dependency graph:** Phase 1 → Phase 2 → (Phase 4, Phase 7).
-Phase 3 (gdoc2netcfg) and Phase 5 (gwifi-netboot) and Phase 6 (installer) are
-independent of each other and of Phase 2; all must land before Phase 7 (pilot).
+**Phase dependency graph:** Phase 1 → Phase 2 → Phase 4 → Phase 7.
+The **development/TDD** portions of Phase 3 (gdoc2netcfg), Phase 5 (gwifi-netboot
+code, Tasks 5.1–5.5 + the code steps of 5.6) and Phase 6 (Tasks 6.1–6.3) are
+independent of each other and of Phase 2 and may run in parallel. The
+**deployment** tasks are not: Task 3.5 Step 3, Task 5.6's deploy steps, Task
+5.7, and Task 6.4 all require Phases 2 **and** 4 complete (wisp at 10.1.4.2
+with dnsmasq/nginx up) — deploying earlier crash-loops `serve` binding
+10.1.4.2 on the live VM. Everything lands before Phase 7 (pilot).
 
 **⚠ STOP-AND-CONFIRM points (live infra):** Task 2.3 (wisp VM shutdown/retarget)
 and Task 7.1 (switch port change). Announce before executing; these affect a
@@ -48,6 +53,9 @@ running service and the physical network.
 The `Welland - VLAN Allocations` tab (gid 208407908) drives gdoc2netcfg's VLAN
 topology. The fleet service-account key (`~/.config/gale-fleet/sheets-sa.json`)
 has write access to this spreadsheet (it is what `sync_sheet.py --write` uses).
+**Note:** `tools/fleet/` (incl. `sync_sheet.py`) is NOT on this branch — it
+lives on the unmerged `fleet-firmware-flash` branch; read it at
+`/home/tim/local/gwifi/gwifi-openwrt/.worktrees/fleet-firmware-flash/tools/fleet/`.
 
 - [ ] **Step 1:** Write `tmp/add_vlan4_row.py` (PEP-723 script, deps
   `google-auth`,`requests`) that appends one row to the tab via the Sheets API
@@ -342,6 +350,8 @@ Parser contract — `parse_gwifi_pucks(csv_text: str) -> list[PuckRecord]` where
 `serial: str`, `eth0: str`, `eth1: str` (colon-format, upper), `ip: str`
 (`10.1.4.{100+number}`). Rules (spec §5.3):
 - Only rows with `Firmware == "OpenWRT"` **and** non-empty Serial **and** MAC.
+- Duplicate serials → `ValueError` (spec §5.3 constraints; test this alongside
+  duplicate numbers).
 - `eth0` column used when present, else the `MAC` column (they are the same
   device label MAC); `eth1` used when present, else derived `eth0 + 1` (the
   fleet-verified pattern; wrap within the last octet is an error → raise).
@@ -534,7 +544,9 @@ server {
 ## Phase 5 — `gwifi-netboot` service (in this repo)
 
 All code under `tools/gwifi-netboot/` in the `wisp-netboot-install` worktree.
-Mimic `tools/fleet/` layout (pyproject.toml + uv.lock + package dir + tests/).
+Mimic the `tools/fleet/` layout (pyproject.toml + uv.lock + package dir +
+tests/) — that directory is on the `fleet-firmware-flash` branch only; read it
+at `/home/tim/local/gwifi/gwifi-openwrt/.worktrees/fleet-firmware-flash/tools/fleet/`.
 Stack: pure stdlib (`http.server`, `json`, `argparse`, `subprocess`) + pytest;
 no framework — the API is 3 endpoints.
 
@@ -604,7 +616,14 @@ tools/gwifi-netboot/
   (404 when absent); `GET /status` JSON merges identity+state;
   `POST /phone-home` happy/failed/unknown-mac per contract, triggers
   render+restart via injected dnsmasqctl, malformed JSON → 400.
-  → implement `httpd.py` (ThreadingHTTPServer) → green → commit.
+  Wire-compat details the installer relies on: the body is parsed as JSON
+  **regardless of Content-Type** (`uclient-fetch --post-data` sends
+  `application/x-www-form-urlencoded`), and response codes are pinned —
+  200 for recorded results **including unknown-MAC** (the installer treats
+  non-200 as delivery failure and stays up; an unknown MAC is a server-side
+  bookkeeping event, not an installer error), 400 only for undecodable
+  bodies/missing fields. → implement `httpd.py` (ThreadingHTTPServer) →
+  green → commit.
 
 ### Task 5.6: CLI + systemd unit + deploy
 - [ ] Failing tests for CLI arg handling (arm/disarm/status/render call the
@@ -656,11 +675,13 @@ tools/gwifi-netboot/
 **Files:** `tools/gwifi-netboot/gwifi_netboot/publish.py`, CLI hook
 `cli.py publish`, tests.
 
-Contract: `publish(factory_bin: Path, images_dir: Path, image_id: str|None)` —
-computes sha256 + size; `image_id` defaults to
-`gale-openwrt-<sha256[:12]>`; copies factory.bin into images_dir under a
-content-addressed name `factory-<sha12>.bin`; atomically writes
-`manifest.json`:
+Contract: `publish(factory_bin: Path, images_dir: Path, image_id_file: Path|None)` —
+computes sha256 + size; **`image_id` comes from the sidecar file**
+`<factory.bin>.image-id` written by the image build (Task 6.2 bakes the same
+id into `/etc/gwifi-image-id`, so manifest and on-eMMC marker always match) —
+`image_id_file` defaults to that sidecar path and a missing sidecar is an
+error; copies factory.bin into images_dir under a content-addressed name
+`factory-<sha12>.bin`; atomically writes `manifest.json`:
 ```json
 {"version": 1, "image_id": "gale-openwrt-abc123def456",
  "filename": "factory-abc123def456.bin",
@@ -683,11 +704,11 @@ handling), `gale-image/README.md`.
   and have `publish` read the id **out of the built image** rather than
   hashing: `publish --image-id-from-build <id>`... Simpler and robust:
   publish extracts `/etc/gwifi-image-id` from factory.bin is overkill.
-  **Decision:** the build writes the id to `files/etc/gwifi-image-id` AND
-  emits it as `<factory.bin>.image-id` next to the artifact; `publish` reads
-  that sidecar (`--image-id-file`, default `<factory>.image-id`) so manifest
-  and baked marker always match. Update Task 6.1's tests accordingly (id from
-  sidecar, not sha).
+  **Decision (already encoded in Task 6.1's contract):** the build writes the
+  id (`gale-openwrt-$(date -u +%Y%m%d%H%M%S)-g$(git rev-parse --short HEAD)`)
+  to `files/etc/gwifi-image-id` AND emits it as `<factory.bin>.image-id` next
+  to the artifact; `publish` reads that sidecar so manifest and baked marker
+  always match.
 - [ ] **Step 3:** Rebuild the factory image (long: run in background, log,
   progress every 60 s). Verify the marker is inside:
   `openwrt/build_dir/...` or extract from the built squashfs
@@ -719,8 +740,20 @@ log() { echo "gale-autoinstall: $*"; }
 SERVER=$(sed -n 's/.*tftpserverip=\([0-9.]*\).*/\1/p' /proc/cmdline)
 [ -n "$SERVER" ] || { log "no tftpserverip in cmdline; aborting"; exit 1; }
 API="http://$SERVER:8080"
-MAC=$(cat /sys/class/net/wan/address 2>&1 || cat /sys/class/net/eth0/address)
-SERIAL=$(strings /proc/device-tree/serial-number 2>&1 || echo unknown)
+
+# Guarded reads: NEVER `VAR=$(cat f 2>&1 || fallback)` — that captures the
+# error text into VAR when f is missing. Test readability first instead
+# (keeps the no-2>/dev/null convention AND clean values).
+MAC=""
+for f in /sys/class/net/wan/address /sys/class/net/eth0/address; do
+    [ -r "$f" ] && MAC=$(cat "$f") && break
+done
+[ -n "$MAC" ] || { log "no MAC readable"; exit 1; }
+SERIAL=unknown
+# device-tree serial-number is NUL-terminated; tr strips it (busybox has no
+# strings applet)
+[ -r /proc/device-tree/serial-number ] \
+    && SERIAL=$(tr -d '\0' < /proc/device-tree/serial-number)
 
 phone_home() {  # $1=result $2=detail $3=image_id
     uclient-fetch -q -O - --post-data \
@@ -749,8 +782,8 @@ IMAGE_ID=$(jfield image_id); FILENAME=$(jfield filename); SHA=$(jfield sha256)
 # Idempotence: read the installed marker (spec §5.5 step 2)
 CURRENT=""
 mkdir -p /tmp/p2
-if mount -o ro /dev/mmcblk0p2 /tmp/p2 2>&1; then
-    CURRENT=$(cat /tmp/p2/etc/gwifi-image-id 2>&1) || CURRENT=""
+if mount -o ro /dev/mmcblk0p2 /tmp/p2; then
+    [ -r /tmp/p2/etc/gwifi-image-id ] && CURRENT=$(cat /tmp/p2/etc/gwifi-image-id)
     umount /tmp/p2          # nothing may hold the device during dd
 fi
 FORCE=$(echo "$MANIFEST" | grep -io "\"$MAC\"" || true)
@@ -771,7 +804,9 @@ dd if=/tmp/factory.bin of=/dev/mmcblk0 bs=4M conv=fsync \
 sync; partx -u /dev/mmcblk0 2>&1 || true
 
 mount -o ro /dev/mmcblk0p2 /tmp/p2 || { phone_home failed "post-flash mount" "$IMAGE_ID"; exit 1; }
-VERIFY=$(cat /tmp/p2/etc/gwifi-image-id 2>&1); umount /tmp/p2
+VERIFY=""
+[ -r /tmp/p2/etc/gwifi-image-id ] && VERIFY=$(cat /tmp/p2/etc/gwifi-image-id)
+umount /tmp/p2
 [ "$VERIFY" = "$IMAGE_ID" ] || { phone_home failed "post-flash marker '$VERIFY'" "$IMAGE_ID"; exit 1; }
 
 phone_home success "flashed+verified" "$IMAGE_ID" || { log "flashed OK but phone-home unreachable; staying up"; exit 1; }
