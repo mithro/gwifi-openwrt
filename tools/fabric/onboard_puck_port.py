@@ -145,10 +145,18 @@ def main():
             "PVID verify failed"
         print(f"  pvid.{args.port} = {WIFI_VLAN}")
         for vid in CLIENT_VLANS:
+            # tagged = egress member AND cleared in the untagged mask:
+            # FASTPATH pre-sets untagged bits, and an untagged v<vid>
+            # member egresses frames without the tag — they then land in
+            # the puck's PVID (mgmt) VLAN (bit puck11's SSID clients).
             ensure_hex(sw, f"{EGRESS}.{vid}",
                        with_bit(sw.get_hex(f"{EGRESS}.{vid}"),
                                 args.port, True),
-                       f"vlan{vid}-tagged+p{args.port}")
+                       f"vlan{vid}-egress+p{args.port}")
+            ensure_hex(sw, f"{UNTAG}.{vid}",
+                       with_bit(sw.get_hex(f"{UNTAG}.{vid}"),
+                                args.port, False),
+                       f"vlan{vid}-untag-clear-p{args.port}")
         ensure_hex(sw, f"{EGRESS}.1",
                    with_bit(sw.get_hex(f"{EGRESS}.1"), args.port, False),
                    f"vlan1-egress-p{args.port}")
