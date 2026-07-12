@@ -107,12 +107,22 @@ sync
 # Full-table re-read (blockdev), NOT partx -u: the incremental update
 # against a completely replaced GPT left a half-old half-missing device
 # view on puck12 (2026-07-12). Retry while the kernel settles.
+#
+# The re-read must run UNCONDITIONALLY: on a stock-layout puck the OLD
+# table already has a p2 (16MB KERN-A), so "p2 exists" proves nothing —
+# gating the loop on it skipped rereadpt entirely and the mount hit the
+# stale vboot partition (puck11, 2026-07-12, "post-flash mount"). Our
+# factory GPT has exactly 2 partitions and stock has 12, so a live p3
+# means the kernel still holds the old table.
 i=0
-until [ -b /dev/mmcblk0p2 ] || [ $i -ge 10 ]; do
-    blockdev --rereadpt /dev/mmcblk0 || true
+blockdev --rereadpt /dev/mmcblk0 || true
+until { [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } || [ $i -ge 10 ]; do
     sleep 1
+    blockdev --rereadpt /dev/mmcblk0 || true
     i=$((i + 1))
 done
+{ [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } \
+    || { phone_home failed "stale partition table after rereadpt" "$IMAGE_ID"; exit 1; }
 
 mount -o ro /dev/mmcblk0p2 /tmp/p2 \
     || { phone_home failed "post-flash mount" "$IMAGE_ID"; exit 1; }
