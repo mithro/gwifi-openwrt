@@ -57,13 +57,21 @@ if [ -z "$brdev" ]; then
 	     "generated yet?) — will retry next boot" >&2
 	exit 1
 fi
+# batman rides as PER-VLAN 8021q uppers (bat0.<vid>), each an untagged
+# member of its bridge-vlan — NOT as a raw tagged port: batman only
+# registers TT/BLA softif-VLANs it sees via its own 8021q uppers; a raw
+# tagged bat0 port floods "adding TT local entry to non-existent VLAN"
+# and breaks per-VLAN BLA (seen live on puck12, g17b40e7).
 uci set "network.$brdev.name"='br0'
 uci set "network.$brdev.vlan_filtering"='1'
 uci set "network.$brdev.stp"='1'
 uci -q delete "network.$brdev.ports"
 uci add_list "network.$brdev.ports"='lan'
 uci add_list "network.$brdev.ports"='wan'
-uci add_list "network.$brdev.ports"='bat0'
+uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
+for kv in $VLANS; do
+	uci add_list "network.$brdev.ports"="bat0.${kv#*=}"
+done
 # Pin br0's MAC to the wan/label MAC: the bridge otherwise picks a
 # MAC by member-join timing (sometimes a random locally-administered
 # one), and BOTH the DHCP identity and the openwisp registration MAC
@@ -79,13 +87,21 @@ while devname=$(uci -q get "network.@device[$i].name"); do
 	fi
 	i=$((i + 1))
 done
-# mgmt bridge-vlan: untagged+pvid on the trunk, tagged across the mesh
+# batman per-VLAN 8021q uppers (mgmt + clients)
+for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
+	uci set network.bat_$vid="device"
+	uci set network.bat_$vid.type='8021q'
+	uci set network.bat_$vid.ifname='bat0'
+	uci set network.bat_$vid.vid="$vid"
+	uci set network.bat_$vid.name="bat0.$vid"
+done
+# mgmt bridge-vlan: untagged+pvid on the trunk and on the mesh leg
 uci set network.brvlan_mgmt="bridge-vlan"
 uci set network.brvlan_mgmt.device='br0'
 uci set network.brvlan_mgmt.vlan="$MGMT_BAT_VID"
 uci -q delete network.brvlan_mgmt.ports
 uci add_list network.brvlan_mgmt.ports='lan:u*'
-uci add_list network.brvlan_mgmt.ports='bat0:t'
+uci add_list network.brvlan_mgmt.ports="bat0.$MGMT_BAT_VID:u*"
 # Default lan/wan/wan6 interfaces go away: the ports live in br0 now.
 uci -q delete network.lan
 uci -q delete network.wan
@@ -135,7 +151,7 @@ for kv in $VLANS; do
 	uci set network.brvlan_$name.vlan="$vid"
 	uci -q delete network.brvlan_$name.ports
 	uci add_list network.brvlan_$name.ports='lan:t'
-	uci add_list network.brvlan_$name.ports='bat0:t'
+	uci add_list network.brvlan_$name.ports="bat0.$vid:u*"
 	# spare jack = untagged guest access port
 	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='wan:u*'
 	# interface on the bridge VLAN
