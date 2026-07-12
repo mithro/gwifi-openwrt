@@ -70,6 +70,13 @@ Puck-facing ports: **PVID 4 untagged** (`wifi` VLAN). Pilot: s1
 SNMP PoE port-cycle resets the puck (validate the ifIndex first; ports
 move — see `tools/RIG-POWER-CYCLE.md` conventions on the fleet branch).
 
+Onboarding a new puck port: `tools/fabric/onboard_puck_port.py --port N
+--puck puckNN` — VLAN 4 egress+untag, PVID 4, out of VLAN 1, ifAlias
+`eth0.puckNN`, everything verified by read-back; refuses trunk/uplink
+ports (>2 tagged VLANs). Finding the puck first: FDB hits only count on
+ports UNTAGGED in the hit's VLAN — trunk ports show every MAC on the
+site (tmp finder scripts embed this rule).
+
 ## Troubleshooting
 
 | Symptom | Meaning / action |
@@ -78,7 +85,8 @@ move — see `tools/RIG-POWER-CYCLE.md` conventions on the fleet branch).
 | TFTP starts, transfer stalls/storms | See fleet lore: TFTP retry storm was a firmware bug fixed in payload cd5ffa6; confirm the puck runs it (sheet Depthcharge column) |
 | No phone-home after TFTP completes | Installer running but can't reach `:8080` — check `gwifi-netboot` active, `curl http://10.1.4.2:8080/status`. Puck is parked in the RAM installer (by design); fix the API, power-cycle |
 | Phone-home `failed: sha256 mismatch` | Corrupt download or manifest/image drift — re-publish (step above rewrites both atomically) |
-| Phone-home `failed: post-flash marker` | Image built without the stamp — rebuild via `build-gale-image.sh` (never hand-copy a bare factory.bin) |
+| Phone-home `failed: post-flash marker` | Image built without the stamp — rebuild via `build-gale-image.sh` and **publish from `gale-image/out/` only** (the installer build regenerates `bin/targets/factory.bin` with stock files; publishing that shipped a marker-less image 2026-07-12) |
+| Phone-home `failed: post-flash mount` (stock-layout puck) | Kernel held the old 12-partition table after dd — installer ≥ g6c47674 always re-reads the table and checks the stale-table sentinel (a surviving p3). dd itself is usually fine: on the parked installer, `blockdev --rereadpt /dev/mmcblk0` then mount p2 and read the marker |
 | Puck reinstalls on every cycle | Phone-home lost after success is self-healing (`already-current` next boot). If it persists: state file wedged — inspect `gwn status`, `/var/lib/gwifi-netboot/state.json` |
 | Unknown gale on VLAN 4 | Gets a dynamic lease, **no bootfile**, boots its own eMMC. Appears in dnsmasq log only |
 | dnsmasq won't restart on wisp | Fragment gated by `dnsmasq --test` — but check `journalctl -u dnsmasq`; last-good fragment stays if render failed |
