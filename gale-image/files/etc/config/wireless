@@ -1,13 +1,11 @@
-# Radios ship ENABLED — proven live on puck07+puck12 2026-07-11 (clean
-# ath10k bring-up, mesh plink ESTAB both ways during the pilot test).
-#
-# mesh0 ships DISABLED: with two wired pucks meshed, any bridging of
-# mesh traffic onto the wire forms an L2 loop — the 2026-07-11 mesh
-# pilot ended in a broadcast storm that took down VLAN 4 (see
-# docs/wisp-netboot-runbook.md). Mesh returns with the mesh design's R3
-# loop protection (batman-adv BLA), blocked on the kmod-batman-adv
-# boot-panic root-cause. Earlier note stands: that panic was batman
-# alone, not wifi.
+# Radios + 802.11s mesh ship ENABLED (2026-07-12). The mesh joins bat0
+# via mesh_hardif (proto batadv_hardif, see 99-gale-bootstrap) with
+# batman-adv Bridge Loop Avoidance — the mesh design's R3 requirement —
+# so multiple WIRED pucks meshing no longer form an L2 loop (the raw
+# 802.11s pilot without BLA stormed VLAN 4 on 2026-07-11; see
+# docs/wisp-netboot-runbook.md). mesh_fwding stays 0: batman routes,
+# 802.11s only carries frames hop-by-hop. The old "batman panics boot"
+# lore is DEAD — it was the qca8k lookup-state bug (kernel patch 707).
 config wifi-device 'radio0'
 	option type 'mac80211'
 	option path 'platform/soc/a000000.wifi'
@@ -25,7 +23,7 @@ config wifi-device 'radio1'
 	option disabled '0'
 
 config wifi-iface 'mesh0'
-	option disabled '1'
+	option disabled '0'
 	option device 'radio1'
 	option mode 'mesh'
 	option mesh_id '__MESH_ID__'
