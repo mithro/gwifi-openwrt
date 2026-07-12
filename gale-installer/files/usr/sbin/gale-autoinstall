@@ -132,6 +132,20 @@ umount /tmp/p2
 [ "$VERIFY" = "$IMAGE_ID" ] \
     || { phone_home failed "post-flash marker '$VERIFY'" "$IMAGE_ID"; exit 1; }
 
+# Invalidate the old overlay (rootfs_data lives in p2 BEYOND the image
+# extent, so dd leaves it intact and its stale /etc/config shadows the
+# new image's baked config — bit the mesh rollout on puck11 2026-07-12).
+# Zeroing 8 MiB from the first 64 KiB boundary past the image kills any
+# f2fs superblock; fstools reformats on first boot (= clean firstboot,
+# and the openwisp agent re-registers via the baked shared secret,
+# matching its pre-created device by MAC).
+P2_START=$(( $(cat /sys/block/mmcblk0/mmcblk0p2/start) * 512 ))
+IMG_BYTES=$(wc -c < /tmp/factory.bin)
+OVL_64K=$(( (IMG_BYTES - P2_START + 65535) / 65536 ))
+dd if=/dev/zero of=/dev/mmcblk0p2 bs=64k seek="$OVL_64K" count=128 conv=fsync \
+    || { phone_home failed "overlay invalidation dd" "$IMAGE_ID"; exit 1; }
+log "old overlay invalidated (64k blocks $OVL_64K..$((OVL_64K + 127)))"
+
 phone_home success "flashed+verified" "$IMAGE_ID" \
     || { log "flashed OK but phone-home unreachable; staying up"; exit 1; }
 log "success — rebooting to eMMC"
