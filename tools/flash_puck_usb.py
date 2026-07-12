@@ -70,7 +70,9 @@ FLASH_ORDER = ("RW_SECTION_A", "RW_SECTION_B", "GBB")
 OP_READ, OP_WREN = 0x03, 0x06
 OP_SECTOR_ERASE, OP_BLOCK_ERASE, OP_PAGE_PROGRAM = 0x20, 0xD8, 0x02
 OP_RDID, OP_RDSR1, OP_RDSR2 = 0x9F, 0x05, 0x35
+OP_WRSR = 0x01
 SR1_WIP, SR1_WEL, SR1_BP, SR1_TB, SR1_SRP0 = 0x01, 0x02, 0x1C, 0x20, 0x80
+SR2_CMP = 0x40  # complement-protect: inverts the BP range (protects ALL when BP=0)
 
 SECTOR_ERASE_DEADLINE_S = 3.0        # W25Q64 4K: typ 45 ms, max 400 ms
 BLOCK_ERASE_DEADLINE_S = 4.0         # W25Q64 64K: typ 150 ms, max 2000 ms
@@ -1174,6 +1176,50 @@ def cmd_flash(args, log):
     return 0
 
 
+def cmd_unprotect(args, log):
+    """Clear the SPI software write-protection (SR1 BP/TB/SRP0; SR2 CMP).
+
+    Some stock units ship with block-protect latched (first seen 2026-07-12:
+    2125HW00PL3, SR1=0xb8 = SRP0|TB|BP2|BP1), which makes write_region refuse
+    and every erase a guaranteed no-op.  With the EC freshly booted the WP
+    pin is deasserted (SYS_PWR_EN defaults high), so the status register is
+    writable even with SRP0 set.  Every other SR2 bit (notably QE) is
+    preserved.  Dry-run by default; --commit writes.
+    """
+    sess = Session(log)
+    try:
+        sess.bring_up()
+        b = sess.bridge
+        sr1, sr2 = read_sr(b)
+        info("SR1=0x%02x SR2=0x%02x" % (sr1, sr2))
+        if not (sr1 & (SR1_BP | SR1_TB | SR1_SRP0)) and not (sr2 & SR2_CMP):
+            info("no software protection set -- nothing to do")
+            return 0
+        want_sr2 = sr2 & ~SR2_CMP
+        if not args.commit:
+            info("would write SR1=0x00 SR2=0x%02x (dry-run; pass --commit)"
+                 % want_sr2)
+            return 0
+        b.transact([OP_WREN], 0, context="WREN wrsr")
+        wel = read_sr(b)[0]
+        if not (wel & SR1_WEL):
+            raise FatalError("WREN did not latch WEL (SR1=0x%02x)" % wel)
+        b.transact([OP_WRSR, 0x00, want_sr2], 0, context="WRSR")
+        wait_wip_clear(b, 1.0, "wrsr")
+        sr1b, sr2b = read_sr(b)
+        info("after: SR1=0x%02x SR2=0x%02x" % (sr1b, sr2b))
+        if (sr1b & (SR1_BP | SR1_TB | SR1_SRP0)) or (sr2b & SR2_CMP):
+            raise FatalError(
+                "protection still set after WRSR (SR1=0x%02x SR2=0x%02x) -- "
+                "hardware WP asserted?  A fresh EC cold-boot restores "
+                "SYS_PWR_EN=high (WP deasserted); see gale-ec-power-locked."
+                % (sr1b, sr2b))
+        info("software write-protection CLEARED")
+        return 0
+    finally:
+        sess.teardown()
+
+
 def cmd_read(args, log):
     """Read [offset, offset+length) of the SPI flash to a file.
 
@@ -1523,6 +1569,12 @@ def main(argv=None):
     fl.add_argument("--abort-every", type=int, default=512,
                     help="inline AP-guard poll interval, in SPI transactions")
 
+    up = sub.add_parser("unprotect", help="clear SPI software write-protect "
+                        "(SR1 BP/TB/SRP0 + SR2 CMP; QE preserved); dry-run by "
+                        "default")
+    up.add_argument("--commit", action="store_true",
+                    help="actually write the status registers")
+
     bp = sub.add_parser("budgetprobe", help="characterize the small-transfer wall; "
                         "read-only")
     bp.add_argument("--burn", default="rdid",
@@ -1580,6 +1632,8 @@ def main(argv=None):
             return cmd_ec(args, log)
         if args.command == "flash":
             return cmd_flash(args, log)
+        if args.command == "unprotect":
+            return cmd_unprotect(args, log)
         return cmd_shakedown(args, log)
     except FatalError as e:
         log.log("FATAL", str(e))
