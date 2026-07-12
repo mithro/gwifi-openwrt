@@ -2,15 +2,11 @@
 # 99-gale-bootstrap — first-boot network/mesh setup for gale auto-provisioning.
 # Idempotent: uses fixed UCI section names so re-runs overwrite, not duplicate.
 #
-# Management (REVISED for the wisp netboot-install design D4/D7, 2026-07-12 —
-# was tagged VLAN 5): the wifi VLAN (4) is UNTAGGED on the puck's switch
-# port, so br-mgmt bridges BOTH wired ports raw (either may hold the cable;
-# the netboot firmware and OpenWrt disagree on which physical port carries
-# the label MAC) plus bat0.4 for mesh-side mgmt. DHCP from wisp
-# (10.1.4.2); router/DNS = ten64 (10.1.4.1).
-#
-# Client VLANs stay tagged over the wired trunk + the mesh; APs attach later
-# via OpenWISP (wifi-iface network=br-<name>).
+# Topology: ONE VLAN-aware bridge br0 (ports: lan=trunk, wan=guest
+# access, bat0=mesh) with bridge-vlans — mgmt 4 untagged+pvid on the
+# trunk, client VLANs tagged on trunk+mesh. mgmt DHCP from wisp
+# (10.1.4.2); router/DNS = ten64 (10.1.4.1). APs attach via OpenWISP
+# (wifi-iface network=roam/iot/guest).
 VLANS="int=10 roam=20 iot=90 guest=99"
 MGMT_BAT_VID=4
 
@@ -28,7 +24,22 @@ set network.mesh_hardif.master='bat0'
 set network.mesh_hardif.mtu='1536'
 EOF
 
-# --- management bridge: default br-lan becomes br-mgmt ---
+# --- ONE VLAN-AWARE BRIDGE (br0) ---
+# Per-VLAN software bridges over 8021q uppers of a DSA port DO NOT WORK
+# when that port is also hw-offload-bridged untagged: the qca8k switch
+# claims tagged ingress for the vlan-unaware bridge and the uppers never
+# receive (found 2026-07-12 — SSID clients' DHCP replies vanished
+# between the wire and br-iot). The supported DSA pattern is a single
+# bridge with vlan_filtering=1 and bridge-vlan sections; wifi ifaces
+# join per-VLAN via their interface's br0.<vid> device, and bat0 rides
+# as a tagged port (batman carries the tags; BLA operates per-vid).
+#
+# Port roles (user directive 2026-07-12): the CABLED jack (OpenWrt
+# 'lan') is the trunk — mgmt (4) untagged+pvid, client VLANs tagged;
+# the spare jack (OpenWrt 'wan') is an untagged GUEST access port.
+#
+# STP stays ON (kernel patch 707 fixed the old qca8k misprogramming
+# that once made stp=1 look lethal; see runbook).
 # Find the board-generated br-lan device section (anonymous; index varies).
 i=0
 brdev=""
@@ -46,33 +57,17 @@ if [ -z "$brdev" ]; then
 	     "generated yet?) — will retry next boot" >&2
 	exit 1
 fi
-uci set "network.$brdev.name"='br-mgmt'
-# lan is already a port; add the other wired port + mesh mgmt.
-#
-# STP ON — protects the fleet from L2 loops (double-cabled puck, or a
-# future mesh path bridged to the wire). History: with the stock kernel,
-# stp='1' killed the port's RX ~10 min after boot (puck12, 2026-07-11).
-# Root cause was kernel patch 707: qca8k_phy_loopback_on_off()'s
-# lookup-state rmw calls used the state VALUE as the register MASK (the
-# DISABLED restore was a literal no-op), leaving ports misprogrammed
-# after the probe-time PSGMII calibration self-test — the same defect
-# escalated to a PHY-loopback broadcast storm on 2026-07-11. STP itself
-# was never the fault; this image's kernel carries the fix.
-# Port roles (user directive 2026-07-12): the CABLED jack (OpenWrt
-# 'lan') is the VLAN trunk — untagged mgmt + tagged client VLANs; the
-# spare jack (OpenWrt 'wan') is an untagged GUEST access port (it joins
-# br-guest in the client-VLAN loop below), so a device plugged into a
-# puck lands on the guest network, never mgmt.
-uci -q del_list "network.$brdev.ports"='lan'
-uci add_list "network.$brdev.ports"='lan'
-uci -q del_list "network.$brdev.ports"='wan'
-uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
+uci set "network.$brdev.name"='br0'
+uci set "network.$brdev.vlan_filtering"='1'
 uci set "network.$brdev.stp"='1'
-# Pin br-mgmt's MAC to the wan/label MAC: the bridge otherwise picks a
+uci -q delete "network.$brdev.ports"
+uci add_list "network.$brdev.ports"='lan'
+uci add_list "network.$brdev.ports"='wan'
+uci add_list "network.$brdev.ports"='bat0'
+# Pin br0's MAC to the wan/label MAC: the bridge otherwise picks a
 # MAC by member-join timing (sometimes a random locally-administered
 # one), and BOTH the DHCP identity and the openwisp registration MAC
-# come from br-mgmt (the agent ignores mac_interface — verified
+# come from the mgmt bridge (the agent ignores mac_interface — verified
 # 2026-07-12; puck07 registered a junk random-MAC device).
 i=0
 while devname=$(uci -q get "network.@device[$i].name"); do
@@ -84,18 +79,19 @@ while devname=$(uci -q get "network.@device[$i].name"); do
 	fi
 	i=$((i + 1))
 done
-# batman mgmt sub-iface (the tag exists only inside the mesh)
-uci set network.bat_mgmt="device"
-uci set network.bat_mgmt.type='8021q'
-uci set network.bat_mgmt.ifname='bat0'
-uci set network.bat_mgmt.vid="$MGMT_BAT_VID"
-uci set network.bat_mgmt.name="bat0.$MGMT_BAT_VID"
-# Default lan/wan/wan6 interfaces go away: both ports now live in br-mgmt.
+# mgmt bridge-vlan: untagged+pvid on the trunk, tagged across the mesh
+uci set network.brvlan_mgmt="bridge-vlan"
+uci set network.brvlan_mgmt.device='br0'
+uci set network.brvlan_mgmt.vlan="$MGMT_BAT_VID"
+uci -q delete network.brvlan_mgmt.ports
+uci add_list network.brvlan_mgmt.ports='lan:u*'
+uci add_list network.brvlan_mgmt.ports='bat0:t'
+# Default lan/wan/wan6 interfaces go away: the ports live in br0 now.
 uci -q delete network.lan
 uci -q delete network.wan
 uci -q delete network.wan6
 uci set network.mgmt="interface"
-uci set network.mgmt.device='br-mgmt'
+uci set network.mgmt.device="br0.$MGMT_BAT_VID"
 uci set network.mgmt.proto='dhcp'
 uci commit network
 
@@ -127,39 +123,24 @@ uci -q del_list firewall.@zone[0].network='mgmt'
 uci add_list firewall.@zone[0].network='mgmt'
 uci commit firewall
 
-# --- client VLANs: tagged wired trunk + tagged mesh, L2-only bridges ---
-# The tagged sub-ifaces ride 'lan' — the fleet's CABLED jack (field
-# fact: the cabled gale port is OpenWrt 'lan'; 'wan' is empty). The
-# original design said 'wan' and every client VLAN silently rode an
-# unplugged port (found 2026-07-12 when SSID clients got no DHCP).
+# --- client VLANs: bridge-vlans on br0 (trunk tagged + mesh tagged) ---
 # The switch side must carry these VLANs tagged on each puck port
-# (tools/fabric/onboard_puck_port.py does this).
+# (tools/fabric/onboard_puck_port.py does this). Wifi APs attach via
+# wifi-iface network=<name>: netifd sees the interface's br0.<vid>
+# device and joins the AP to br0 untagged in that VLAN.
 for kv in $VLANS; do
 	name=${kv%=*}; vid=${kv#*=}
-	# tagged sub-iface on the cabled wired trunk port 'lan'
-	uci set network.lan_$vid="device"
-	uci set network.lan_$vid.type='8021q'
-	uci set network.lan_$vid.ifname='lan'
-	uci set network.lan_$vid.vid="$vid"
-	uci set network.lan_$vid.name="lan.$vid"
-	# tagged sub-iface on the batman mesh
-	uci set network.bat_$vid="device"
-	uci set network.bat_$vid.type='8021q'
-	uci set network.bat_$vid.ifname='bat0'
-	uci set network.bat_$vid.vid="$vid"
-	uci set network.bat_$vid.name="bat0.$vid"
-	# per-VLAN bridge: wired + mesh (APs auto-attach via wifi-iface network=)
-	uci set network.br_$name="device"
-	uci set network.br_$name.type='bridge'
-	uci set network.br_$name.name="br-$name"
-	uci -q delete network.br_$name.ports
-	uci add_list network.br_$name.ports="lan.$vid"
-	uci add_list network.br_$name.ports="bat0.$vid"
+	uci set network.brvlan_$name="bridge-vlan"
+	uci set network.brvlan_$name.device='br0'
+	uci set network.brvlan_$name.vlan="$vid"
+	uci -q delete network.brvlan_$name.ports
+	uci add_list network.brvlan_$name.ports='lan:t'
+	uci add_list network.brvlan_$name.ports='bat0:t'
 	# spare jack = untagged guest access port
-	[ "$name" = "guest" ] && uci add_list network.br_$name.ports='wan'
-	# interface on the bridge
+	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='wan:u*'
+	# interface on the bridge VLAN
 	uci set network.$name="interface"
-	uci set network.$name.device="br-$name"
+	uci set network.$name.device="br0.$vid"
 	uci set network.$name.proto='none'
 done
 uci commit network
