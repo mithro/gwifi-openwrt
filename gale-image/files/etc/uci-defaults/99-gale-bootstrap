@@ -58,10 +58,14 @@ uci set "network.$brdev.name"='br-mgmt'
 # after the probe-time PSGMII calibration self-test — the same defect
 # escalated to a PHY-loopback broadcast storm on 2026-07-11. STP itself
 # was never the fault; this image's kernel carries the fix.
+# Port roles (user directive 2026-07-12): the CABLED jack (OpenWrt
+# 'lan') is the VLAN trunk — untagged mgmt + tagged client VLANs; the
+# spare jack (OpenWrt 'wan') is an untagged GUEST access port (it joins
+# br-guest in the client-VLAN loop below), so a device plugged into a
+# puck lands on the guest network, never mgmt.
 uci -q del_list "network.$brdev.ports"='lan'
 uci add_list "network.$brdev.ports"='lan'
 uci -q del_list "network.$brdev.ports"='wan'
-uci add_list "network.$brdev.ports"='wan'
 uci -q del_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
 uci set "network.$brdev.stp"='1'
@@ -124,14 +128,20 @@ uci add_list firewall.@zone[0].network='mgmt'
 uci commit firewall
 
 # --- client VLANs: tagged wired trunk + tagged mesh, L2-only bridges ---
+# The tagged sub-ifaces ride 'lan' — the fleet's CABLED jack (field
+# fact: the cabled gale port is OpenWrt 'lan'; 'wan' is empty). The
+# original design said 'wan' and every client VLAN silently rode an
+# unplugged port (found 2026-07-12 when SSID clients got no DHCP).
+# The switch side must carry these VLANs tagged on each puck port
+# (tools/fabric/onboard_puck_port.py does this).
 for kv in $VLANS; do
 	name=${kv%=*}; vid=${kv#*=}
-	# tagged sub-iface on the wired DSA trunk port 'wan'
-	uci set network.wan_$vid="device"
-	uci set network.wan_$vid.type='8021q'
-	uci set network.wan_$vid.ifname='wan'
-	uci set network.wan_$vid.vid="$vid"
-	uci set network.wan_$vid.name="wan.$vid"
+	# tagged sub-iface on the cabled wired trunk port 'lan'
+	uci set network.lan_$vid="device"
+	uci set network.lan_$vid.type='8021q'
+	uci set network.lan_$vid.ifname='lan'
+	uci set network.lan_$vid.vid="$vid"
+	uci set network.lan_$vid.name="lan.$vid"
 	# tagged sub-iface on the batman mesh
 	uci set network.bat_$vid="device"
 	uci set network.bat_$vid.type='8021q'
@@ -143,8 +153,10 @@ for kv in $VLANS; do
 	uci set network.br_$name.type='bridge'
 	uci set network.br_$name.name="br-$name"
 	uci -q delete network.br_$name.ports
-	uci add_list network.br_$name.ports="wan.$vid"
+	uci add_list network.br_$name.ports="lan.$vid"
 	uci add_list network.br_$name.ports="bat0.$vid"
+	# spare jack = untagged guest access port
+	[ "$name" = "guest" ] && uci add_list network.br_$name.ports='wan'
 	# interface on the bridge
 	uci set network.$name="interface"
 	uci set network.$name.device="br-$name"

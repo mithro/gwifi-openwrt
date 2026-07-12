@@ -4,11 +4,13 @@
 
 Steps (each verified by read-back — FASTPATH answers commitFailed on
 sets it APPLIES, so success is judged only by re-reading):
-  1. refuse to touch trunk/uplink ports (tagged member of >2 VLANs)
+  1. refuse to touch trunk/uplink ports (tagged member of >2 VLANs,
+     ignoring the puck client VLANs this tool itself adds)
   2. VLAN 4: egress + untagged member
   3. PVID 4
-  4. drop the port from VLAN 1 (egress + untagged)
-  5. ifAlias = eth0.<puck> (site convention, e.g. eth0.puck11)
+  4. client VLANs 10/20/90/99 tagged (SSID bridges ride lan.<vid>)
+  5. drop the port from VLAN 1 (egress + untagged)
+  6. ifAlias = eth0.<puck> (site convention, e.g. eth0.puck11)
 
 Usage: onboard_puck_port.py --port 11 --puck puck11 [--switch 10.1.5.22]
 Community strings via SNMP_READ_COMMUNITY / SNMP_WRITE_COMMUNITY.
@@ -23,7 +25,8 @@ PVID = "1.3.6.1.2.1.17.7.1.4.5.1.1"
 IFALIAS = "1.3.6.1.2.1.31.1.1.1.18"
 PHYS_OCTETS = 7  # compare only physical ports; FASTPATH appends LAG bits
 WIFI_VLAN = 4
-TRUNK_TAGGED_LIMIT = 2  # >2 tagged VLANs = trunk/uplink, refuse
+CLIENT_VLANS = (10, 20, 90, 99)  # int/roam/iot/guest — tagged to the puck
+TRUNK_TAGGED_LIMIT = 2  # >2 tagged VLANs (beyond client set) = trunk, refuse
 
 
 def run(argv):
@@ -121,7 +124,7 @@ def main():
                 os.environ.get("SNMP_READ_COMMUNITY", "public"),
                 os.environ.get("SNMP_WRITE_COMMUNITY", "private"))
 
-    tags = tagged_vlans(sw, args.port)
+    tags = [v for v in tagged_vlans(sw, args.port) if v not in CLIENT_VLANS]
     if len(tags) > TRUNK_TAGGED_LIMIT and not args.alias_only:
         raise SystemExit(
             f"REFUSING: port {args.port} looks like a trunk/uplink "
@@ -141,6 +144,11 @@ def main():
         assert sw.get(f"{PVID}.{args.port}") == str(WIFI_VLAN), \
             "PVID verify failed"
         print(f"  pvid.{args.port} = {WIFI_VLAN}")
+        for vid in CLIENT_VLANS:
+            ensure_hex(sw, f"{EGRESS}.{vid}",
+                       with_bit(sw.get_hex(f"{EGRESS}.{vid}"),
+                                args.port, True),
+                       f"vlan{vid}-tagged+p{args.port}")
         ensure_hex(sw, f"{EGRESS}.1",
                    with_bit(sw.get_hex(f"{EGRESS}.1"), args.port, False),
                    f"vlan1-egress-p{args.port}")
