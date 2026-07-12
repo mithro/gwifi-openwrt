@@ -114,12 +114,17 @@ sync
 # stale vboot partition (puck11, 2026-07-12, "post-flash mount"). Our
 # factory GPT has exactly 2 partitions and stock has 12, so a live p3
 # means the kernel still holds the old table.
+# Settle AFTER each re-read before testing: rereadpt deletes and
+# re-adds the partition nodes, so testing immediately races their
+# re-creation — and re-reading again on failure restarts the race
+# (bit puck07 2026-07-12: 10 false "stale" verdicts on a good table).
 i=0
-blockdev --rereadpt /dev/mmcblk0 || true
-until { [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } || [ $i -ge 10 ]; do
-    sleep 1
+while :; do
     blockdev --rereadpt /dev/mmcblk0 || true
+    sleep 1
+    { [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } && break
     i=$((i + 1))
+    [ $i -ge 10 ] && break
 done
 { [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } \
     || { phone_home failed "stale partition table after rereadpt" "$IMAGE_ID"; exit 1; }
