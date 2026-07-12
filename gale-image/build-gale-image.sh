@@ -40,8 +40,17 @@ echo "image id: $IMAGE_ID"
 # 3) build
 ( cd "$OWRT" && make -j"${JOBS:-6}" )
 
-# 4) sidecar for the publish step
+# 4) copy artifacts to a build-private out/ dir + sidecar for publish.
+# bin/targets is SHARED with other builds: the installer build regenerates
+# factory.bin there with stock files (no marker, no bootstrap). Publishing
+# from bin/targets after another build shipped a stock image to the fleet
+# on 2026-07-12 ("post-flash marker ''"). Always publish from out/.
 BIN="$OWRT/bin/targets/ipq40xx/chromium/openwrt-ipq40xx-chromium-google_wifi-squashfs-factory.bin"
-printf '%s\n' "$IMAGE_ID" > "$BIN.image-id"
-echo "images: $OWRT/bin/targets/ipq40xx/chromium/"
-echo "sidecar: $BIN.image-id ($IMAGE_ID)"
+OUT="$HERE/out"
+mkdir -p "$OUT"
+cp "$BIN" "$OUT/factory-$IMAGE_ID.bin"
+ln -sf "factory-$IMAGE_ID.bin" "$OUT/factory.bin"
+printf '%s\n' "$IMAGE_ID" > "$OUT/factory.bin.image-id"
+echo "artifact: $OUT/factory-$IMAGE_ID.bin"
+echo "sidecar: $OUT/factory.bin.image-id ($IMAGE_ID)"
+echo "publish from $OUT - never from bin/targets"
