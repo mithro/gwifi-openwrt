@@ -38,24 +38,51 @@ phone_home() {  # $1=result $2=detail $3=image_id
 }
 
 has_10_addr() { ip -4 addr show 2>&1 | grep -q "inet 10\."; }
+carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>&1)" = "1" ]; }
+
+# The throwaway installer runs on the mgmt VLAN and only needs to reach
+# wisp; the stock image firewall puts the WAN jack in an UNTRUSTED zone,
+# so a puck cabled in the black/WAN port (validated black=wan on both
+# rigs 2026-07-13) had its address land in the wan zone and mgmt was
+# blocked — while LAN-cabled pucks (s1) landed in the trusted lan zone
+# and worked. Drop the firewall entirely: no zones, no asymmetry.
+/etc/init.d/firewall stop 2>&1 || true
+{ command -v fw4 >/dev/null && fw4 flush; } 2>&1 || true
+{ command -v iptables >/dev/null && iptables -P INPUT ACCEPT && \
+  iptables -P OUTPUT ACCEPT && iptables -F; } 2>&1 || true
 
 wait_net() {
-    # Cabled via the 'wan' port: netifd's own DHCP client gets an address.
+    # DHCP on whichever wired jack actually has carrier, PLUS an explicit
+    # VLAN-4 tagged subinterface on it — the puck's switch port delivers
+    # VLAN 4 either untagged (access; the raw iface gets it) or tagged
+    # (trunk; the .4 subiface gets it), and the cable may sit in either
+    # physical jack (fleet s1 = blue/lan, emx = black/wan). netifd's own
+    # dhcp on 'wan' may already have landed an address — check first.
     i=0
-    while [ $i -lt 15 ]; do
-        has_10_addr && return 0
-        sleep 2
-        i=$((i + 1))
+    while [ $i -lt 8 ]; do has_10_addr && return 0; sleep 2; i=$((i + 1)); done
+    for base in wan lan; do
+        [ -e "/sys/class/net/$base" ] || continue
+        carrier "$base" || continue
+        ip link set "$base" up 2>&1
+        # VLAN-4 tagged subiface (idempotent)
+        [ -e "/sys/class/net/$base.4" ] || \
+            ip link add link "$base" name "$base.4" type vlan id 4 2>&1
+        ip link set "$base.4" up 2>&1
     done
-    # Cabled via the 'lan' port (fleet reality — the gale label MAC maps
-    # to Linux 'wan', but either physical port may hold the cable): lan is
-    # enslaved in br-lan (static 192.168.1.1). DHCP must run on the BRIDGE
-    # — udhcpc on the enslaved port sends DISCOVERs but never sees the
-    # offers (verified live on puck12, 2026-07-12). -n -q: exit after
-    # lease or a few tries; the default script installs the address.
-    for dev in wan br-lan; do
-        [ -e "/sys/class/net/$dev" ] && udhcpc -n -q -i "$dev"
-        has_10_addr && return 0
+    i=0
+    while [ $i -lt 12 ]; do
+        # Prefer the carrier-up raw jack + its .4; keep br-lan (the
+        # enslaved-lan bridge) as the historical fallback.
+        for dev in wan wan.4 lan lan.4 br-lan; do
+            [ -e "/sys/class/net/$dev" ] || continue
+            case "$dev" in
+                br-lan) : ;;                         # bridge: always try
+                *) carrier "${dev%.4}" || continue ;; # skip dead jack
+            esac
+            udhcpc -n -q -t 3 -i "$dev" 2>&1
+            has_10_addr && return 0
+        done
+        sleep 2; i=$((i + 1))
     done
     return 1
 }
