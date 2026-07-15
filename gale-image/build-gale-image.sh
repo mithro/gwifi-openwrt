@@ -7,6 +7,7 @@ SECRETS="$HERE/gale-secrets.conf"
 # shellcheck disable=SC1090
 . "$SECRETS"
 : "${OPENWISP_SHARED_SECRET:?}"; : "${MESH_SAE_KEY:?}"; : "${MESH_ID:?}"; : "${OPENWISP_URL:?}"
+: "${TOPOLOGY_RECEIVE_URL:?}"
 
 # 1) render overlay into the build tree (gitignored there)
 rm -rf "$OWRT/files"
@@ -17,12 +18,16 @@ cp -a "$HERE/files" "$OWRT/files"
 esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'; }
 ss=$(esc "$OPENWISP_SHARED_SECRET"); mk=$(esc "$MESH_SAE_KEY")
 mi=$(esc "$MESH_ID"); ou=$(esc "$OPENWISP_URL")
+tu=$(esc "$TOPOLOGY_RECEIVE_URL")
 find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__OPENWISP_SHARED_SECRET__|$ss|g" \
 	-e "s|__MESH_SAE_KEY__|$mk|g" \
 	-e "s|__MESH_ID__|$mi|g" \
-	-e "s|__OPENWISP_URL__|$ou|g" {} +
-chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap"
+	-e "s|__OPENWISP_URL__|$ou|g" \
+	-e "s|__TOPOLOGY_RECEIVE_URL__|$tu|g" {} +
+chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap" \
+	"$OWRT/files/etc/init.d/gwifi-topology" \
+	"$OWRT/files/usr/sbin/gwifi-topology-push"
 
 # 1b) stamp the image id — the netboot installer's idempotence marker.
 # The same id is emitted as a sidecar next to factory.bin so the publish

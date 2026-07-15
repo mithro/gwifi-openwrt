@@ -1,0 +1,13 @@
+config 'alfred' 'alfred'
+	# Run alfred over the batman softif so its announcements are
+	# batman-forwarded across every hop — that is how each puck ends up
+	# with the WHOLE-mesh vis dataset (not just its 1-hop view).
+	list interface 'bat0'
+	option mode 'master'
+	option batmanif 'bat0'
+	# start_vis => the init script also launches `batadv-vis -i bat0 -s`,
+	# which feeds THIS node's local topology into alfred for distribution.
+	option start_vis '1'
+	option run_facters '1'
+	# NOTE: no `option disabled` — the stock package ships it disabled; we
+	# override the whole file so alfred is enabled on the gwifi fleet.

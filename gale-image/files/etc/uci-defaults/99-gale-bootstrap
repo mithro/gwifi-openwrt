@@ -160,4 +160,14 @@ for kv in $VLANS; do
 	uci set network.$name.proto='none'
 done
 uci commit network
+
+# --- mesh topology reporting to OpenWISP ---
+# alfred distributes each puck's local batman-adv vis data over bat0 so any
+# node holds the whole-mesh graph; gwifi-topology then POSTs it (via
+# batadv-vis -f jsondoc) to wisp's receive-strategy Topology. Overlay init
+# scripts get no rc.d symlink from the image build, so enable them here.
+/etc/init.d/alfred enable 2>&1 || echo "gale-bootstrap: alfred enable failed" >&2
+/etc/init.d/gwifi-topology enable 2>&1 \
+	|| echo "gale-bootstrap: gwifi-topology enable failed" >&2
+
 exit 0

@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# gwifi-topology-push — emit the whole-mesh alfred-vis JSON and POST it to
+# the OpenWISP batman-adv topology receiver on wisp.
+#
+# alfred (running over bat0) syncs every node's local vis data mesh-wide, so
+# `batadv-vis -f jsondoc` on ANY puck yields the complete graph. netdiff's
+# BatmanParser on the controller consumes this format verbatim (top-level
+# "source_version" + "vis":[{primary,neighbors:[{neighbor,metric}]}...]).
+#
+# The controller's receive-strategy topology is last-write-wins keyed only on
+# the push key, so every puck pushing the same global view is just redundancy
+# (whichever posts most recently wins; all views are equivalent).
+# See docs/wisp-netboot-install-design.md (mesh topology reporting).
+
+URL='__TOPOLOGY_RECEIVE_URL__'
+BAT='bat0'
+TMP='/tmp/gwifi-topology.json'
+# stderr goes to a log, NEVER /dev/null — a silent push failure is invisible.
+ERRLOG='/tmp/gwifi-topology.err'
+
+[ -n "$URL" ] || { echo "gwifi-topology: no receive URL configured" >&2; exit 0; }
+[ -x /usr/sbin/batadv-vis ] || { echo "gwifi-topology: batadv-vis missing" >&2; exit 0; }
+[ -e "/sys/class/net/$BAT" ] || { echo "gwifi-topology: $BAT not present yet" >&2; exit 0; }
+
+# batadv-vis writes the JSON document to stdout; keep its diagnostics in the
+# log so a malformed/empty run leaves a trail instead of a corrupted body.
+if ! /usr/sbin/batadv-vis -i "$BAT" -f jsondoc >"$TMP" 2>>"$ERRLOG"; then
+	echo "gwifi-topology: batadv-vis failed (see $ERRLOG)" >&2
+	exit 1
+fi
+[ -s "$TMP" ] || { echo "gwifi-topology: empty vis output (alfred not converged?)" >&2; exit 0; }
+
+if uclient-fetch -q -O - --timeout=15 \
+	--header='Content-Type: text/plain' \
+	--post-file="$TMP" "$URL" >>"$ERRLOG" 2>&1; then
+	echo "gwifi-topology: pushed $(wc -c <"$TMP") bytes"
+else
+	echo "gwifi-topology: POST failed (see $ERRLOG)" >&2
+	exit 1
+fi
