@@ -3,16 +3,17 @@
 # gwifi-topology-push — emit the whole-mesh alfred-vis JSON and POST it to
 # the OpenWISP batman-adv topology receiver on wisp.
 #
-# Each puck emits its OWN local vis view (its primary + direct-neighbour
-# edges + client TT). alfred is meant to flood every node's view mesh-wide so
-# any single `batadv-vis -f jsondoc` is the complete graph, but that cross-
-# sync does not currently converge over batman (each node sees only itself —
-# likely batman multicast/MLD optimisation dropping alfred's link-local
-# multicast). This is fine: OpenWISP's receive strategy is ADDITIVE — netdiff
-# unions the edges from all pushers and only expires a link absent from EVERY
-# push for >expiration_time. So the full graph is assembled from the fleet's
-# partial pushes (all pucks push on the same 60s cadence). netdiff's
-# BatmanParser consumes this format verbatim (top-level "source_version" +
+# alfred (over bat0) floods every node's local vis data mesh-wide, so once it
+# converges `batadv-vis -f jsondoc` on ANY puck yields the WHOLE-mesh graph
+# (primary + neighbours + client TT for all nodes). Convergence requires the
+# firewall to trust bat0 — batman's control plane (alfred UDP 16962 + IPv6
+# NDP) is untagged on the un-zoned raw mesh iface and fw4's `policy drop`
+# INPUT chain was eating it; the bootstrap now adds bat0 to the trusted zone.
+# Even so, all pucks push on the 60s cadence and OpenWISP's receive strategy
+# is ADDITIVE (netdiff unions edges from every pusher, expiring a link only
+# when absent from all pushes past expiration_time), so the topology stays
+# complete and self-healing if one node's view lags. netdiff's BatmanParser
+# consumes this format verbatim (top-level "source_version" +
 # "vis":[{primary,neighbors:[{neighbor,metric}],clients}...]).
 # See docs/wisp-netboot-install-design.md (mesh topology reporting).
 

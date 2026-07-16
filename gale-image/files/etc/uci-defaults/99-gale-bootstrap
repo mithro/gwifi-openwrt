@@ -137,6 +137,17 @@ uci commit system
 uci -q del_list firewall.@zone[0].network='lan'
 uci -q del_list firewall.@zone[0].network='mgmt'
 uci add_list firewall.@zone[0].network='mgmt'
+# Trust the raw batman mesh interface (bat0). Its VLAN uppers (bat0.<vid>)
+# are bridged into br0 and covered by the mgmt/client zones, but UNTAGGED
+# bat0 — batman's own control plane: alfred (UDP 16962) and IPv6 NDP for
+# link-local unicast between peer bat0 ifaces — is un-zoned, so fw4's
+# `policy drop` INPUT chain silently dropped it. That broke alfred's
+# slave->master data push (each node kept only its own vis view). With bat0
+# trusted, NDP is answered and alfred converges so every puck holds the
+# whole-mesh graph. (Root-caused 2026-07-16: NOT an MLD/multicast-
+# optimisation problem — the multicast crossed fine; the firewall ate it.)
+uci -q get firewall.@zone[0].device | grep -qw bat0 \
+	|| uci add_list firewall.@zone[0].device='bat0'
 uci commit firewall
 
 # --- client VLANs: bridge-vlans on br0 (trunk tagged + mesh tagged) ---
