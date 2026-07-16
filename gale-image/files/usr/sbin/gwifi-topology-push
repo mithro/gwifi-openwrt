@@ -3,14 +3,17 @@
 # gwifi-topology-push — emit the whole-mesh alfred-vis JSON and POST it to
 # the OpenWISP batman-adv topology receiver on wisp.
 #
-# alfred (running over bat0) syncs every node's local vis data mesh-wide, so
-# `batadv-vis -f jsondoc` on ANY puck yields the complete graph. netdiff's
-# BatmanParser on the controller consumes this format verbatim (top-level
-# "source_version" + "vis":[{primary,neighbors:[{neighbor,metric}]}...]).
-#
-# The controller's receive-strategy topology is last-write-wins keyed only on
-# the push key, so every puck pushing the same global view is just redundancy
-# (whichever posts most recently wins; all views are equivalent).
+# Each puck emits its OWN local vis view (its primary + direct-neighbour
+# edges + client TT). alfred is meant to flood every node's view mesh-wide so
+# any single `batadv-vis -f jsondoc` is the complete graph, but that cross-
+# sync does not currently converge over batman (each node sees only itself —
+# likely batman multicast/MLD optimisation dropping alfred's link-local
+# multicast). This is fine: OpenWISP's receive strategy is ADDITIVE — netdiff
+# unions the edges from all pushers and only expires a link absent from EVERY
+# push for >expiration_time. So the full graph is assembled from the fleet's
+# partial pushes (all pucks push on the same 60s cadence). netdiff's
+# BatmanParser consumes this format verbatim (top-level "source_version" +
+# "vis":[{primary,neighbors:[{neighbor,metric}],clients}...]).
 # See docs/wisp-netboot-install-design.md (mesh topology reporting).
 
 URL='__TOPOLOGY_RECEIVE_URL__'
