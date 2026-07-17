@@ -1,0 +1,28 @@
+config lldpd 'config'
+	# Announce ONLY on the two physical jacks. In the gale image the UCI
+	# 'lan'/'wan' interfaces are deleted (ports live in the VLAN-aware br0),
+	# but the DSA port netdevs /sys/class/net/{lan,wan} still exist, so the
+	# init's get_interface_csv resolves them via its /sys/class/net fallback
+	# and writes `configure system interface pattern lan,wan`. This keeps
+	# LLDP off bat0 and the bat0.<vid>/br0.<vid> uppers — no mesh chatter,
+	# no phantom puck-to-puck neighbors. lldpd TX is a raw AF_PACKET socket
+	# on the port (below the bridge), so frames egress UNTAGGED and the
+	# switch learns the neighbor on its native/PVID VLAN (mgmt = 4).
+	list interface 'lan'
+	list interface 'wan'
+
+	# Standard LLDP only — the Netgear fabric speaks LLDP. Disable the
+	# vendor discovery clones (Cisco CDP/FDP, Nortel SONMP, Extreme EDP)
+	# so we don't spray extra frames the switches ignore.
+	option enable_cdp 0
+	option enable_fdp 0
+	option enable_sonmp 0
+	option enable_edp 0
+
+	# LLDP-MED class 4 = Network Connectivity device (matches upstream
+	# default; appropriate for an AP/bridge).
+	option lldp_class 4
+
+	# Leave system capabilities unset so lldpd advertises kernel-derived
+	# caps (bridge/wlan), and leave management-address advertisement on
+	# (default) so the switch sees the puck's mgmt IP (br0.4 DHCP address).

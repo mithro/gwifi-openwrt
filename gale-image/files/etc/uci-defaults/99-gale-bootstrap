@@ -181,4 +181,9 @@ uci commit network
 /etc/init.d/gwifi-topology enable 2>&1 \
 	|| echo "gale-bootstrap: gwifi-topology enable failed" >&2
 
+# lldpd advertises this puck to the switch fabric (system name + mgmt IP +
+# port id) on the physical jacks only (see files/etc/config/lldpd). Same
+# overlay-init caveat as above: no rc.d symlink from the image build.
+/etc/init.d/lldpd enable 2>&1 || echo "gale-bootstrap: lldpd enable failed" >&2
+
 exit 0
