@@ -8,7 +8,7 @@ understand where the project stands.
 
 > **Scope.** The EC is an **STM32F072CB** (Cortex-M0, 128 KB flash) running a build of ChromeOS
 > `platform/ec`. The captured reference is the on-device dump
-> [`gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin`](gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin)
+> [`gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin`](../gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin)
 > (RO @ `0x08000000`, RW @ `0x08010000`). The reconstruction re-writes only the **`board/gale/`**
 > files; everything else is upstream `platform/ec` at the pinned factory branch.
 
