@@ -5,6 +5,10 @@ Wifi (`gale`) ChromiumOS Embedded Controller firmware **`gale_v1.1.5337-0115719`
 recovered from this unit's on-device dump
 ([`../gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin`](../gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin)).
 
+> 📊 **For the full project status — equivalence verdict, per-command / per-file / per-peripheral
+> coverage, the Renode harness, and all tooling — see [STATE-OF-THE-EC.md](STATE-OF-THE-EC.md)
+> (the top-level overview).**
+
 The board layer was **stripped from the public `firmware-gale-8281.B` branch** of
 `chromiumos/platform/ec`; everything else the firmware is built from
 (`common/`, `chip/stm32`, `core/cortex-m0`, `driver/`) is upstream and unchanged.
@@ -24,6 +28,11 @@ equivalent** to the dump — see [`EQUIVALENCE-REVIEW-2.md`](EQUIVALENCE-REVIEW-
 `Makefile`, created during the overlay step below.)
 
 ## Reproduce
+
+**Canonical build:** [`./build-firmware.sh`](build-firmware.sh) does all of the below from tracked
+inputs (pinned upstream + the tracked `firmware-patches/` + this `board/gale/` overlay + the 2016q3
+toolchain) into the gitignored `.build/` workspace, and refreshes the vendored analysis ELFs. See
+[BUILD.md](BUILD.md). The manual steps below document what it does:
 
 ```sh
 # 1. The public EC tree at the exact revision the firmware was built from

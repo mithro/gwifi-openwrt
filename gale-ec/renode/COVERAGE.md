@@ -1,5 +1,13 @@
 # Branch-coverage measurement (the "100% branch coverage" requirement)
 
+> **⚠ Authoritative current numbers:** **2256 / 3328 = 67.8% both-directions, 3134 = 94.2% reached**,
+> over the corrected rda denominator of **3328** branches (RO+RW combined). Verify with
+> `uv run --python .venv python verify_named_report.py` → `ALL CHECKS PASSED`. Per-file / per-command
+> breakdowns and the full picture are in [../STATE-OF-THE-EC.md](../STATE-OF-THE-EC.md).
+> The per-scenario / per-image (1583-branch, RO-vs-RW-split, 3272-denominator) figures **below are
+> historical** measurements from the campaign's development and are kept for method/context — they are
+> **not** the current union.
+
 `coverage.py` measures actual branch/instruction coverage by capturing a Renode PC
 execution trace while the firmware runs the test scenarios (boot + console commands +
 USB), then mapping executed PCs against the firmware disassembly (counting conditional

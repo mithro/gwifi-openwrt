@@ -1,5 +1,12 @@
 # gale EC — Renode execution-trace equivalence harness
 
+> 📊 **Top-level status + all coverage tables:** [../STATE-OF-THE-EC.md](../STATE-OF-THE-EC.md).
+> **Current authoritative coverage: 2256 / 3328 = 67.8% both-directions (3134 = 94.2% reached)**,
+> from `verify_named_report.py`. Numbers quoted in the prose below (e.g. "48.1% instr / 856 reached /
+> 283 both-dirs", denominator 3272/1583, per-image RO/RW splits) are **historical** development-phase
+> measurements, superseded by the combined 3328-branch union — kept here for method + verification
+> history.
+
 Goal: **prove the reconstructed gale EC firmware is functionally equivalent to the
 original device image by comparing actual Renode execution traces**, building the
 STM32F0 peripherals the firmware needs until every test from

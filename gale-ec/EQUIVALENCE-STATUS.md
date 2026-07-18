@@ -30,8 +30,9 @@ harness exercises.
 ## Caveats / not-yet-done
 - The #7 fix lives in `ec/board/gale/board.h` + verified `ec-rebuilt-ep3fix.bin`; the canonical
   `ec-rebuilt.bin` (coverage-campaign reference) is NOT yet repointed to it (user decision).
-- Captured branch-coverage reached its automated ceiling **45.2% both-dirs / 82.6% reached** (rda
-  denominator 3272); the 5-agent verification gate requires 100%, which is automated-unreachable —
-  residual is `pd_task`'s live state machine (manual RE) + board-inactive (`board_no_charger`) +
-  infeasible defensive asserts. See gwifi-ec-coverage-campaign memory.
-- The 5 independent verification agents have NOT been run (coverage ≠ 100%).
+- Captured branch-coverage (current, after the extended campaign) = **2256 / 3328 = 67.8% both-dirs /
+  3134 = 94.2% reached** (rda denominator 3328; the earlier 45.2% / 3272 figure is superseded). Verify
+  with `renode/verify_named_report.py` → `ALL CHECKS PASSED`. Literal 100% is structurally unreachable
+  (AP host-commands are dead code, HW-can't-fail returns, reset-only faults); the reducible remainder is
+  enumerated per branch in [renode/WHY-UNCOVERED.md](renode/WHY-UNCOVERED.md). Full status:
+  [STATE-OF-THE-EC.md](STATE-OF-THE-EC.md).
