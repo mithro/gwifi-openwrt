@@ -102,6 +102,10 @@ bytes are built by [`base.resc`](renode/base.resc) (real device option bytes in
 
 ## 4. Console commands — replication & test state
 
+**Full per-command reference** (arguments, examples with real captured output, preconditions):
+[CONSOLE-COMMANDS.md](CONSOLE-COMMANDS.md). The EC also answers **31 I2C host commands** from the AP
+(slave addr `0x3C`) — bit-level request/response reference: [I2C-HOST-COMMANDS.md](I2C-HOST-COMMANDS.md).
+
 All **27** commands in the device's `__cmds` table are present in the reconstruction. "Branch parity"
 compares the handler's conditional-branch count captured-vs-rebuilt (a structural-equivalence check,
 [`compare_cmds.py`](renode/compare_cmds.py)); "handler coverage" is both-directions coverage of the
@@ -349,6 +353,7 @@ uv run --python .venv python run_one.py --bin ../../gale-ec-gale_v1.1.5337-01157
 
 ## Document map
 
+- **Interface references:** [CONSOLE-COMMANDS.md](CONSOLE-COMMANDS.md) (27 console commands) · [I2C-HOST-COMMANDS.md](I2C-HOST-COMMANDS.md) (31 I2C host commands, bit-level)
 - **Equivalence:** [EQUIVALENCE-STATUS.md](EQUIVALENCE-STATUS.md) · [EQUIVALENCE-REVIEW-1.md](EQUIVALENCE-REVIEW-1.md) · [EQUIVALENCE-REVIEW-2.md](EQUIVALENCE-REVIEW-2.md) · [FIDELITY.md](FIDELITY.md)
 - **Coverage:** [renode/COVERAGE.md](renode/COVERAGE.md) · [renode/WHY-UNCOVERED.md](renode/WHY-UNCOVERED.md) · [renode/UNCOVERED-BY-FUNCTION.md](renode/UNCOVERED-BY-FUNCTION.md) · [renode/DEAD-CODE-PROVEN.md](renode/DEAD-CODE-PROVEN.md)
 - **Harness:** [renode/README.md](renode/README.md) · [renode/STATUS-PD-PHY.md](renode/STATUS-PD-PHY.md) · [renode/FINDINGS-usb-ccd.md](renode/FINDINGS-usb-ccd.md)

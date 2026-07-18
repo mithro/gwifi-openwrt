@@ -7,7 +7,8 @@ recovered from this unit's on-device dump
 
 > 📊 **For the full project status — equivalence verdict, per-command / per-file / per-peripheral
 > coverage, the Renode harness, and all tooling — see [STATE-OF-THE-EC.md](STATE-OF-THE-EC.md)
-> (the top-level overview).**
+> (the top-level overview).** Interface references: [CONSOLE-COMMANDS.md](CONSOLE-COMMANDS.md)
+> (27 console commands) and [I2C-HOST-COMMANDS.md](I2C-HOST-COMMANDS.md) (31 I2C host commands).
 
 The board layer was **stripped from the public `firmware-gale-8281.B` branch** of
 `chromiumos/platform/ec`; everything else the firmware is built from
