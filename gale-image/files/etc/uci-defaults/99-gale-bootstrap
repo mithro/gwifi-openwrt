@@ -18,10 +18,14 @@ set network.bat0.routing_algo='BATMAN_IV'
 set network.bat0.bridge_loop_avoidance='1'
 set network.bat0.distributed_arp_table='1'
 set network.bat0.gw_mode='client'
-set network.mesh_hardif=interface
-set network.mesh_hardif.proto='batadv_hardif'
-set network.mesh_hardif.master='bat0'
-set network.mesh_hardif.mtu='1536'
+set network.mesh_hardif_5g=interface
+set network.mesh_hardif_5g.proto='batadv_hardif'
+set network.mesh_hardif_5g.master='bat0'
+set network.mesh_hardif_5g.mtu='1536'
+set network.mesh_hardif_2g4=interface
+set network.mesh_hardif_2g4.proto='batadv_hardif'
+set network.mesh_hardif_2g4.master='bat0'
+set network.mesh_hardif_2g4.mtu='1536'
 EOF
 
 # --- ONE VLAN-AWARE BRIDGE (br0) ---
