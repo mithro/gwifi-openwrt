@@ -43,6 +43,15 @@ echo "image id: $IMAGE_ID"
 ( cd "$OWRT" && make defconfig )
 
 # 3) build
+# Force the rootfs image to regenerate: OpenWrt caches root.squashfs and does
+# NOT rebuild it when only files/ changes (e.g. the fresh /etc/gwifi-image-id
+# marker) — it shipped a squashfs baked with a STALE marker on 2026-07-18
+# (factory.bin labelled …033432 but /etc/gwifi-image-id inside = …033302, so
+# the installer's post-flash marker check failed every reflash). Removing the
+# squashfs + factory.bin outputs makes `make` rebuild them from the current
+# root-<target> staging, which always carries the marker just written above.
+rm -f "$OWRT"/build_dir/target-*/linux-ipq40xx_chromium/root.squashfs \
+      "$OWRT"/bin/targets/ipq40xx/chromium/*-google_wifi-squashfs-factory.bin
 ( cd "$OWRT" && make -j"${JOBS:-6}" )
 
 # 4) copy artifacts to a build-private out/ dir + sidecar for publish.
