@@ -240,23 +240,28 @@ sleep 8
 echo SIMPLE-APPLIED
 """
 
-# Phase B: cable is on the wan jack — drop lan from the bridge and kill it.
+# Phase B — jack-naming reality (verified fleet-wide 2026-07-22): gale's
+# DTS port names are INVERTED relative to the case labels. The physical
+# WAN (globe) jack is the netdev OpenWrt calls 'lan'; the physical LAN
+# jack is netdev 'wan'.  The uplink cable lives in the physical WAN jack
+# = netdev 'lan', so finalize keeps netdev 'lan' as the trunk and
+# disables netdev 'wan' (the physical LAN jack — spec: no link).
 FINALIZE_SH = """
 set -e
-if [ "$(cat /sys/class/net/wan/carrier)" != "1" ]; then
-    echo "REFUSE: wan has no carrier — move the cable to the wan jack first"
+if [ "$(cat /sys/class/net/lan/carrier)" != "1" ]; then
+    echo "REFUSE: the uplink jack (netdev lan / physical WAN) has no carrier"
     exit 3
 fi
-uci del_list network.device_br0.ports='lan'
+uci del_list network.device_br0.ports='wan'
 for v in brvlan4 brvlan20 brvlan90 brvlan99; do
-    uci -q del_list network.$v.ports='lan:u*' || true
-    uci -q del_list network.$v.ports='lan:t' || true
+    uci -q del_list network.$v.ports='wan:u*' || true
+    uci -q del_list network.$v.ports='wan:t' || true
 done
 uci commit network
 /etc/init.d/network reload
 sleep 3
-ip link set lan down
-echo FINALIZED wan_carrier=$(cat /sys/class/net/wan/carrier) lan_state=$(cat /sys/class/net/lan/operstate)
+ip link set wan down
+echo FINALIZED uplink_carrier=$(cat /sys/class/net/lan/carrier) physical_lan_jack=$(cat /sys/class/net/wan/operstate)
 """
 
 MESH_RESTORE_SH = f"""
