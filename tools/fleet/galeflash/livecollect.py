@@ -6,7 +6,9 @@ and calls these.  Fail loud: unexpected shapes raise, nothing is fabricated
 or skipped.
 """
 
+import json
 import re
+from pathlib import Path
 from typing import NamedTuple
 
 # The 7 wireless interfaces every production gale puck runs (2026-07-22
@@ -127,3 +129,37 @@ def upstream_from_lldp(doc: dict) -> str | None:
     if len(candidates) > 1:
         raise ValueError(f"multiple upstream switch candidates: {candidates}")
     return candidates[0] if candidates else None
+
+
+def merge_live_fields(
+    inventory_dir: Path,
+    serial: str,
+    *,
+    name: str,
+    upstream: str | None,
+    wifi_macs: dict[str, str],
+) -> Path:
+    """Merge live-collected fields into inventory/<serial>.json.
+
+    Creates a minimal record for never-flashed pucks.  Flash fields are never
+    touched.  ``upstream=None`` (no managed switch visible) leaves any
+    existing recorded upstream in place — absence of LLDP is not evidence of
+    recabling.  Returns the path written.
+    """
+    path = Path(inventory_dir) / f"{serial}.json"
+    if path.exists():
+        data = json.loads(path.read_text())
+        if data.get("serial_number") != serial:
+            raise ValueError(
+                f"{path}: serial_number {data.get('serial_number')!r} "
+                f"!= filename serial {serial!r}"
+            )
+    else:
+        data = {"serial_number": serial}
+    data["name"] = name
+    if upstream is not None:
+        data["upstream"] = upstream
+    if wifi_macs:
+        data["wifi_macs"] = dict(sorted(wifi_macs.items()))
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return path

@@ -65,3 +65,42 @@ def test_missing_wifi_interface_detected():
     del incomplete["mesh-5g"]
     with pytest.raises(ValueError, match="mesh-5g"):
         check_wifi_complete("puck12", incomplete)
+
+
+from galeflash.livecollect import merge_live_fields
+
+
+def test_merge_live_fields_preserves_flash_data(tmp_path):
+    inv = tmp_path / "SER001.json"
+    inv.write_text(json.dumps({"serial_number": "SER001",
+                               "flash_status": "ok",
+                               "rw_fwid": "Google_Gale.8743.85.14"}))
+    merge_live_fields(tmp_path, "SER001",
+                      name="puck12",
+                      upstream="sw-netgear-gsm7252ps-s1 port 1/0/46",
+                      wifi_macs={"mesh-5g": "44:07:0b:01:a2:24"})
+    data = json.loads(inv.read_text())
+    assert data["flash_status"] == "ok"          # untouched
+    assert data["rw_fwid"] == "Google_Gale.8743.85.14"
+    assert data["name"] == "puck12"
+    assert data["wifi_macs"]["mesh-5g"] == "44:07:0b:01:a2:24"
+
+
+def test_merge_live_fields_creates_minimal_record(tmp_path):
+    merge_live_fields(tmp_path, "SERNEW", name="puck11",
+                      upstream=None, wifi_macs={"mesh-5g": "aa:bb:cc:dd:ee:ff"})
+    data = json.loads((tmp_path / "SERNEW.json").read_text())
+    assert data["serial_number"] == "SERNEW"
+    assert data["name"] == "puck11"
+    assert "upstream" not in data                # None → field absent
+
+
+def test_merge_live_fields_none_upstream_does_not_erase(tmp_path):
+    """A puck moved behind a dumb switch must not lose its recorded upstream."""
+    inv = tmp_path / "SER001.json"
+    inv.write_text(json.dumps({"serial_number": "SER001",
+                               "upstream": "sw-old port 3"}))
+    merge_live_fields(tmp_path, "SER001", name="puck07",
+                      upstream=None, wifi_macs={})
+    data = json.loads(inv.read_text())
+    assert data["upstream"] == "sw-old port 3"
