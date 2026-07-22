@@ -32,7 +32,6 @@ Append to `tests/test_sheetmap.py`:
 
 from galeflash.sheetmap import (
     LIVE_OVERWRITE_FIELDS,
-    RENAME_HEADERS,
     compute_header_renames,
 )
 
@@ -150,10 +149,37 @@ def test_update_live_allows_upstream_overwrite_only():
     assert not any(u.col == name_col for u in updates)
 ```
 
-- [ ] **Step 1.2: Run tests to verify they fail**
+- [ ] **Step 1.2: Port the legacy synthetic fixture to the post-rename schema**
+
+The Step 1.3 retarget (`ethernet_mac0→wan`) breaks four legacy tests that
+assume the MAC fields target `eth0`/`eth1` columns
+(`test_new_columns_produce_updates_for_empty_cells`,
+`test_matching_cell_is_skipped`, `test_differing_nonempty_cell_is_conflict`,
+`test_multiple_records_mixed_outcomes`). Update the legacy fixture in place —
+this *implements* the spec's "replacing the stale short fixtures" requirement:
+
+In the legacy `HEADER` list change `"eth0", "eth1", "wlan0", "wlan1"` to
+`"wan", "lan", "wl-main-2g4", "wl-main-5g"`, and rename the two module
+constants (all uses):
+
+```python
+WAN_COL = HEADER.index("wan")  # 7 — holds ethernet_mac0
+LAN_COL = HEADER.index("lan")  # 8 — holds ethernet_mac1
+```
+
+Update the stale positional comment above it ("mirrors the real … layout,
+which has purpose-built MAC columns H=eth0 …") to say the fixture models the
+POST-rename schema and that the real sheet is 28 columns (see REAL_HEADER).
+Also refresh `test_get_extended_header_adds_new_columns`: replace the
+`extended.count("eth0") == 1` / `eth1` assertions with
+`extended.count("wan") == 1` / `extended.count("lan") == 1`.
+
+- [ ] **Step 1.2b: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_sheetmap.py -q`
-Expected: ImportError (`LIVE_OVERWRITE_FIELDS`, `RENAME_HEADERS`, `compute_header_renames` not defined).
+Expected: ImportError (`LIVE_OVERWRITE_FIELDS`, `compute_header_renames` not
+defined). (After Step 1.3 the ported legacy tests must pass again — if any
+legacy test still references `eth0`/`eth1`, Step 1.2 missed a spot.)
 
 - [ ] **Step 1.3: Implement in `galeflash/sheetmap.py`**
 
@@ -247,11 +273,19 @@ def compute_header_renames(
 - [ ] **Step 1.4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_sheetmap.py -q`
-Expected: all pass (existing 85-suite members included; note
-`test_get_extended_header_adds_new_columns` asserts `extended.count("eth0") == 1`
-against the OLD synthetic header — it still passes because that header contains
-`eth0` and the retargeted map now appends a NEW `wan` column for it; verify the
-assertion still holds, and update that test's comment if misleading).
+Expected: ALL pass — the new rename/live tests AND the legacy tests ported in
+Step 1.2. Add one more small test while here (spec asks for it): the
+extended-header width feeds the read-back range —
+
+```python
+def test_extended_header_width_covers_all_new_columns():
+    """len(get_extended_header()) is the column count the ranges must span."""
+    ext = get_extended_header(RENAMED_HEADER)
+    # 28 existing + 5 appended (guest x2, iot, mesh x2) = 33 columns (A..AG)
+    assert len(ext) == 33
+    assert ext[28:] == ["wl-guest-2g4", "wl-guest-5g", "wl-iot-2g4",
+                        "mesh-2g4", "mesh-5g"]
+```
 
 - [ ] **Step 1.5: Run the full fleet suite**
 
@@ -327,6 +361,11 @@ Change the early-exits (line ~379-386) to account for renames:
         print("\nNothing to write — sheet is already up to date.")
         return
 ```
+
+Known accepted degenerate case: with an EMPTY inventory `main()` still
+returns at "Nothing to sync." before renames are written — acceptable because
+this flow always runs with a populated inventory; add a one-line comment at
+that early return saying so.
 
 and add the rename cells to the batch (before new-column headers):
 
@@ -418,6 +457,13 @@ git commit -m "sync_sheet: ZZ read range, guarded header renames, wifi flatten, 
 - Create: `tools/fleet/tests/fixtures/` (captured live outputs)
 
 - [ ] **Step 3.1: Capture live fixtures from puck12 + wisp**
+
+Preconditions (first live-access step): welland VPN up (`ip route get
+10.1.4.112` → `dev wg-desktop`), root ssh keys accepted on the pucks, and
+passwordless `sudo -n` on wisp for the registry read.
+
+Note: the spec sketches `lldpcli -f keyvalue`; this plan deliberately uses
+`-f json0` (machine-parseable, arrays always present) — do not "fix" it back.
 
 ```bash
 mkdir -p tests/fixtures
@@ -653,6 +699,12 @@ def upstream_from_lldp(doc: dict) -> str | None:
 NOTE: the exact json0 nesting must be validated against the captured fixture
 in Step 3.1 — adjust `upstream_from_lldp` field access to the real structure
 (keep the local-port-type + chassis-name rule), and keep the tests green.
+The same applies to `parse_pucks_conf` and its test: the regex and the test
+constants (entry count, MACs) were sketched from a 2026-07-22 live read; if
+the captured `pucks.conf` fixture carries extra fields (lease times, tags),
+re-derive BOTH the regex and the expected values from the fixture — the rule
+"never change assertion values" applies only to values that came from live
+probes (the iw/ip-link MACs, the lldp upstream string).
 
 - [ ] **Step 3.5: Run tests to verify they pass**
 
@@ -822,9 +874,13 @@ SSH_OPTS = ["-4", "-o", "ConnectTimeout=10",
             "-o", "StrictHostKeyChecking=accept-new"]
 
 # One ssh round-trip per puck: emit every section with markers.  The pucks
-# are cross-site (~250 ms RTT) — batching matters.
+# are cross-site (~250 ms RTT) — batching matters.  `set -e` makes any
+# failing remote command abort the chain with a non-zero (non-255) rc, so a
+# reachable puck with e.g. a broken lldpcli is a HARD error, never mistaken
+# for an offline puck.
 _MARKER = "@@SECTION@@"
 _PUCK_SCRIPT = (
+    f"set -e; "
     f"echo {_MARKER}serial;   cat /sys/firmware/vpd/ro/serial_number; echo;"
     f"echo {_MARKER}hostname; uname -n;"
     f"echo {_MARKER}iplink;   ip -j link;"
@@ -833,16 +889,28 @@ _PUCK_SCRIPT = (
 )
 
 
+class SshTransportError(RuntimeError):
+    """ssh could not reach the host (rc 255) — the host may just be offline."""
+
+
 def ssh(host: str, command: str, timeout: int = 30) -> str:
-    """Run a command over ssh; raise (with stderr shown) on failure."""
+    """Run a command over ssh; raise (with stderr shown) on failure.
+
+    OpenSSH exits 255 on transport failure (unreachable, refused, auth);
+    any other non-zero rc is the REMOTE command's — a different, harder
+    failure that must not be classified as "offline".
+    """
     result = subprocess.run(
         ["ssh", *SSH_OPTS, host, command],
         capture_output=True, text=True, timeout=timeout,
     )
     if result.stderr.strip():
         print(result.stderr, file=sys.stderr)   # never suppress stderr
+    if result.returncode == 255:
+        raise SshTransportError(f"ssh {host} unreachable (rc=255)")
     if result.returncode != 0:
-        raise RuntimeError(f"ssh {host} failed (rc={result.returncode})")
+        raise RuntimeError(
+            f"remote command failed on {host} (rc={result.returncode})")
     return result.stdout
 
 
@@ -927,12 +995,13 @@ def main() -> None:
         print(f"Collecting {name} ({reg.ip}) …", flush=True)
         try:
             collected.append(collect_one(reg, args.inventory))
-        except (subprocess.TimeoutExpired, RuntimeError) as exc:
-            # ssh-level failure = puck offline; report loudly, keep going.
+        except (subprocess.TimeoutExpired, SshTransportError) as exc:
+            # Transport-level failure only = puck offline; report, keep going.
             print(f"  {name}: UNREACHABLE ({exc})", file=sys.stderr)
             unreachable.append(name)
-        # ValueError (bad/incomplete data from a REACHABLE puck) propagates:
-        # that is a hard failure, not a gap to skip.
+        # RuntimeError (remote command failed on a REACHABLE puck) and
+        # ValueError (bad/incomplete data) propagate: hard failures, not
+        # gaps to skip.
 
     print(f"\nCollected {len(collected)} puck(s): {', '.join(collected)}")
     if unreachable:
@@ -985,6 +1054,10 @@ Review: 4 header renames pending; Name/Upstream/wifi updates for the 4 live
 pucks; NO conflicts expected (Name/Upstream cells are empty today except
 row 7's manual Upstream, and puck07 collects upstream=None so that cell
 isn't written). Any conflict → stop, investigate, resolve with the operator.
+Contingency: if a collected serial (puck06/puck11) is reported as
+`unmatched` (no sheet row has it), STOP — fill that row's Serial cell in the
+sheet (rows exist with empty serials) or add a row, then re-run the dry run;
+never proceed with a silently shrunken update set.
 
 - [ ] **Step 5.4: Write + verify**
 
