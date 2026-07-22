@@ -42,8 +42,16 @@ EOF
 # 'lan') is the trunk — mgmt (4) untagged+pvid, client VLANs tagged;
 # the spare jack (OpenWrt 'wan') is an untagged GUEST access port.
 #
-# STP stays ON (kernel patch 707 fixed the old qca8k misprogramming
-# that once made stp=1 look lethal; see runbook).
+# STP is OFF (changed 2026-07-22). It was kept on after kernel patch
+# 707 fixed the qca8k misprogramming, but field evidence showed it is
+# actively harmful: netifd defaults bridge priority to 0x7FFF, one BELOW
+# every real switch's 0x8000, so any puck wins root of the entire house
+# L2 — and because br0 bridges the RF mesh, its BPDUs reach the fabric
+# over a lossy path, max-age expires, and the fabric thrashes root
+# elections (69 in ~3h on 2026-07-22; each one flushes MAC tables
+# network-wide and blackholes traffic). Mesh<->wire loop protection is
+# batman-adv BLA's job (per-VLAN, active); the wired fabric's own STP
+# protects the switches. Pucks must never speak 802.1D at the fabric.
 # Find the board-generated br-lan device section (anonymous; index varies).
 i=0
 brdev=""
@@ -68,7 +76,7 @@ fi
 # and breaks per-VLAN BLA (seen live on puck12, g17b40e7).
 uci set "network.$brdev.name"='br0'
 uci set "network.$brdev.vlan_filtering"='1'
-uci set "network.$brdev.stp"='1'
+uci set "network.$brdev.stp"='0'
 uci -q delete "network.$brdev.ports"
 uci add_list "network.$brdev.ports"='lan'
 uci add_list "network.$brdev.ports"='wan'
