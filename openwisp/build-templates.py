@@ -1,33 +1,36 @@
 #!/usr/bin/env python3
-"""Build the OpenWISP 'gwifi-aps' config template + attach it to the pucks.
+"""Build the OpenWISP AP config templates + attach the active one to the pucks.
 
-Architecture (post 2026-07 migration): the gale IMAGE provides all networking
-— radios, the vlan-aware br0 wired trunk, bat0 + per-VLAN legs, the bridges,
-and the mesh backhaul (mesh-2g4 + mesh-5g, see gale-image/files/etc/config/
-wireless + 99-gale-bootstrap). OpenWISP layers ONLY the access-point SSIDs on
-top, via this minimal template. (The old monolithic 'gwifi-puck' template that
-also carried networking/mesh was retired 2026-07-21; its redundant bridges +
-mp0/mp1 mesh were the source of the fleet's mesh-redundancy + link-local
-management-IP problems.)
+Two profiles exist (2026-07-22 restructure):
 
-Interfaces (each an AP bridged to an image-provided br0.<vid> via network=):
-  wl-main-5g / wl-main-2g4  -> roam  (VLAN 20, WPA3, 802.11r/k/v fast-roam)
-  wl-iot-2g4                -> iot   (VLAN 90, WPA2)
-  wl-guest-5g / wl-guest-2g4-> guest (VLAN 99, WPA2, client isolation)
-Radios (radio0=2.4G, radio1=5G) come from the image; the template just
-references them.
+  simple (ACTIVE, template 'gwifi-aps') — the fleet's current config.
+    Six APs, no mesh. The gale image/local config provides the network
+    shape (vlan-aware br0 with the WAN jack as uplink trunk: VLAN 4
+    untagged/pvid + 20/90/99 tagged; lan disabled; no batman — see
+    tools/fleet/puck_profile.py). OpenWISP layers the SSIDs:
+      wl-main-5g/-2g4  -> roam  (VLAN 20) 'ansells'       high-bandwidth,
+                                          802.11k/v steering hints
+      wl-iot-5g/-2g4   -> iot   (VLAN 90) 'ansells-iot'   high-compat: DTIM 3,
+                                          legacy rates on 2.4, no PMF, never
+                                          kick weak clients, no steering
+      wl-guest-5g/-2g4 -> guest (VLAN 99) 'ansells-guest' high-bandwidth,
+                                          client isolation
+    Client steering is usteer, configured locally by puck_profile.py
+    (netjsonconfig has no usteer schema); it talks over mgmt (the wan
+    trunk) and steers only 'ansells'/'ansells-guest'.
 
-SSIDs are flipped to production one network at a time: IoT broadcasts the real
-'ansells-iot'; main + guest stay on the 'test' placeholders until their own
-deliberate flip.
+  mesh-aps (PRESERVED, template 'gwifi-mesh-aps', attached to nothing) —
+    the advanced-mesh-era 5-AP layer (WPA3 + 802.11r fast-roam main, no
+    iot-5g). Kept so devices & network can be switched back to the mesh
+    architecture later: restore the per-puck network snapshot with
+    puck_profile.py mesh, then attach this template instead of gwifi-aps.
 
 Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs;
-none are ever printed or committed. They go into the template's default_values
+none are ever printed or committed. They go into the templates' default_values
 (OpenWISP DB on wisp, internal) as {{ }} substitutions and are piped to wisp
 over SSH stdin (not argv). The verification render redacts all `option key`.
 """
 import json
-import re
 import subprocess
 import sys
 
@@ -41,12 +44,7 @@ SSH_WISP = [
 PUCKS = ["puck01", "puck02", "puck04", "puck05", "puck06",
          "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"]
 
-# SSID -> passphrase source in ten64 hostapd. The passphrases are the real
-# home-network keys throughout. Broadcast SSIDs are flipped to production one
-# network at a time: IoT is LIVE ('ansells-iot', 2026-07-22 — the gale IoT AP
-# now extends the existing VLAN-90 IoT network, same SSID/key/subnet as ten64);
-# main + guest stay on the 'test*' placeholders until their own deliberate flip.
-SSID_MAIN, SSID_IOT, SSID_GUEST = "test", "ansells-iot", "test-guest"
+SSID_MAIN, SSID_IOT, SSID_GUEST = "ansells", "ansells-iot", "ansells-guest"
 
 
 def parse_hostapd(text):
@@ -86,38 +84,64 @@ def read_passphrases():
     return vals
 
 
-def netjson():
+def _wpa2(key):
+    return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
+
+
+def netjson_simple():
+    """Six-AP simple profile — must render to the same effective config
+    puck_profile.py applies locally (psk2+ccmp everywhere; matching per-BSS
+    tuning) so agent applies converge instead of churning."""
+    steer = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
+    iot = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
+
+    def ap(name, radio, ssid, network, key, **extra):
+        return {"name": name, "type": "wireless", "wireless": dict(
+            radio=radio, mode="access_point", ssid=ssid,
+            network=[network], encryption=_wpa2(key), **extra)}
+
+    return {"interfaces": [
+        ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
+        ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
+        ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **iot),
+        ap("wl-iot-2g4", "radio0", SSID_IOT, "iot", "{{ iot_key }}",
+           legacy_rates=True, **iot),
+        ap("wl-guest-5g", "radio1", SSID_GUEST, "guest", "{{ guest_key }}",
+           isolate=True, **steer),
+        ap("wl-guest-2g4", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
+           isolate=True, **steer),
+    ]}
+
+
+def netjson_mesh_aps():
+    """The advanced-mesh-era AP layer (preserved, unattached): WPA3 +
+    802.11r/k/v fast-roam main, single-band iot, WPA2 guest."""
     def wpa3(key):
         return {"protocol": "wpa3_personal", "cipher": "ccmp",
                 "ieee80211w": "2", "key": key}
 
-    def wpa2(key):
-        return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
-
     roam = {"ieee80211r": True, "mobility_domain": "a1b2",
             "ft_psk_generate_local": True, "ieee80211k": True,
             "bss_transition": True}
-    return {
-        "interfaces": [
-            {"name": "wl-main-5g", "type": "wireless", "wireless": dict(
-                radio="radio1", mode="access_point", ssid=SSID_MAIN,
-                network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
-            {"name": "wl-main-2g4", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid=SSID_MAIN,
-                network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
-            {"name": "wl-iot-2g4", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid=SSID_IOT,
-                network=["iot"], encryption=wpa2("{{ iot_key }}"))},
-            {"name": "wl-guest-5g", "type": "wireless", "wireless": dict(
-                radio="radio1", mode="access_point", ssid=SSID_GUEST,
-                network=["guest"], encryption=wpa2("{{ guest_key }}"),
-                isolate=True)},
-            {"name": "wl-guest-2g4", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid=SSID_GUEST,
-                network=["guest"], encryption=wpa2("{{ guest_key }}"),
-                isolate=True)},
-        ],
-    }
+    return {"interfaces": [
+        {"name": "wl-main-5g", "type": "wireless", "wireless": dict(
+            radio="radio1", mode="access_point", ssid=SSID_MAIN,
+            network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
+        {"name": "wl-main-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_MAIN,
+            network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
+        {"name": "wl-iot-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_IOT,
+            network=["iot"], encryption=_wpa2("{{ iot_key }}"))},
+        {"name": "wl-guest-5g", "type": "wireless", "wireless": dict(
+            radio="radio1", mode="access_point", ssid=SSID_GUEST,
+            network=["guest"], encryption=_wpa2("{{ guest_key }}"),
+            isolate=True)},
+        {"name": "wl-guest-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_GUEST,
+            network=["guest"], encryption=_wpa2("{{ guest_key }}"),
+            isolate=True)},
+    ]}
 
 
 DJANGO = r'''
@@ -128,17 +152,33 @@ Config = load_model("config", "Config")
 Org = load_model("openwisp_users", "Organization")
 Device = load_model("config", "Device")
 org = Org.objects.get(slug="default")
-CONFIG = json.loads({cfg!r})
+ACTIVE = json.loads({active!r})
+PRESERVED = json.loads({preserved!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
 
+# Active template: 'gwifi-aps' (already attached fleet-wide) now carries the
+# simple six-AP profile.
 t, created = Template.objects.update_or_create(
     organization=org, name="gwifi-aps",
     defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
-                  config=CONFIG, default=False, default_values=DEFAULTS),
+                  config=ACTIVE, default=False, default_values=DEFAULTS),
 )
 t.full_clean(); t.save()
-print("template:", "created" if created else "updated", "id=", t.id, "default=", t.default)
+print("gwifi-aps:", "created" if created else "updated", "id=", t.id)
+
+# Preserved template: 'gwifi-mesh-aps' exists but is attached to nothing.
+m, mcreated = Template.objects.update_or_create(
+    organization=org, name="gwifi-mesh-aps",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=PRESERVED, default=False, default_values=DEFAULTS),
+)
+m.full_clean(); m.save()
+detached = 0
+for c in Config.objects.filter(templates=m):
+    c.templates.remove(m); detached += 1
+print("gwifi-mesh-aps:", "created" if mcreated else "updated",
+      "id=", m.id, "detached-from:", detached)
 
 attached = 0
 missing = []
@@ -155,11 +195,11 @@ for name in PUCKS:
 print("configs attached:", attached, "/", len(PUCKS), "missing:", missing)
 
 # verification render of an online puck, passphrases redacted
-d = Device.objects.get(organization=org, name="puck06")
+d = Device.objects.get(organization=org, name="puck12")
 rendered = d.config.backend_instance.render()
 rendered = re.sub(r"(option key ').*?(')", r"\g<1><REDACTED>\g<2>", rendered)
 print("=" * 60)
-print("puck06 rendered config (keys redacted):")
+print("puck12 rendered config (keys redacted):")
 print("=" * 60)
 print(rendered)
 '''
@@ -167,9 +207,9 @@ print(rendered)
 
 def main() -> int:
     vals = read_passphrases()
-    cfg = json.dumps(netjson())
-    defaults = json.dumps(vals)
-    script = DJANGO.format(cfg=cfg, defaults=defaults, pucks=PUCKS)
+    script = DJANGO.format(active=json.dumps(netjson_simple()),
+                           preserved=json.dumps(netjson_mesh_aps()),
+                           defaults=json.dumps(vals), pucks=PUCKS)
     p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
                        timeout=180)
     # safety: redact any stray key values from the captured output before printing
