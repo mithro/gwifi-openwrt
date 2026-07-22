@@ -39,7 +39,12 @@ DEFAULT_INVENTORY = Path("/home/tim/local/gwifi/fleet-flash/inventory")
 REGISTRY_HOST = "tim@10.1.4.2"  # wisp.welland.mithis.com
 REGISTRY_PATH = "/etc/dnsmasq.d/gwifi-generated/pucks.conf"
 
-SSH_OPTS = ["-4", "-o", "ConnectTimeout=10",
+# Generous timeouts: a puck on a lossy mesh-backhaul management path (40%
+# loss observed on puck07, 2026-07-22) needs TCP retransmit time — a 30s
+# ceiling misclassified it as offline.  Offline pucks still fail fast
+# ("no route to host" returns in seconds).
+SSH_OPTS = ["-4", "-o", "ConnectTimeout=30",
+            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8",
             "-o", "StrictHostKeyChecking=accept-new"]
 
 # One ssh round-trip per puck: emit every section with markers.  The pucks
@@ -62,7 +67,7 @@ class SshTransportError(RuntimeError):
     """ssh could not reach the host (rc 255) — the host may just be offline."""
 
 
-def ssh(host: str, command: str, timeout: int = 30) -> str:
+def ssh(host: str, command: str, timeout: int = 180) -> str:
     """Run a command over ssh; raise (with stderr shown) on failure.
 
     OpenSSH exits 255 on transport failure (unreachable, refused, auth);
