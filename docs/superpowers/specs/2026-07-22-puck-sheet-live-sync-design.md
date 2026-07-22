@@ -77,8 +77,11 @@ puckNN (ssh) ─────┘        (new)                  (merged fields)   
 - LLDP upstream recorded only when a managed switch is identified
   (`port.local` present AND chassis SysName non-generic). Peers seen on
   dumb switches are printed for the operator but not recorded.
-- Output: merge into `inventory/<serial>.json` (create a minimal record
-  `{serial_number, …}` for never-flashed pucks). New fields, all under
+- Output: merge into `inventory/<serial>.json` in the same directory
+  `sync_sheet.py` reads (`DEFAULT_INVENTORY` =
+  `/home/tim/local/gwifi/fleet-flash/inventory`, same `--inventory`
+  override), creating a minimal record `{serial_number, …}` for
+  never-flashed pucks. New fields, all under
   existing top level:
   - `name` (e.g. `puck12`)
   - `upstream` (e.g. `sw-netgear-gsm7252ps-s1 port 1/0/46`)
@@ -87,6 +90,15 @@ puckNN (ssh) ─────┘        (new)                  (merged fields)   
 
 ### Component 2: `galeflash/sheetmap.py` (extend)
 
+- **Existing entries retargeted**: `ethernet_mac0` maps to `wan` (was
+  `eth0`) and `ethernet_mac1` maps to `lan` (was `eth1`). Without this,
+  the post-rename header would no longer match and `_build_col_map`
+  would silently append duplicate `eth0`/`eth1` columns at the right
+  edge. The `sheetmap.py` comment claiming "wifi-MAC columns
+  J=wlan0/K=wlan1 stay empty … intentionally absent from
+  FIELD_TO_HEADER" is superseded and must be removed, along with the
+  stale positional column letters in comments (the sheet is 28 columns
+  today: eth0=L, eth1=M, wlan0=N, wlan1=O).
 - `FIELD_TO_HEADER` additions (flattened wifi fields are produced by the
   record-prep layer in `sync_sheet.py` from `wifi_macs`):
 
@@ -104,9 +116,12 @@ puckNN (ssh) ─────┘        (new)                  (merged fields)   
 
 - New `RENAME_HEADERS: dict[str, str]` = `{eth0→wan, eth1→lan,
   wlan0→wl-main-2g4, wlan1→wl-main-5g}` plus a pure helper
-  `compute_header_renames(header) -> list[(col_idx, old, new)]` that
-  matches case-insensitively and only renames a cell whose current value
-  equals the old name (idempotent; a re-run after renaming is a no-op).
+  `compute_header_renames(header) -> list[(col_idx, old, new)]` with a
+  three-way outcome per mapped column (case-insensitive): cell equals
+  the **old** name → rename entry; cell equals the **new** name → no-op
+  (idempotent re-run); a column matching **neither** for a map entry
+  whose old name is also absent → conflict (the sheet changed under
+  us). Renaming never touches data cells.
   Column *matching* for FIELD_TO_HEADER runs against the **post-rename**
   header, so `wl-main-2g4` lands in old `wlan0` (N) and `wl-main-5g` in
   old `wlan1` (O). Net new columns: 5 (guest ×2, iot ×1, mesh ×2) →
@@ -122,7 +137,9 @@ puckNN (ssh) ─────┘        (new)                  (merged fields)   
   three hardcoded `A1:Z1000` uses. Initial header read uses `A1:ZZ1000`.
 - Apply header renames (from `compute_header_renames`) as guarded header
   cell writes in the same batch, before data writes; the in-memory
-  header is renamed before `compute_updates` runs.
+  header is renamed before `compute_updates` runs. The "nothing to
+  write" early-exit must consider pending renames too — a rename-only
+  state (all data cells already correct) still writes the rename batch.
 - Record-prep: flatten `wifi_macs` dict into `wifi_<iface>` fields
   (dashes → underscores), format all MACs via `format_mac`.
 - `--update-live` flag: adds `LIVE_OVERWRITE_FIELDS` to
@@ -145,6 +162,8 @@ puckNN (ssh) ─────┘        (new)                  (merged fields)   
   (fresh, already-renamed, unexpected-header), new-field column
   assignment landing in renamed columns, `LIVE_OVERWRITE_FIELDS`
   overwrite vs conflict, extended-header width for range computation.
+  Add a fixture mirroring the real 28-column header (replacing the
+  stale short fixtures where they misrepresent column positions).
 - New `test_collect_puck_live.py`: parsers (`iw dev`, `lldpcli`
   keyvalue, `pucks.conf`, `ip -j link`) against fixtures captured from
   today's live probes; identity-gate and managed-switch classification
