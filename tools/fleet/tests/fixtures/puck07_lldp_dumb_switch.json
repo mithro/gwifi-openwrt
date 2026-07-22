@@ -1,0 +1,169 @@
+{
+  "lldp": [
+    {
+      "interface": [
+        {
+          "name": "lan",
+          "via": "LLDP",
+          "rid": "1",
+          "age": "0 day, 02:52:03",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "ca:aa:22:41:8c:4e"
+                }
+              ],
+              "name": [
+                {
+                  "value": "OpenWrt"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "OpenWrt 25.12.4 @ OpenWrt"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "10.1.4.110"
+                },
+                {
+                  "value": "fe80::c8aa:22ff:fe41:8c4e"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "6"
+                },
+                {
+                  "value": "2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": true
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": false
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "24:05:88:33:ae:6d"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "lan"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "lan",
+          "via": "LLDP",
+          "rid": "2",
+          "age": "0 day, 02:52:02",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "88:a2:9e:80:87:01"
+                }
+              ],
+              "name": [
+                {
+                  "value": "rpi-sdr-kraken"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "Debian GNU/Linux 13 (trixie) Linux 6.18.34+rpt-rpi-2712 #1 SMP PREEMPT Debian 1:6.18.34-1+rpt1 (2026-06-09) aarch64"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "10.1.90.144"
+                },
+                {
+                  "value": "2404:e80:a137:190::144"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "2"
+                },
+                {
+                  "value": "2"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": false
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                },
+                {
+                  "type": "Wlan",
+                  "enabled": true
+                },
+                {
+                  "type": "Station",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "88:a2:9e:80:87:01"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+

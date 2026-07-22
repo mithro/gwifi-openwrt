@@ -1,0 +1,75 @@
+{
+  "lldp": [
+    {
+      "interface": [
+        {
+          "name": "lan",
+          "via": "LLDP",
+          "rid": "1",
+          "age": "0 day, 10:47:11",
+          "chassis": [
+            {
+              "id": [
+                {
+                  "type": "mac",
+                  "value": "e0:91:f5:0c:d6:db"
+                }
+              ],
+              "name": [
+                {
+                  "value": "sw-netgear-gsm7252ps-s1.welland.mithis.com"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "GSM7252PS 48-Port GE L2+ Managed Stackable PoE Switch with 2 10GE SFP+ ports, 10.0.0.53, <not found>"
+                }
+              ],
+              "mgmt-ip": [
+                {
+                  "value": "10.1.5.22"
+                }
+              ],
+              "mgmt-iface": [
+                {
+                  "value": "417"
+                }
+              ],
+              "capability": [
+                {
+                  "type": "Bridge",
+                  "enabled": true
+                },
+                {
+                  "type": "Router",
+                  "enabled": false
+                }
+              ]
+            }
+          ],
+          "port": [
+            {
+              "id": [
+                {
+                  "type": "local",
+                  "value": "1/0/46"
+                }
+              ],
+              "descr": [
+                {
+                  "value": "eth0.puck12"
+                }
+              ],
+              "ttl": [
+                {
+                  "value": "120"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
