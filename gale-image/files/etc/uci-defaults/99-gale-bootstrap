@@ -1,57 +1,36 @@
 #!/bin/sh
-# 99-gale-bootstrap — first-boot network/mesh setup for gale auto-provisioning.
+# 99-gale-bootstrap — first-boot network setup for gale auto-provisioning.
 # Idempotent: uses fixed UCI section names so re-runs overwrite, not duplicate.
 #
-# Topology: ONE VLAN-aware bridge br0 (ports: lan=trunk, wan=guest
-# access, bat0=mesh) with bridge-vlans — mgmt 4 untagged+pvid on the
-# trunk, client VLANs tagged on trunk+mesh. mgmt DHCP from wisp
-# (10.1.4.2); router/DNS = ten64 (10.1.4.1). APs attach via OpenWISP
-# (wifi-iface network=roam/iot/guest).
-VLANS="int=10 roam=20 iot=90 guest=99"
-MGMT_BAT_VID=4
-
-# --- batman-adv core (bat0) + the 802.11s hardif join ---
-uci -q batch <<'EOF'
-set network.bat0=interface
-set network.bat0.proto='batadv'
-set network.bat0.routing_algo='BATMAN_IV'
-set network.bat0.bridge_loop_avoidance='1'
-set network.bat0.distributed_arp_table='1'
-set network.bat0.gw_mode='client'
-set network.mesh_hardif_5g=interface
-set network.mesh_hardif_5g.proto='batadv_hardif'
-set network.mesh_hardif_5g.master='bat0'
-set network.mesh_hardif_5g.mtu='1536'
-set network.mesh_hardif_2g4=interface
-set network.mesh_hardif_2g4.proto='batadv_hardif'
-set network.mesh_hardif_2g4.master='bat0'
-set network.mesh_hardif_2g4.mtu='1536'
-EOF
+# DEFAULT PROFILE (simple, 2026-07-22): the device comes up with NO APs —
+# just the wired uplink + mgmt DHCP. Wireless arrives via OpenWISP (the
+# 'gwifi-aps' template) once the agent registers. The advanced batman-adv
+# mesh architecture is NOT configured at boot; flip a device to it with
+# /usr/sbin/gale-mesh-bootstrap (+ the 'gwifi-mesh-aps' template).
+#
+# JACK NAMING (verified fleet-wide 2026-07-22): gale's DTS port names are
+# INVERTED relative to the case labels. The physical WAN (globe) jack is
+# the netdev OpenWrt calls 'lan'; the physical LAN jack is netdev 'wan'.
+# The uplink cable goes in the physical WAN jack = netdev 'lan'. The
+# other jack (netdev 'wan') is NOT bridged and stays link-down.
+#
+# Topology: ONE VLAN-aware bridge br0, single trunk port (netdev 'lan'):
+# mgmt VLAN 4 untagged+pvid, client VLANs 20/90/99 tagged. mgmt DHCP from
+# wisp (10.1.4.2); router/DNS = ten64 (10.1.4.1). APs attach via OpenWISP
+# (wifi-iface network=roam/iot/guest -> br0.<vid>).
+#
+# STP is OFF (2026-07-22): netifd's default bridge priority 0x7FFF
+# undercuts every real switch's 0x8000 — a puck bridge speaking 802.1D
+# wins root of the entire house L2 and thrashes it (69 elections/3h,
+# fleet-wide MAC flushes; root-caused live). Pucks never speak STP.
+VLANS="roam=20 iot=90 guest=99"
+MGMT_VID=4
 
 # --- ONE VLAN-AWARE BRIDGE (br0) ---
 # Per-VLAN software bridges over 8021q uppers of a DSA port DO NOT WORK
-# when that port is also hw-offload-bridged untagged: the qca8k switch
-# claims tagged ingress for the vlan-unaware bridge and the uppers never
-# receive (found 2026-07-12 — SSID clients' DHCP replies vanished
-# between the wire and br-iot). The supported DSA pattern is a single
-# bridge with vlan_filtering=1 and bridge-vlan sections; wifi ifaces
-# join per-VLAN via their interface's br0.<vid> device, and bat0 rides
-# as a tagged port (batman carries the tags; BLA operates per-vid).
-#
-# Port roles (user directive 2026-07-12): the CABLED jack (OpenWrt
-# 'lan') is the trunk — mgmt (4) untagged+pvid, client VLANs tagged;
-# the spare jack (OpenWrt 'wan') is an untagged GUEST access port.
-#
-# STP is OFF (changed 2026-07-22). It was kept on after kernel patch
-# 707 fixed the qca8k misprogramming, but field evidence showed it is
-# actively harmful: netifd defaults bridge priority to 0x7FFF, one BELOW
-# every real switch's 0x8000, so any puck wins root of the entire house
-# L2 — and because br0 bridges the RF mesh, its BPDUs reach the fabric
-# over a lossy path, max-age expires, and the fabric thrashes root
-# elections (69 in ~3h on 2026-07-22; each one flushes MAC tables
-# network-wide and blackholes traffic). Mesh<->wire loop protection is
-# batman-adv BLA's job (per-VLAN, active); the wired fabric's own STP
-# protects the switches. Pucks must never speak 802.1D at the fabric.
+# when that port is also hw-offload-bridged untagged (qca8k claims tagged
+# ingress; found 2026-07-12). The supported DSA pattern is a single
+# bridge with vlan_filtering=1 and bridge-vlan sections.
 # Find the board-generated br-lan device section (anonymous; index varies).
 i=0
 brdev=""
@@ -69,26 +48,15 @@ if [ -z "$brdev" ]; then
 	     "generated yet?) — will retry next boot" >&2
 	exit 1
 fi
-# batman rides as PER-VLAN 8021q uppers (bat0.<vid>), each an untagged
-# member of its bridge-vlan — NOT as a raw tagged port: batman only
-# registers TT/BLA softif-VLANs it sees via its own 8021q uppers; a raw
-# tagged bat0 port floods "adding TT local entry to non-existent VLAN"
-# and breaks per-VLAN BLA (seen live on puck12, g17b40e7).
 uci set "network.$brdev.name"='br0'
 uci set "network.$brdev.vlan_filtering"='1'
 uci set "network.$brdev.stp"='0'
 uci -q delete "network.$brdev.ports"
 uci add_list "network.$brdev.ports"='lan'
-uci add_list "network.$brdev.ports"='wan'
-uci add_list "network.$brdev.ports"="bat0.$MGMT_BAT_VID"
-for kv in $VLANS; do
-	uci add_list "network.$brdev.ports"="bat0.${kv#*=}"
-done
-# Pin br0's MAC to the wan/label MAC: the bridge otherwise picks a
-# MAC by member-join timing (sometimes a random locally-administered
-# one), and BOTH the DHCP identity and the openwisp registration MAC
-# come from the mgmt bridge (the agent ignores mac_interface — verified
-# 2026-07-12; puck07 registered a junk random-MAC device).
+# Pin br0's MAC to the label MAC (held by the netdev-'wan' device section):
+# the bridge otherwise picks a MAC by member-join timing, and BOTH the
+# DHCP identity and the openwisp registration MAC come from the mgmt
+# bridge (the agent ignores mac_interface — verified 2026-07-12).
 i=0
 while devname=$(uci -q get "network.@device[$i].name"); do
 	if [ "$devname" = "wan" ]; then
@@ -99,37 +67,32 @@ while devname=$(uci -q get "network.@device[$i].name"); do
 	fi
 	i=$((i + 1))
 done
-# batman per-VLAN 8021q uppers (mgmt + clients).  Every mesh leg is an
-# ISOLATED bridge member (paired with the isolated wan port below):
-# isolated ports never forward to each other, so traffic entering the
-# guest jack can NEVER cross onto the mesh (user directive 2026-07-22),
-# while both still reach the cabled trunk and the local AP ports.
-for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
-	uci set network.bat_$vid="device"
-	uci set network.bat_$vid.type='8021q'
-	uci set network.bat_$vid.ifname='bat0'
-	uci set network.bat_$vid.vid="$vid"
-	uci set network.bat_$vid.name="bat0.$vid"
-	uci set network.bat_$vid.isolate='1'
-done
-# wan (guest access jack): isolated bridge member — see note above.
-uci set network.wanport="device"
-uci set network.wanport.name='wan'
-uci set network.wanport.isolate='1'
-# mgmt bridge-vlan: untagged+pvid on the trunk and on the mesh leg
+# mgmt bridge-vlan: untagged+pvid on the trunk
 uci set network.brvlan_mgmt="bridge-vlan"
 uci set network.brvlan_mgmt.device='br0'
-uci set network.brvlan_mgmt.vlan="$MGMT_BAT_VID"
+uci set network.brvlan_mgmt.vlan="$MGMT_VID"
 uci -q delete network.brvlan_mgmt.ports
 uci add_list network.brvlan_mgmt.ports='lan:u*'
-uci add_list network.brvlan_mgmt.ports="bat0.$MGMT_BAT_VID:u*"
-# Default lan/wan/wan6 interfaces go away: the ports live in br0 now.
+# Default lan/wan/wan6 interfaces go away: the trunk lives in br0 now and
+# netdev 'wan' (physical LAN jack) is deliberately unreferenced -> down.
 uci -q delete network.lan
 uci -q delete network.wan
 uci -q delete network.wan6
 uci set network.mgmt="interface"
-uci set network.mgmt.device="br0.$MGMT_BAT_VID"
+uci set network.mgmt.device="br0.$MGMT_VID"
 uci set network.mgmt.proto='dhcp'
+# client VLANs: tagged on the trunk; APs join via wifi-iface network=<name>
+for kv in $VLANS; do
+	name=${kv%=*}; vid=${kv#*=}
+	uci set network.brvlan_$name="bridge-vlan"
+	uci set network.brvlan_$name.device='br0'
+	uci set network.brvlan_$name.vlan="$vid"
+	uci -q delete network.brvlan_$name.ports
+	uci add_list network.brvlan_$name.ports='lan:t'
+	uci set network.$name="interface"
+	uci set network.$name.device="br0.$vid"
+	uci set network.$name.proto='none'
+done
 uci commit network
 
 # No local DHCP server on the (removed) lan; wisp serves the mgmt VLAN.
@@ -158,53 +121,13 @@ uci commit system
 uci -q del_list firewall.@zone[0].network='lan'
 uci -q del_list firewall.@zone[0].network='mgmt'
 uci add_list firewall.@zone[0].network='mgmt'
-# Trust the raw batman mesh interface (bat0). Its VLAN uppers (bat0.<vid>)
-# are bridged into br0 and covered by the mgmt/client zones, but UNTAGGED
-# bat0 — batman's own control plane: alfred (UDP 16962) and IPv6 NDP for
-# link-local unicast between peer bat0 ifaces — is un-zoned, so fw4's
-# `policy drop` INPUT chain silently dropped it. That broke alfred's
-# slave->master data push (each node kept only its own vis view). With bat0
-# trusted, NDP is answered and alfred converges so every puck holds the
-# whole-mesh graph. (Root-caused 2026-07-16: NOT an MLD/multicast-
-# optimisation problem — the multicast crossed fine; the firewall ate it.)
-uci -q get firewall.@zone[0].device | grep -qw bat0 \
-	|| uci add_list firewall.@zone[0].device='bat0'
 uci commit firewall
 
-# --- client VLANs: bridge-vlans on br0 (trunk tagged + mesh tagged) ---
-# The switch side must carry these VLANs tagged on each puck port
-# (tools/fabric/onboard_puck_port.py does this). Wifi APs attach via
-# wifi-iface network=<name>: netifd sees the interface's br0.<vid>
-# device and joins the AP to br0 untagged in that VLAN.
-for kv in $VLANS; do
-	name=${kv%=*}; vid=${kv#*=}
-	uci set network.brvlan_$name="bridge-vlan"
-	uci set network.brvlan_$name.device='br0'
-	uci set network.brvlan_$name.vlan="$vid"
-	uci -q delete network.brvlan_$name.ports
-	uci add_list network.brvlan_$name.ports='lan:t'
-	uci add_list network.brvlan_$name.ports="bat0.$vid:u*"
-	# spare jack = untagged guest access port
-	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='wan:u*'
-	# interface on the bridge VLAN
-	uci set network.$name="interface"
-	uci set network.$name.device="br0.$vid"
-	uci set network.$name.proto='none'
-done
-uci commit network
-
-# --- mesh topology reporting to OpenWISP ---
-# alfred distributes each puck's local batman-adv vis data over bat0 so any
-# node holds the whole-mesh graph; gwifi-topology then POSTs it (via
-# batadv-vis -f jsondoc) to wisp's receive-strategy Topology. Overlay init
-# scripts get no rc.d symlink from the image build, so enable them here.
-/etc/init.d/alfred enable 2>&1 || echo "gale-bootstrap: alfred enable failed" >&2
-/etc/init.d/gwifi-topology enable 2>&1 \
-	|| echo "gale-bootstrap: gwifi-topology enable failed" >&2
-
-# lldpd advertises this puck to the switch fabric (system name + mgmt IP +
-# port id) on the physical jacks only (see files/etc/config/lldpd). Same
-# overlay-init caveat as above: no rc.d symlink from the image build.
+# gwifi-topology needs bat0 (mesh profile only) — no rc.d symlink, and it
+# stays off until gale-mesh-bootstrap enables it. lldpd advertises this
+# puck to the switch fabric (system name + mgmt IP + port id) on the
+# physical jacks only (see files/etc/config/lldpd); overlay init scripts
+# get no rc.d symlink from the image build, so enable it here.
 /etc/init.d/lldpd enable 2>&1 || echo "gale-bootstrap: lldpd enable failed" >&2
 
 exit 0

@@ -1,11 +1,13 @@
-# Radios + 802.11s mesh ship ENABLED (2026-07-12). The mesh joins bat0
-# via mesh_hardif (proto batadv_hardif, see 99-gale-bootstrap) with
-# batman-adv Bridge Loop Avoidance — the mesh design's R3 requirement —
-# so multiple WIRED pucks meshing no longer form an L2 loop (the raw
-# 802.11s pilot without BLA stormed VLAN 4 on 2026-07-11; see
-# docs/wisp-netboot-runbook.md). mesh_fwding stays 0: batman routes,
-# 802.11s only carries frames hop-by-hop. The old "batman panics boot"
-# lore is DEAD — it was the qca8k lookup-state bug (kernel patch 707).
+# Radios only — the image ships NO wifi-ifaces (2026-07-22 simple-profile
+# default): a freshly flashed puck comes up with just the wired uplink +
+# mgmt DHCP, and the APs arrive via the OpenWISP 'gwifi-aps' template once
+# the agent registers. The 802.11s mesh backhaul is NOT configured by
+# default; /usr/sbin/gale-mesh-bootstrap adds it (with the batman network
+# core) when a device is flipped to the mesh architecture.
+#
+# NOTE: after the agent's FIRST wireless apply, beacons may not start (the
+# partial-reload bug, see gwifi memory 2026-07-22) — a plain `wifi` fixes.
+
 config wifi-device 'radio0'
 	option type 'mac80211'
 	option path 'platform/soc/a000000.wifi'
@@ -21,33 +23,3 @@ config wifi-device 'radio1'
 	option band '5g'
 	option htmode 'VHT80'
 	option disabled '0'
-
-config wifi-iface 'mesh_5g'
-	option disabled '0'
-	option device 'radio1'
-	option ifname 'mesh-5g'
-	option mode 'mesh'
-	option mesh_id '__MESH_ID__'
-	option encryption 'sae'
-	option key '__MESH_SAE_KEY__'
-	option network 'mesh_hardif_5g'
-	option mesh_fwding '0'
-	# Only peer with links at a strong, reliable signal (>= -65 dBm). 0 = accept
-	# any RSSI, which made edge nodes endlessly retry doomed cross-building SAE
-	# handshakes (-71..-90 dBm) → MESH-SAE-AUTH-BLOCKED churn + backhaul flap.
-	# Measured intra-cluster links sit at -12..-58 dBm, so -65 keeps every real
-	# link (>=7 dB margin on the weakest) and rejects the marginal ones.
-	option mesh_rssi_threshold '-65'
-
-config wifi-iface 'mesh_2g4'
-	option disabled '0'
-	option device 'radio0'
-	option ifname 'mesh-2g4'
-	option mode 'mesh'
-	option mesh_id '__MESH_ID__'
-	option encryption 'sae'
-	option key '__MESH_SAE_KEY__'
-	option network 'mesh_hardif_2g4'
-	option mesh_fwding '0'
-	# See mesh_5g above: -65 dBm keeps strong/reliable links, drops marginal ones.
-	option mesh_rssi_threshold '-65'

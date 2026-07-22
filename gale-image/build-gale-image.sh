@@ -27,7 +27,8 @@ find "$OWRT/files" -type f -exec sed -i \
 	-e "s|__TOPOLOGY_RECEIVE_URL__|$tu|g" {} +
 chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap" \
 	"$OWRT/files/etc/init.d/gwifi-topology" \
-	"$OWRT/files/usr/sbin/gwifi-topology-push"
+	"$OWRT/files/usr/sbin/gwifi-topology-push" \
+	"$OWRT/files/usr/sbin/gale-mesh-bootstrap"
 
 # 1b) stamp the image id — the netboot installer's idempotence marker.
 # The same id is emitted as a sidecar next to factory.bin so the publish

@@ -1,0 +1,116 @@
+#!/bin/sh
+# gale-mesh-bootstrap — flip THIS device to the advanced batman-adv mesh
+# architecture. NOT run at boot: the image default (99-gale-bootstrap) is
+# the simple wired-AP profile; run this manually to join a device to the
+# mesh design (bat0 + BLA, per-VLAN legs, 802.11s backhaul on both bands,
+# guest access jack). Idempotent: fixed UCI section names.
+#
+# The mesh AP layer then comes from the OpenWISP template 'gwifi-mesh-aps'
+# (attach it / detach 'gwifi-aps' in the controller). See also
+# tools/fleet/puck_profile.py for fleet-side switching with snapshots.
+VLANS="int=10 roam=20 iot=90 guest=99"
+MGMT_BAT_VID=4
+
+# --- batman-adv core (bat0) + the 802.11s hardif join ---
+uci -q batch <<'EOF'
+set network.bat0=interface
+set network.bat0.proto='batadv'
+set network.bat0.routing_algo='BATMAN_IV'
+set network.bat0.bridge_loop_avoidance='1'
+set network.bat0.distributed_arp_table='1'
+set network.bat0.gw_mode='client'
+set network.mesh_hardif_5g=interface
+set network.mesh_hardif_5g.proto='batadv_hardif'
+set network.mesh_hardif_5g.master='bat0'
+set network.mesh_hardif_5g.mtu='1536'
+set network.mesh_hardif_2g4=interface
+set network.mesh_hardif_2g4.proto='batadv_hardif'
+set network.mesh_hardif_2g4.master='bat0'
+set network.mesh_hardif_2g4.mtu='1536'
+EOF
+
+# batman rides as PER-VLAN 8021q uppers (bat0.<vid>), each an untagged
+# member of its bridge-vlan — NOT as a raw tagged port (TT/BLA needs the
+# 8021q uppers; raw tagged bat0 breaks per-VLAN BLA, seen g17b40e7).
+# Every mesh leg is an ISOLATED bridge member (paired with the isolated
+# wan/guest jack): guest-jack traffic can never cross onto the mesh.
+for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
+	uci set network.bat_$vid="device"
+	uci set network.bat_$vid.type='8021q'
+	uci set network.bat_$vid.ifname='bat0'
+	uci set network.bat_$vid.vid="$vid"
+	uci set network.bat_$vid.name="bat0.$vid"
+	uci set network.bat_$vid.isolate='1'
+done
+uci set network.wanport="device"
+uci set network.wanport.name='wan'
+uci set network.wanport.isolate='1'
+
+# br0 gains the mesh legs + the guest access jack (netdev 'wan' — NOTE:
+# gale jack names are inverted vs the case labels; netdev 'wan' is the
+# physical LAN jack).
+uci -q del_list network.device_br0.ports='wan'
+uci add_list network.device_br0.ports='wan'
+uci -q del_list network.device_br0.ports="bat0.$MGMT_BAT_VID"
+uci add_list network.device_br0.ports="bat0.$MGMT_BAT_VID"
+for kv in $VLANS; do
+	uci -q del_list network.device_br0.ports="bat0.${kv#*=}"
+	uci add_list network.device_br0.ports="bat0.${kv#*=}"
+done
+uci -q del_list network.brvlan_mgmt.ports="bat0.$MGMT_BAT_VID:u*"
+uci add_list network.brvlan_mgmt.ports="bat0.$MGMT_BAT_VID:u*"
+for kv in $VLANS; do
+	name=${kv%=*}; vid=${kv#*=}
+	uci set network.brvlan_$name="bridge-vlan"
+	uci set network.brvlan_$name.device='br0'
+	uci set network.brvlan_$name.vlan="$vid"
+	uci -q delete network.brvlan_$name.ports
+	uci add_list network.brvlan_$name.ports='lan:t'
+	uci add_list network.brvlan_$name.ports="bat0.$vid:u*"
+	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='wan:u*'
+	uci set network.$name="interface"
+	uci set network.$name.device="br0.$vid"
+	uci set network.$name.proto='none'
+done
+uci commit network
+
+# --- 802.11s mesh backhaul on both bands (batman routes; mesh_fwding 0).
+# mesh_rssi_threshold -65: keep strong links, reject doomed marginal SAE
+# retries (measured intra-cluster -12..-58 dBm).
+uci -q batch <<'EOF'
+set wireless.mesh_5g=wifi-iface
+set wireless.mesh_5g.disabled='0'
+set wireless.mesh_5g.device='radio1'
+set wireless.mesh_5g.ifname='mesh-5g'
+set wireless.mesh_5g.mode='mesh'
+set wireless.mesh_5g.mesh_id='__MESH_ID__'
+set wireless.mesh_5g.encryption='sae'
+set wireless.mesh_5g.key='__MESH_SAE_KEY__'
+set wireless.mesh_5g.network='mesh_hardif_5g'
+set wireless.mesh_5g.mesh_fwding='0'
+set wireless.mesh_5g.mesh_rssi_threshold='-65'
+set wireless.mesh_2g4=wifi-iface
+set wireless.mesh_2g4.disabled='0'
+set wireless.mesh_2g4.device='radio0'
+set wireless.mesh_2g4.ifname='mesh-2g4'
+set wireless.mesh_2g4.mode='mesh'
+set wireless.mesh_2g4.mesh_id='__MESH_ID__'
+set wireless.mesh_2g4.encryption='sae'
+set wireless.mesh_2g4.key='__MESH_SAE_KEY__'
+set wireless.mesh_2g4.network='mesh_hardif_2g4'
+set wireless.mesh_2g4.mesh_fwding='0'
+set wireless.mesh_2g4.mesh_rssi_threshold='-65'
+EOF
+uci commit wireless
+
+# Trust raw bat0 (alfred + NDP link-local; fw4 policy-drop ate it otherwise).
+uci -q get firewall.@zone[0].device | grep -qw bat0 \
+	|| uci add_list firewall.@zone[0].device='bat0'
+uci commit firewall
+
+# Mesh services: alfred distributes vis data; gwifi-topology POSTs it.
+/etc/init.d/alfred enable
+/etc/init.d/gwifi-topology enable
+
+echo "mesh profile configured — reload with: /etc/init.d/network restart && wifi"
+echo "remember: attach 'gwifi-mesh-aps' (detach 'gwifi-aps') in OpenWISP"

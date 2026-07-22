@@ -1,4 +1,14 @@
+# usteer client steering (simple profile, 2026-07-22): steer only the
+# high-bandwidth SSIDs — IoT devices are sticky/fragile and are NEVER
+# steered. Inter-AP communication rides the mgmt network (the wired
+# uplink trunk). Matches the fleet-deployed config (puck_profile.py).
+# (Replaced the stale pre-vlan-aware config that referenced the retired
+# br-int/br-roam bridges.)
+
 config usteer
-	option syslog '1'
-	option network 'br-int br-roam'
-	option load_kick_enabled '0'
+	option network 'mgmt'
+	option local_mode '0'
+	option assoc_steering '1'
+	option load_balancing_threshold '0'
+	list ssid_list 'ansells'
+	list ssid_list 'ansells-guest'
