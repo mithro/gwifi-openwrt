@@ -16,8 +16,13 @@ Profiles:
                 ansells (VLAN 20, high-bandwidth), ansells-guest (VLAN 99,
                 high-bandwidth + client isolation) — each on 2.4 + 5 GHz.
               * no mesh/batman; usteer client steering on ansells +
-                ansells-guest, talking over the mgmt network (wan port).
-              * openwisp agents paused (profile is locally managed).
+                ansells-guest, talking over the mgmt network (uplink jack).
+              * wireless is OpenWISP-managed: the 'gwifi-aps' template
+                (openwisp/build-templates.py) carries this same six-AP
+                set; the preserved mesh AP layer is 'gwifi-mesh-aps'
+                (detached). Switching profiles later = puck_profile.py
+                mesh/simple locally PLUS swapping which template is
+                attached in OpenWISP.
 
 Existing WPA keys are reused IN PLACE on each puck (read into the remote
 shell only; they never leave the device).
@@ -142,75 +147,75 @@ for s in $(uci show wireless | grep -oE 'wireless\\.[a-z_0-9]+=wifi-iface' | cut
     uci delete wireless.$s
 done
 uci batch <<EOF
-set wireless.iot_2g4=wifi-iface
-set wireless.iot_2g4.device='radio0'
-set wireless.iot_2g4.ifname='wl-iot-2g4'
-set wireless.iot_2g4.mode='ap'
-set wireless.iot_2g4.ssid='ansells-iot'
-set wireless.iot_2g4.encryption='psk2+ccmp'
-set wireless.iot_2g4.key='$K_IOT'
-set wireless.iot_2g4.network='iot'
-set wireless.iot_2g4.dtim_period='3'
-set wireless.iot_2g4.legacy_rates='1'
-set wireless.iot_2g4.disassoc_low_ack='0'
-set wireless.iot_2g4.ieee80211w='0'
-set wireless.iot_5g=wifi-iface
-set wireless.iot_5g.device='radio1'
-set wireless.iot_5g.ifname='wl-iot-5g'
-set wireless.iot_5g.mode='ap'
-set wireless.iot_5g.ssid='ansells-iot'
-set wireless.iot_5g.encryption='psk2+ccmp'
-set wireless.iot_5g.key='$K_IOT'
-set wireless.iot_5g.network='iot'
-set wireless.iot_5g.dtim_period='3'
-set wireless.iot_5g.disassoc_low_ack='0'
-set wireless.iot_5g.ieee80211w='0'
-set wireless.main_2g4=wifi-iface
-set wireless.main_2g4.device='radio0'
-set wireless.main_2g4.ifname='wl-main-2g4'
-set wireless.main_2g4.mode='ap'
-set wireless.main_2g4.ssid='ansells'
-set wireless.main_2g4.encryption='psk2+ccmp'
-set wireless.main_2g4.key='$K_MAIN'
-set wireless.main_2g4.network='roam'
-set wireless.main_2g4.ieee80211w='1'
-set wireless.main_2g4.ieee80211k='1'
-set wireless.main_2g4.bss_transition='1'
-set wireless.main_5g=wifi-iface
-set wireless.main_5g.device='radio1'
-set wireless.main_5g.ifname='wl-main-5g'
-set wireless.main_5g.mode='ap'
-set wireless.main_5g.ssid='ansells'
-set wireless.main_5g.encryption='psk2+ccmp'
-set wireless.main_5g.key='$K_MAIN'
-set wireless.main_5g.network='roam'
-set wireless.main_5g.ieee80211w='1'
-set wireless.main_5g.ieee80211k='1'
-set wireless.main_5g.bss_transition='1'
-set wireless.guest_2g4=wifi-iface
-set wireless.guest_2g4.device='radio0'
-set wireless.guest_2g4.ifname='wl-guest-2g4'
-set wireless.guest_2g4.mode='ap'
-set wireless.guest_2g4.ssid='ansells-guest'
-set wireless.guest_2g4.encryption='psk2+ccmp'
-set wireless.guest_2g4.key='$K_GUEST'
-set wireless.guest_2g4.network='guest'
-set wireless.guest_2g4.isolate='1'
-set wireless.guest_2g4.ieee80211w='1'
-set wireless.guest_2g4.ieee80211k='1'
-set wireless.guest_2g4.bss_transition='1'
-set wireless.guest_5g=wifi-iface
-set wireless.guest_5g.device='radio1'
-set wireless.guest_5g.ifname='wl-guest-5g'
-set wireless.guest_5g.mode='ap'
-set wireless.guest_5g.ssid='ansells-guest'
-set wireless.guest_5g.encryption='psk2+ccmp'
-set wireless.guest_5g.key='$K_GUEST'
-set wireless.guest_5g.network='guest'
-set wireless.guest_5g.isolate='1'
-set wireless.guest_5g.ieee80211w='1'
-set wireless.guest_5g.ieee80211k='1'
-set wireless.guest_5g.bss_transition='1'
+set wireless.wifi_wl_iot_2g4=wifi-iface
+set wireless.wifi_wl_iot_2g4.device='radio0'
+set wireless.wifi_wl_iot_2g4.ifname='wl-iot-2g4'
+set wireless.wifi_wl_iot_2g4.mode='ap'
+set wireless.wifi_wl_iot_2g4.ssid='ansells-iot'
+set wireless.wifi_wl_iot_2g4.encryption='psk2+ccmp'
+set wireless.wifi_wl_iot_2g4.key='$K_IOT'
+set wireless.wifi_wl_iot_2g4.network='iot'
+set wireless.wifi_wl_iot_2g4.dtim_period='3'
+set wireless.wifi_wl_iot_2g4.legacy_rates='1'
+set wireless.wifi_wl_iot_2g4.disassoc_low_ack='0'
+set wireless.wifi_wl_iot_2g4.ieee80211w='0'
+set wireless.wifi_wl_iot_5g=wifi-iface
+set wireless.wifi_wl_iot_5g.device='radio1'
+set wireless.wifi_wl_iot_5g.ifname='wl-iot-5g'
+set wireless.wifi_wl_iot_5g.mode='ap'
+set wireless.wifi_wl_iot_5g.ssid='ansells-iot'
+set wireless.wifi_wl_iot_5g.encryption='psk2+ccmp'
+set wireless.wifi_wl_iot_5g.key='$K_IOT'
+set wireless.wifi_wl_iot_5g.network='iot'
+set wireless.wifi_wl_iot_5g.dtim_period='3'
+set wireless.wifi_wl_iot_5g.disassoc_low_ack='0'
+set wireless.wifi_wl_iot_5g.ieee80211w='0'
+set wireless.wifi_wl_main_2g4=wifi-iface
+set wireless.wifi_wl_main_2g4.device='radio0'
+set wireless.wifi_wl_main_2g4.ifname='wl-main-2g4'
+set wireless.wifi_wl_main_2g4.mode='ap'
+set wireless.wifi_wl_main_2g4.ssid='ansells'
+set wireless.wifi_wl_main_2g4.encryption='psk2+ccmp'
+set wireless.wifi_wl_main_2g4.key='$K_MAIN'
+set wireless.wifi_wl_main_2g4.network='roam'
+set wireless.wifi_wl_main_2g4.ieee80211w='1'
+set wireless.wifi_wl_main_2g4.ieee80211k='1'
+set wireless.wifi_wl_main_2g4.bss_transition='1'
+set wireless.wifi_wl_main_5g=wifi-iface
+set wireless.wifi_wl_main_5g.device='radio1'
+set wireless.wifi_wl_main_5g.ifname='wl-main-5g'
+set wireless.wifi_wl_main_5g.mode='ap'
+set wireless.wifi_wl_main_5g.ssid='ansells'
+set wireless.wifi_wl_main_5g.encryption='psk2+ccmp'
+set wireless.wifi_wl_main_5g.key='$K_MAIN'
+set wireless.wifi_wl_main_5g.network='roam'
+set wireless.wifi_wl_main_5g.ieee80211w='1'
+set wireless.wifi_wl_main_5g.ieee80211k='1'
+set wireless.wifi_wl_main_5g.bss_transition='1'
+set wireless.wifi_wl_guest_2g4=wifi-iface
+set wireless.wifi_wl_guest_2g4.device='radio0'
+set wireless.wifi_wl_guest_2g4.ifname='wl-guest-2g4'
+set wireless.wifi_wl_guest_2g4.mode='ap'
+set wireless.wifi_wl_guest_2g4.ssid='ansells-guest'
+set wireless.wifi_wl_guest_2g4.encryption='psk2+ccmp'
+set wireless.wifi_wl_guest_2g4.key='$K_GUEST'
+set wireless.wifi_wl_guest_2g4.network='guest'
+set wireless.wifi_wl_guest_2g4.isolate='1'
+set wireless.wifi_wl_guest_2g4.ieee80211w='1'
+set wireless.wifi_wl_guest_2g4.ieee80211k='1'
+set wireless.wifi_wl_guest_2g4.bss_transition='1'
+set wireless.wifi_wl_guest_5g=wifi-iface
+set wireless.wifi_wl_guest_5g.device='radio1'
+set wireless.wifi_wl_guest_5g.ifname='wl-guest-5g'
+set wireless.wifi_wl_guest_5g.mode='ap'
+set wireless.wifi_wl_guest_5g.ssid='ansells-guest'
+set wireless.wifi_wl_guest_5g.encryption='psk2+ccmp'
+set wireless.wifi_wl_guest_5g.key='$K_GUEST'
+set wireless.wifi_wl_guest_5g.network='guest'
+set wireless.wifi_wl_guest_5g.isolate='1'
+set wireless.wifi_wl_guest_5g.ieee80211w='1'
+set wireless.wifi_wl_guest_5g.ieee80211k='1'
+set wireless.wifi_wl_guest_5g.bss_transition='1'
 EOF
 uci commit wireless
 
@@ -226,10 +231,16 @@ set usteer.@usteer[0].load_balancing_threshold='0'
 EOF
 uci commit usteer
 
-# --- services: pause openwisp (locally managed today), enable usteer -----
-/etc/init.d/openwisp-config stop; /etc/init.d/openwisp-config disable
-/etc/init.d/openwisp-monitoring stop; /etc/init.d/openwisp-monitoring disable
+# --- services: openwisp stays enabled (the simple profile's wireless is
+# --- delivered by the 'gwifi-aps' OpenWISP template since 2026-07-22 —
+# --- see openwisp/build-templates.py; this local wireless write is just
+# --- the bootstrap the agent then converges on), enable usteer ----------
+/etc/init.d/openwisp-config enable
+/etc/init.d/openwisp-monitoring enable
 /etc/init.d/usteer enable
+# gwifi-topology expects bat0 (mesh-only) — off in simple
+/etc/init.d/gwifi-topology stop
+/etc/init.d/gwifi-topology disable
 
 # --- apply ---------------------------------------------------------------
 /etc/init.d/network restart
@@ -275,6 +286,7 @@ uci import wireless < {SNAP_DIR}/mesh-wireless.uci
 uci commit
 /etc/init.d/openwisp-config enable
 /etc/init.d/openwisp-monitoring enable
+/etc/init.d/gwifi-topology enable
 /etc/init.d/network restart
 sleep 8
 wifi
