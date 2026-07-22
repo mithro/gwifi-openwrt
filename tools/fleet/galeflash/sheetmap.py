@@ -66,10 +66,18 @@ FLASH_AUDIT_FIELDS: frozenset[str] = frozenset({
     "backup_path", "backup_sha256", "image_archive", "image_sha256",
 })
 
-# Live-collected fields that legitimately change over time.  'upstream'
-# changes when a puck is recabled; --update-live unlocks overwriting it.
-# 'name' and all MAC fields stay identity-guarded.
-LIVE_OVERWRITE_FIELDS: frozenset[str] = frozenset({"upstream"})
+# Live-collected fields that legitimately change over time, unlocked by
+# --update-live: 'upstream' changes when a puck is recabled, and the wifi
+# BSSIDs are creation-order dependent — a `wifi` reload can permute a
+# radio's vif MACs (observed live 2026-07-22: puck12's 5G set shuffled).
+# 'name' and the VPD-derived wan/lan MACs stay identity-guarded.
+LIVE_OVERWRITE_FIELDS: frozenset[str] = frozenset({
+    "upstream",
+    "wifi_wl_main_2g4", "wifi_wl_main_5g",
+    "wifi_wl_guest_2g4", "wifi_wl_guest_5g",
+    "wifi_wl_iot_2g4",
+    "wifi_mesh_2g4", "wifi_mesh_5g",
+})
 
 # Stale sheet headers → real gale interface names.  Applied by
 # compute_header_renames(); matching is case-insensitive and renames only a

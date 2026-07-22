@@ -478,3 +478,21 @@ def test_extended_header_width_covers_all_new_columns():
     assert len(ext) == 33
     assert ext[28:] == ["wl-guest-2g4", "wl-guest-5g", "wl-iot-2g4",
                         "mesh-2g4", "mesh-5g"]
+
+
+def test_update_live_allows_wifi_bssid_overwrite():
+    """BSSIDs are creation-order dependent and shuffle on wifi reload
+    (observed live 2026-07-22: puck12's 5G set permuted after `wifi`) —
+    --update-live must treat differing BSSID cells as newer truth."""
+    header = RENAMED_HEADER + ["mesh-5g"]
+    mesh_col = header.index("mesh-5g")
+    row = [""] * len(header)
+    row[header.index("Serial")] = "SER001"
+    row[mesh_col] = "44:07:0B:01:A2:24"          # pre-reload assignment
+    records = [{"serial_number": "SER001",
+                "wifi_mesh_5g": "42:07:0B:01:A2:24"}]  # post-reload truth
+    updates, conflicts, _ = compute_updates(
+        records, header, [row], allow_overwrite=LIVE_OVERWRITE_FIELDS)
+    assert [u for u in updates if u.col == mesh_col], (
+        f"expected overwrite update, got conflicts: {conflicts}")
+    assert not [c for c in conflicts if c.col == mesh_col]
