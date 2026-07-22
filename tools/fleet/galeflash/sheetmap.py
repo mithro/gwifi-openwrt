@@ -23,8 +23,8 @@ from typing import NamedTuple
 FIELD_TO_HEADER: dict[str, str] = {
     "mlb_serial_number":   "MLB Serial",
     "region":              "Region",
-    "ethernet_mac0":       "eth0",        # existing col H — fill only if empty/matching
-    "ethernet_mac1":       "eth1",        # existing col I — fill only if empty/matching
+    "ethernet_mac0":       "wan",         # renamed from stale 'eth0' header
+    "ethernet_mac1":       "lan",         # renamed from stale 'eth1' header
     "hwid":                "HWID",
     # --- firmware flashed to / running on the device ---
     "ro_frid":             "RO Firmware",   # coreboot RO version (unchanged by flash)
@@ -38,12 +38,22 @@ FIELD_TO_HEADER: dict[str, str] = {
     "backup_sha256":       "Backup SHA256", # sha256 of the pre-flash capture
     "image_archive":       "Image Archive", # big-storage path of the flashed image
     "image_sha256":        "Image SHA256",  # sha256 of the flashed image
+    # --- live-collected data (collect_puck_live.py) ---
+    "name":                "Name",         # puck hostname, existing col B
+    "upstream":            "Upstream",     # LLDP switch+port, existing col D
+    "wifi_wl_main_2g4":    "wl-main-2g4",  # renamed from stale 'wlan0'
+    "wifi_wl_main_5g":     "wl-main-5g",   # renamed from stale 'wlan1'
+    "wifi_wl_guest_2g4":   "wl-guest-2g4",
+    "wifi_wl_guest_5g":    "wl-guest-5g",
+    "wifi_wl_iot_2g4":     "wl-iot-2g4",
+    "wifi_mesh_2g4":       "mesh-2g4",
+    "wifi_mesh_5g":        "mesh-5g",
 }
 
-# Note: the generic user-label "MAC" column (E) is left untouched — it is
-# already populated with the operator's chosen MAC and is not an inventory
-# field.  The wifi-MAC columns J=wlan0/K=wlan1 stay empty (no wifi MACs in
-# inventory), so they are intentionally absent from FIELD_TO_HEADER.
+# Note: the generic user-label "MAC" column is left untouched — it holds the
+# operator's chosen MAC, not an inventory field.  The CPU-side eth0 netdev MAC
+# is randomized every boot (observed 2026-07-22) and is deliberately not
+# recorded.  Column positions are matched by header NAME, never by letter.
 
 # Fields that legitimately CHANGE on every reflash.  compute_updates() may be
 # told (allow_overwrite=FLASH_AUDIT_FIELDS) to replace differing non-empty
@@ -55,6 +65,21 @@ FLASH_AUDIT_FIELDS: frozenset[str] = frozenset({
     "flash_date", "flash_status",
     "backup_path", "backup_sha256", "image_archive", "image_sha256",
 })
+
+# Live-collected fields that legitimately change over time.  'upstream'
+# changes when a puck is recabled; --update-live unlocks overwriting it.
+# 'name' and all MAC fields stay identity-guarded.
+LIVE_OVERWRITE_FIELDS: frozenset[str] = frozenset({"upstream"})
+
+# Stale sheet headers → real gale interface names.  Applied by
+# compute_header_renames(); matching is case-insensitive and renames only a
+# cell whose current value still equals the old name.
+RENAME_HEADERS: dict[str, str] = {
+    "eth0":  "wan",
+    "eth1":  "lan",
+    "wlan0": "wl-main-2g4",
+    "wlan1": "wl-main-5g",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +164,40 @@ def format_mac(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+def compute_header_renames(
+    header: list[str],
+) -> tuple[list[tuple[int, str, str]], list[str]]:
+    """Compute header-cell renames per RENAME_HEADERS.
+
+    Three-way outcome per (old, new) entry, matched case-insensitively:
+      - old present, new absent  → rename entry ``(col_idx, old, new)``
+      - new present, old absent  → no-op (already renamed)
+      - both present             → conflict (rename would duplicate a header)
+      - neither present          → conflict (the sheet changed under us)
+
+    Returns (renames, conflicts); conflicts are human-readable strings and the
+    caller must refuse to write while any exist.  Data cells are never touched.
+    """
+    lower_to_idx = {h.lower(): i for i, h in enumerate(header)}
+    renames: list[tuple[int, str, str]] = []
+    conflicts: list[str] = []
+    for old, new in RENAME_HEADERS.items():
+        old_idx = lower_to_idx.get(old.lower())
+        new_idx = lower_to_idx.get(new.lower())
+        if old_idx is not None and new_idx is not None:
+            conflicts.append(
+                f"header has BOTH {old!r} (col {old_idx}) and {new!r} "
+                f"(col {new_idx}) — rename would duplicate"
+            )
+        elif old_idx is not None:
+            renames.append((old_idx, header[old_idx], new))
+        elif new_idx is None:
+            conflicts.append(
+                f"header has neither {old!r} nor {new!r} — sheet layout changed"
+            )
+    return renames, conflicts
+
 
 def get_extended_header(header: list[str]) -> list[str]:
     """Return *header* extended with any new column names introduced by FIELD_TO_HEADER.
