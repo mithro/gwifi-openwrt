@@ -17,8 +17,9 @@ Interfaces (each an AP bridged to an image-provided br0.<vid> via network=):
 Radios (radio0=2.4G, radio1=5G) come from the image; the template just
 references them.
 
-SSIDs are the placeholder 'test' set; the production 'ansells' names are a
-separate, deliberate flip.
+SSIDs are flipped to production one network at a time: IoT broadcasts the real
+'ansells-iot'; main + guest stay on the 'test' placeholders until their own
+deliberate flip.
 
 Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs;
 none are ever printed or committed. They go into the template's default_values
@@ -40,10 +41,12 @@ SSH_WISP = [
 PUCKS = ["puck01", "puck02", "puck04", "puck05", "puck06",
          "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"]
 
-# SSID -> passphrase source in ten64 hostapd. The var names are historical
-# (the passphrases are the real home-network keys); the broadcast SSID is the
-# placeholder 'test*' set for now.
-SSID_MAIN, SSID_IOT, SSID_GUEST = "test", "test-iot", "test-guest"
+# SSID -> passphrase source in ten64 hostapd. The passphrases are the real
+# home-network keys throughout. Broadcast SSIDs are flipped to production one
+# network at a time: IoT is LIVE ('ansells-iot', 2026-07-22 — the gale IoT AP
+# now extends the existing VLAN-90 IoT network, same SSID/key/subnet as ten64);
+# main + guest stay on the 'test*' placeholders until their own deliberate flip.
+SSID_MAIN, SSID_IOT, SSID_GUEST = "test", "ansells-iot", "test-guest"
 
 
 def parse_hostapd(text):
