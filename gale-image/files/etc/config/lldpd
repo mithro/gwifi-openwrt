@@ -11,13 +11,18 @@ config lldpd 'config'
 	list interface 'lan'
 	list interface 'wan'
 
-	# Standard LLDP only — the Netgear fabric speaks LLDP. Disable the
-	# vendor discovery clones (Cisco CDP/FDP, Nortel SONMP, Extreme EDP)
-	# so we don't spray extra frames the switches ignore.
-	option enable_cdp 0
-	option enable_fdp 0
-	option enable_sonmp 0
-	option enable_edp 0
+	# Also recognize the vendor discovery protocols lldpd supports (Cisco
+	# CDP, Foundry FDP, Nortel SONMP, Extreme EDP) so gear that only
+	# speaks those still shows up as a neighbor. Note: Netgear NSDP is NOT
+	# in this set — it is a UDP management protocol (ports 63321-63324),
+	# not a link-layer announcement, and lldpd cannot hear it; the EMX
+	# "Plus" switches are interrogated via gdoc2netcfg's NSDP scanner
+	# instead (they transmit no LLDP at all — wire-verified 2026-07-22 on
+	# both an edge port and the 10G uplink).
+	option enable_cdp 1
+	option enable_fdp 1
+	option enable_sonmp 1
+	option enable_edp 1
 
 	# LLDP-MED class 4 = Network Connectivity device (matches upstream
 	# default; appropriate for an AP/bridge).
