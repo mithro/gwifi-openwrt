@@ -32,7 +32,12 @@ config wifi-iface 'mesh_5g'
 	option key '__MESH_SAE_KEY__'
 	option network 'mesh_hardif_5g'
 	option mesh_fwding '0'
-	option mesh_rssi_threshold '0'
+	# Only peer with links at a strong, reliable signal (>= -65 dBm). 0 = accept
+	# any RSSI, which made edge nodes endlessly retry doomed cross-building SAE
+	# handshakes (-71..-90 dBm) → MESH-SAE-AUTH-BLOCKED churn + backhaul flap.
+	# Measured intra-cluster links sit at -12..-58 dBm, so -65 keeps every real
+	# link (>=7 dB margin on the weakest) and rejects the marginal ones.
+	option mesh_rssi_threshold '-65'
 
 config wifi-iface 'mesh_2g4'
 	option disabled '0'
@@ -44,4 +49,5 @@ config wifi-iface 'mesh_2g4'
 	option key '__MESH_SAE_KEY__'
 	option network 'mesh_hardif_2g4'
 	option mesh_fwding '0'
-	option mesh_rssi_threshold '0'
+	# See mesh_5g above: -65 dBm keeps strong/reliable links, drops marginal ones.
+	option mesh_rssi_threshold '-65'
