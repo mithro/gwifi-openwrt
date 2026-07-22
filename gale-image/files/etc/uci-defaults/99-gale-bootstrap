@@ -99,14 +99,23 @@ while devname=$(uci -q get "network.@device[$i].name"); do
 	fi
 	i=$((i + 1))
 done
-# batman per-VLAN 8021q uppers (mgmt + clients)
+# batman per-VLAN 8021q uppers (mgmt + clients).  Every mesh leg is an
+# ISOLATED bridge member (paired with the isolated wan port below):
+# isolated ports never forward to each other, so traffic entering the
+# guest jack can NEVER cross onto the mesh (user directive 2026-07-22),
+# while both still reach the cabled trunk and the local AP ports.
 for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
 	uci set network.bat_$vid="device"
 	uci set network.bat_$vid.type='8021q'
 	uci set network.bat_$vid.ifname='bat0'
 	uci set network.bat_$vid.vid="$vid"
 	uci set network.bat_$vid.name="bat0.$vid"
+	uci set network.bat_$vid.isolate='1'
 done
+# wan (guest access jack): isolated bridge member — see note above.
+uci set network.wanport="device"
+uci set network.wanport.name='wan'
+uci set network.wanport.isolate='1'
 # mgmt bridge-vlan: untagged+pvid on the trunk and on the mesh leg
 uci set network.brvlan_mgmt="bridge-vlan"
 uci set network.brvlan_mgmt.device='br0'
