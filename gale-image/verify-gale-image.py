@@ -146,19 +146,40 @@ def run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path):
         check_value(content, secrets, "OPENWISP_SHARED_SECRET", "openwisp", failures)
         check_no_placeholders(content, "openwisp", failures)
 
-    # 2) /etc/config/wireless — mesh mode + real MESH_ID + SAE key, no placeholders.
+    # 2) /etc/config/wireless — the image ships NO wireless config at all:
+    # radios + APs are delivered by OpenWISP after the agent registers.
     wireless_path = os.path.join(rootfs_dir, "etc", "config", "wireless")
-    if not os.path.isfile(wireless_path):
-        failures.append("FAIL wireless: /etc/config/wireless not found")
+    if os.path.isfile(wireless_path):
+        failures.append("FAIL wireless: /etc/config/wireless present — the "
+                        "image must ship no wireless config (wisp-managed)")
     else:
-        content = open(wireless_path).read()
-        if "mode 'mesh'" in content:
-            print("  PASS wireless: mesh mode present")
+        print("  PASS wireless: no baked wireless config")
+
+    # 2a) bootstrap uses the case-marking port names.
+    bs_path = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")
+    if os.path.isfile(bs_path) and "eth-black" in open(bs_path).read():
+        print("  PASS bootstrap: eth-black trunk port")
+    else:
+        failures.append("FAIL bootstrap: eth-black trunk port not found")
+
+    # 2b) /usr/sbin/gale-mesh-bootstrap — the preserved mesh profile:
+    # executable, mesh mode + real MESH_ID + SAE key rendered.
+    meshboot = os.path.join(rootfs_dir, "usr", "sbin", "gale-mesh-bootstrap")
+    if not os.path.isfile(meshboot):
+        failures.append("FAIL mesh-bootstrap: gale-mesh-bootstrap not found")
+    else:
+        if os.stat(meshboot).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            print("  PASS mesh-bootstrap: present and executable")
         else:
-            failures.append("FAIL wireless: \"mode 'mesh'\" not found")
-        check_value(content, secrets, "MESH_ID", "wireless", failures)
-        check_value(content, secrets, "MESH_SAE_KEY", "wireless", failures)
-        check_no_placeholders(content, "wireless", failures)
+            failures.append("FAIL mesh-bootstrap: present but not executable")
+        content = open(meshboot).read()
+        if "mode='mesh'" in content or "mode 'mesh'" in content:
+            print("  PASS mesh-bootstrap: mesh mode present")
+        else:
+            failures.append("FAIL mesh-bootstrap: mesh mode not found")
+        check_value(content, secrets, "MESH_ID", "mesh-bootstrap", failures)
+        check_value(content, secrets, "MESH_SAE_KEY", "mesh-bootstrap", failures)
+        check_no_placeholders(content, "mesh-bootstrap", failures)
 
     # 3) /etc/uci-defaults/99-gale-bootstrap exists and is executable.
     bootstrap = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")

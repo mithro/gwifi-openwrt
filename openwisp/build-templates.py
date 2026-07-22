@@ -100,7 +100,13 @@ def netjson_simple():
             radio=radio, mode="access_point", ssid=ssid,
             network=[network], encryption=_wpa2(key), **extra)}
 
-    return {"interfaces": [
+    radios = [
+        {"name": "radio0", "driver": "mac80211", "protocol": "802.11n",
+         "channel": 6, "channel_width": 20},
+        {"name": "radio1", "driver": "mac80211", "protocol": "802.11ac",
+         "channel": 36, "channel_width": 80},
+    ]
+    return {"radios": radios, "interfaces": [
         ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
         ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
         ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **iot),
@@ -144,6 +150,89 @@ def netjson_mesh_aps():
     ]}
 
 
+LLDPD_CONFIG = """config lldpd 'config'
+	# Announce on the physical jacks only (both port-name generations are
+	# listed; the init resolves the ones that exist on this device).
+	list interface 'eth-black'
+	list interface 'eth-blue'
+	list interface 'lan'
+	list interface 'wan'
+	option enable_cdp 1
+	option enable_fdp 1
+	option enable_sonmp 1
+	option enable_edp 1
+	option lldp_class 4
+"""
+
+USTEER_CONFIG = """config usteer
+	option network 'mgmt'
+	option local_mode '0'
+	option assoc_steering '1'
+	option load_balancing_threshold '0'
+	list ssid_list 'ansells'
+	list ssid_list 'ansells-guest'
+"""
+
+CRONTAB = """# lldpd snapshots the hostname at start; reassert so renames propagate.
+*/5 * * * * lldpcli configure system hostname "$(uname -n)"
+"""
+
+POST_RELOAD_HOOK = """#!/bin/sh
+# openwisp post-reload-hook (delivered by the gwifi-base template):
+# device state the agent cannot express as plain uci-file templates.
+
+# Client VLANs tagged on the trunk (mgmt VLAN 4 is baked in the image).
+TRUNK=eth-black
+[ -e /sys/class/net/eth-black ] || TRUNK=lan
+for kv in roam=20 iot=90 guest=99; do
+	name=${kv%=*}; vid=${kv#*=}
+	uci set network.brvlan_$name="bridge-vlan"
+	uci set network.brvlan_$name.device='br0'
+	uci set network.brvlan_$name.vlan="$vid"
+	uci -q delete network.brvlan_$name.ports
+	uci add_list network.brvlan_$name.ports="$TRUNK:t"
+	uci set network.$name="interface"
+	uci set network.$name.device="br0.$vid"
+	uci set network.$name.proto='none'
+done
+uci commit network
+
+# wifi-detect's placeholder ifaces must never beacon the OpenWrt SSID.
+uci -q delete wireless.default_radio0
+uci -q delete wireless.default_radio1
+uci -q commit wireless
+
+# Remote syslog to wisp.
+uci set system.@system[0].log_ip='10.1.4.2'
+uci set system.@system[0].log_port='6666'
+uci set system.@system[0].log_proto='udp'
+uci commit system
+
+/etc/init.d/lldpd enable
+/etc/init.d/lldpd restart
+/etc/init.d/usteer enable
+/etc/init.d/usteer restart
+/etc/init.d/cron enable
+/etc/init.d/cron restart
+exit 0
+"""
+
+
+def netjson_base():
+    """Fleet-base config delivered by wisp: lldpd, steering, cron, and a
+    post-reload hook for the pieces that are not uci-file templates."""
+    return {"files": [
+        {"path": "/etc/config/lldpd", "mode": "0644",
+         "contents": LLDPD_CONFIG},
+        {"path": "/etc/config/usteer", "mode": "0644",
+         "contents": USTEER_CONFIG},
+        {"path": "/etc/crontabs/root", "mode": "0600",
+         "contents": CRONTAB},
+        {"path": "/etc/openwisp/post-reload-hook", "mode": "0755",
+         "contents": POST_RELOAD_HOOK},
+    ]}
+
+
 DJANGO = r'''
 import json, re
 from swapper import load_model
@@ -154,8 +243,17 @@ Device = load_model("config", "Device")
 org = Org.objects.get(slug="default")
 ACTIVE = json.loads({active!r})
 PRESERVED = json.loads({preserved!r})
+BASE = json.loads({base!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
+
+b, bcreated = Template.objects.update_or_create(
+    organization=org, name="gwifi-base",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=BASE, default=False),
+)
+b.full_clean(); b.save()
+print("gwifi-base:", "created" if bcreated else "updated", "id=", b.id)
 
 # Active template: 'gwifi-aps' (already attached fleet-wide) now carries the
 # simple six-AP profile.
@@ -188,8 +286,9 @@ for name in PUCKS:
     except Device.DoesNotExist:
         missing.append(name); continue
     c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    if t not in c.templates.all():
-        c.templates.add(t)
+    for tpl in (b, t):
+        if tpl not in c.templates.all():
+            c.templates.add(tpl)
     c.full_clean(); c.save()
     attached += 1
 print("configs attached:", attached, "/", len(PUCKS), "missing:", missing)
@@ -209,6 +308,7 @@ def main() -> int:
     vals = read_passphrases()
     script = DJANGO.format(active=json.dumps(netjson_simple()),
                            preserved=json.dumps(netjson_mesh_aps()),
+                           base=json.dumps(netjson_base()),
                            defaults=json.dumps(vals), pucks=PUCKS)
     p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
                        timeout=180)

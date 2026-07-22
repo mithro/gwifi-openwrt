@@ -33,7 +33,7 @@ EOF
 # member of its bridge-vlan — NOT as a raw tagged port (TT/BLA needs the
 # 8021q uppers; raw tagged bat0 breaks per-VLAN BLA, seen g17b40e7).
 # Every mesh leg is an ISOLATED bridge member (paired with the isolated
-# wan/guest jack): guest-jack traffic can never cross onto the mesh.
+# guest jack eth-blue): guest-jack traffic can never cross onto the mesh.
 for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
 	uci set network.bat_$vid="device"
 	uci set network.bat_$vid.type='8021q'
@@ -42,15 +42,13 @@ for vid in $MGMT_BAT_VID $(for kv in $VLANS; do echo "${kv#*=}"; done); do
 	uci set network.bat_$vid.name="bat0.$vid"
 	uci set network.bat_$vid.isolate='1'
 done
-uci set network.wanport="device"
-uci set network.wanport.name='wan'
-uci set network.wanport.isolate='1'
+uci set network.guestport="device"
+uci set network.guestport.name='eth-blue'
+uci set network.guestport.isolate='1'
 
-# br0 gains the mesh legs + the guest access jack (netdev 'wan' — NOTE:
-# gale jack names are inverted vs the case labels; netdev 'wan' is the
-# physical LAN jack).
-uci -q del_list network.device_br0.ports='wan'
-uci add_list network.device_br0.ports='wan'
+# br0 gains the mesh legs + the guest access jack (eth-blue).
+uci -q del_list network.device_br0.ports='eth-blue'
+uci add_list network.device_br0.ports='eth-blue'
 uci -q del_list network.device_br0.ports="bat0.$MGMT_BAT_VID"
 uci add_list network.device_br0.ports="bat0.$MGMT_BAT_VID"
 for kv in $VLANS; do
@@ -65,9 +63,9 @@ for kv in $VLANS; do
 	uci set network.brvlan_$name.device='br0'
 	uci set network.brvlan_$name.vlan="$vid"
 	uci -q delete network.brvlan_$name.ports
-	uci add_list network.brvlan_$name.ports='lan:t'
+	uci add_list network.brvlan_$name.ports='eth-black:t'
 	uci add_list network.brvlan_$name.ports="bat0.$vid:u*"
-	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='wan:u*'
+	[ "$name" = "guest" ] && uci add_list network.brvlan_$name.ports='eth-blue:u*'
 	uci set network.$name="interface"
 	uci set network.$name.device="br0.$vid"
 	uci set network.$name.proto='none'

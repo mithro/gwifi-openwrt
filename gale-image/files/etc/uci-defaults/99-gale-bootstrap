@@ -1,36 +1,23 @@
 #!/bin/sh
-# 99-gale-bootstrap — first-boot network setup for gale auto-provisioning.
-# Idempotent: uses fixed UCI section names so re-runs overwrite, not duplicate.
+# 99-gale-bootstrap — first-boot setup: the MINIMUM needed to reach the
+# OpenWISP controller (wisp). Everything else — APs, radios, client
+# VLANs, steering, lldpd, syslog — is delivered by OpenWISP templates
+# after the agent registers.
 #
-# DEFAULT PROFILE (simple, 2026-07-22): the device comes up with NO APs —
-# just the wired uplink + mgmt DHCP. Wireless arrives via OpenWISP (the
-# 'gwifi-aps' template) once the agent registers. The advanced batman-adv
-# mesh architecture is NOT configured at boot; flip a device to it with
-# /usr/sbin/gale-mesh-bootstrap (+ the 'gwifi-mesh-aps' template).
+# Ports are named after the case markings (eth-black = globe-icon jack =
+# uplink; eth-blue = the other jack, unbridged and link-down here).
 #
-# JACK NAMING (verified fleet-wide 2026-07-22): gale's DTS port names are
-# INVERTED relative to the case labels. The physical WAN (globe) jack is
-# the netdev OpenWrt calls 'lan'; the physical LAN jack is netdev 'wan'.
-# The uplink cable goes in the physical WAN jack = netdev 'lan'. The
-# other jack (netdev 'wan') is NOT bridged and stays link-down.
+# Network shape: ONE VLAN-aware bridge br0 with the single trunk port
+# eth-black; mgmt VLAN 4 untagged+pvid, DHCP from wisp (10.1.4.2).
+# Per-VLAN software bridges over 8021q uppers of a DSA port do not work
+# when the port is also hw-offload-bridged untagged (qca8k claims tagged
+# ingress); the supported DSA pattern is vlan_filtering=1 + bridge-vlans.
 #
-# Topology: ONE VLAN-aware bridge br0, single trunk port (netdev 'lan'):
-# mgmt VLAN 4 untagged+pvid, client VLANs 20/90/99 tagged. mgmt DHCP from
-# wisp (10.1.4.2); router/DNS = ten64 (10.1.4.1). APs attach via OpenWISP
-# (wifi-iface network=roam/iot/guest -> br0.<vid>).
-#
-# STP is OFF (2026-07-22): netifd's default bridge priority 0x7FFF
-# undercuts every real switch's 0x8000 — a puck bridge speaking 802.1D
-# wins root of the entire house L2 and thrashes it (69 elections/3h,
-# fleet-wide MAC flushes; root-caused live). Pucks never speak STP.
-VLANS="roam=20 iot=90 guest=99"
+# STP stays OFF: netifd's default bridge priority (0x7FFF) undercuts the
+# switch fabric's 0x8000, so a puck bridge speaking 802.1D would win STP
+# root of the site L2. Idempotent: fixed UCI section names.
 MGMT_VID=4
 
-# --- ONE VLAN-AWARE BRIDGE (br0) ---
-# Per-VLAN software bridges over 8021q uppers of a DSA port DO NOT WORK
-# when that port is also hw-offload-bridged untagged (qca8k claims tagged
-# ingress; found 2026-07-12). The supported DSA pattern is a single
-# bridge with vlan_filtering=1 and bridge-vlan sections.
 # Find the board-generated br-lan device section (anonymous; index varies).
 i=0
 brdev=""
@@ -38,11 +25,9 @@ while name=$(uci -q get "network.@device[$i].name"); do
 	[ "$name" = "br-lan" ] && brdev="@device[$i]" && break
 	i=$((i + 1))
 done
-# Field lesson (puck12, 2026-07-12): on the true first boot this script can
-# run before the board network config exists — br-lan is absent, and a
-# silent skip self-deletes the script with the job half done. Exit NONZERO
-# instead: uci-defaults keeps the script and retries next boot until the
-# board config is there.
+# On the true first boot this script can run before the board network
+# config exists. Exit NONZERO so uci-defaults keeps the script and
+# retries next boot (a silent skip would self-delete it half-done).
 if [ -z "$brdev" ]; then
 	echo "gale-bootstrap: br-lan device not found (board config not" \
 	     "generated yet?) — will retry next boot" >&2
@@ -52,14 +37,14 @@ uci set "network.$brdev.name"='br0'
 uci set "network.$brdev.vlan_filtering"='1'
 uci set "network.$brdev.stp"='0'
 uci -q delete "network.$brdev.ports"
-uci add_list "network.$brdev.ports"='lan'
-# Pin br0's MAC to the label MAC (held by the netdev-'wan' device section):
+uci add_list "network.$brdev.ports"='eth-black'
+# Pin br0's MAC to the label MAC (held by the eth-blue device section):
 # the bridge otherwise picks a MAC by member-join timing, and BOTH the
 # DHCP identity and the openwisp registration MAC come from the mgmt
-# bridge (the agent ignores mac_interface — verified 2026-07-12).
+# bridge (the agent ignores mac_interface).
 i=0
 while devname=$(uci -q get "network.@device[$i].name"); do
-	if [ "$devname" = "wan" ]; then
+	if [ "$devname" = "eth-blue" ]; then
 		label_mac=$(uci -q get "network.@device[$i].macaddr")
 		[ -n "$label_mac" ] && \
 			uci set "network.$brdev.macaddr"="$label_mac"
@@ -72,48 +57,25 @@ uci set network.brvlan_mgmt="bridge-vlan"
 uci set network.brvlan_mgmt.device='br0'
 uci set network.brvlan_mgmt.vlan="$MGMT_VID"
 uci -q delete network.brvlan_mgmt.ports
-uci add_list network.brvlan_mgmt.ports='lan:u*'
-# Default lan/wan/wan6 interfaces go away: the trunk lives in br0 now and
-# netdev 'wan' (physical LAN jack) is deliberately unreferenced -> down.
+uci add_list network.brvlan_mgmt.ports='eth-black:u*'
+# Default lan/wan/wan6 interfaces go away: the trunk lives in br0 and
+# eth-blue is deliberately unreferenced (stays link-down).
 uci -q delete network.lan
 uci -q delete network.wan
 uci -q delete network.wan6
 uci set network.mgmt="interface"
 uci set network.mgmt.device="br0.$MGMT_VID"
 uci set network.mgmt.proto='dhcp'
-# client VLANs: tagged on the trunk; APs join via wifi-iface network=<name>
-for kv in $VLANS; do
-	name=${kv%=*}; vid=${kv#*=}
-	uci set network.brvlan_$name="bridge-vlan"
-	uci set network.brvlan_$name.device='br0'
-	uci set network.brvlan_$name.vlan="$vid"
-	uci -q delete network.brvlan_$name.ports
-	uci add_list network.brvlan_$name.ports='lan:t'
-	uci set network.$name="interface"
-	uci set network.$name.device="br0.$vid"
-	uci set network.$name.proto='none'
-done
 uci commit network
 
-# No local DHCP server on the (removed) lan; wisp serves the mgmt VLAN.
+# No local DHCP server; wisp serves the mgmt VLAN.
 uci -q set dhcp.lan.ignore='1'
-# DNS rebind protection drops RFC1918 A answers from upstream — which is
-# every internal record, including the OpenWISP controller (found live on
-# puck12: agent starved with curl exit 6/7, AAAA-only resolution).
-# Whitelist the site domain.
+# DNS rebind protection drops RFC1918 A answers from upstream — including
+# the OpenWISP controller's — so whitelist the site domain (without this
+# the agent cannot resolve wisp and never registers).
 uci -q del_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
 uci add_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
 uci -q commit dhcp
-
-# Remote syslog to wisp (UDP 6666, per-puck files in
-# /var/log/gale-netconsole/ via gwifi-netconsole.service): the fleet has
-# no field serial; logd forwards system AND kernel logs. (netconsole
-# proper is a dead end here: DSA/ipqess lack usable netpoll TX —
-# verified 2026-07-12; panics still escape, ramoops is the follow-up.)
-uci set system.@system[0].log_ip='10.1.4.2'
-uci set system.@system[0].log_port='6666'
-uci set system.@system[0].log_proto='udp'
-uci commit system
 
 # Firewall: mgmt joins the trusted zone (zone 0 = 'lan' in the default
 # config) so ssh + the openwisp agent work; the stale 'lan' member is
@@ -122,12 +84,5 @@ uci -q del_list firewall.@zone[0].network='lan'
 uci -q del_list firewall.@zone[0].network='mgmt'
 uci add_list firewall.@zone[0].network='mgmt'
 uci commit firewall
-
-# gwifi-topology needs bat0 (mesh profile only) — no rc.d symlink, and it
-# stays off until gale-mesh-bootstrap enables it. lldpd advertises this
-# puck to the switch fabric (system name + mgmt IP + port id) on the
-# physical jacks only (see files/etc/config/lldpd); overlay init scripts
-# get no rc.d symlink from the image build, so enable it here.
-/etc/init.d/lldpd enable 2>&1 || echo "gale-bootstrap: lldpd enable failed" >&2
 
 exit 0
