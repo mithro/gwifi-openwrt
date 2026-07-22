@@ -1,0 +1,8 @@
+# lldpd captures the hostname once at start and never refreshes it, so a
+# puck autoprovisioned from the generic image advertises SysName "OpenWrt"
+# forever (observed fleet-wide 2026-07-22: s1's LLDP remote table showed
+# every puck as "OpenWrt", breaking switch-visibility). The init script only
+# reload-triggers on lldpd config changes, not system (hostname) ones.
+# Reassert the live hostname into lldpd every 5 minutes — idempotent,
+# self-heals after any provision/rename path.
+*/5 * * * * lldpcli configure system hostname "$(uname -n)"
