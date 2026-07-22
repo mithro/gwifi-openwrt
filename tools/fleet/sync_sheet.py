@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from galeflash.sheetmap import (
     FIELD_TO_HEADER,
     FLASH_AUDIT_FIELDS,
+    LIVE_OVERWRITE_FIELDS,
+    compute_header_renames,
     compute_updates,
     format_mac,
     get_extended_header,
@@ -233,11 +235,13 @@ def load_inventory(inventory_dir: Path) -> list[dict]:
 
 
 def prepare_records(records: list[dict]) -> list[dict]:
-    """Format MAC fields for sheet presentation, leaving the inventory JSON alone.
+    """Format MACs and flatten collector fields for sheet presentation.
 
-    Returns shallow copies with ``ethernet_mac0``/``ethernet_mac1`` colon-formatted
-    (uppercase) so they match the sheet's eth0/eth1 column convention.  This runs
-    in the CLI/record-prep layer so ``compute_updates`` stays format-agnostic.
+    - ``ethernet_mac0``/``ethernet_mac1`` are colon-formatted (uppercase).
+    - ``wifi_macs`` ({iface: mac}) is flattened to ``wifi_<iface>`` fields
+      (dashes → underscores, e.g. wl-main-2g4 → wifi_wl_main_2g4), values
+      colon-formatted, and the dict removed so compute_updates only sees
+      scalar fields.
     """
     prepared: list[dict] = []
     for rec in records:
@@ -245,6 +249,10 @@ def prepare_records(records: list[dict]) -> list[dict]:
         for field in MAC_FIELDS:
             if rec.get(field):
                 rec[field] = format_mac(rec[field])
+        wifi = rec.pop("wifi_macs", None)
+        if wifi:
+            for iface, mac in wifi.items():
+                rec[f"wifi_{iface.replace('-', '_')}"] = format_mac(mac)
         prepared.append(rec)
     return prepared
 
@@ -277,6 +285,12 @@ def main() -> None:
              "paths+sha256s) instead of treating them as conflicts.  "
              "Identity columns are still conflict-guarded.",
     )
+    parser.add_argument(
+        "--update-live",
+        action="store_true",
+        help="Overwrite differing LIVE cells (Upstream) instead of treating "
+             "them as conflicts.  Name and MAC columns stay conflict-guarded.",
+    )
     args = parser.parse_args()
 
     mode = "WRITE" if args.write else "DRY-RUN"
@@ -286,18 +300,27 @@ def main() -> None:
     title, grid_rows, grid_cols = _sheet_props(token)
     print(f"Sheet: {title!r} (gid={TARGET_GID})  mode={mode}")
 
-    # Read range stops at column Z (26 cols).  We're at ~19 columns today, so
-    # this is fine — but FIELD_TO_HEADER must stay under 26 total columns or the
-    # read/write range would truncate the rightmost new columns.  If the schema
-    # ever grows past Z, widen this range (and the read-back range below) or
-    # compute the last-column letter from get_extended_header(header).
-    all_rows = _sheets_get(token, f"'{title}'!A1:Z1000")
+    # Initial read: A1:ZZ1000 (702 columns) — far past any plausible schema
+    # width, and a values GET safely returns only what exists.  The sheet is
+    # 28 columns today; the old A1:Z1000 range silently truncated AA/AB.
+    all_rows = _sheets_get(token, f"'{title}'!A1:ZZ1000")
     if not all_rows:
         print("ERROR: Sheet appears empty (no rows returned).", file=sys.stderr)
         sys.exit(1)
 
     header: list[str] = all_rows[0]
     rows:   list[list[str]] = all_rows[1:]
+
+    # --- Header renames (stale eth0/eth1/wlan0/wlan1 → real interfaces) -----
+    renames, rename_conflicts = compute_header_renames(header)
+    if rename_conflicts:
+        print(f"\nHEADER CONFLICTS ({len(rename_conflicts)}):", file=sys.stderr)
+        for c in rename_conflicts:
+            print(f"  {c}", file=sys.stderr)
+        sys.exit(2)
+    for col_idx, old, new in renames:
+        print(f"Header rename: {_a1_header(title, col_idx)} {old!r} -> {new!r}")
+        header[col_idx] = new  # rename in-memory BEFORE computing updates
 
     # Column index of the "Serial" header — computed once, reused throughout.
     serial_col_idx = [h.lower() for h in header].index("serial")
@@ -309,6 +332,9 @@ def main() -> None:
     print(f"Loaded {len(records)} inventory record(s) from {args.inventory}")
 
     if not records:
+        # Accepted degenerate case: an empty inventory returns before any
+        # pending header renames are written — this flow always runs with a
+        # populated inventory (see the plan doc).
         print("Nothing to sync.")
         return
 
@@ -317,9 +343,13 @@ def main() -> None:
     records = prepare_records(records)
 
     # --- Compute updates -----------------------------------------------------
-    allow = FLASH_AUDIT_FIELDS if args.update_flash else frozenset()
+    allow: frozenset[str] = frozenset()
     if args.update_flash:
+        allow |= FLASH_AUDIT_FIELDS
         print("Reflash mode: differing flash-audit cells will be OVERWRITTEN.")
+    if args.update_live:
+        allow |= LIVE_OVERWRITE_FIELDS
+        print("Live mode: differing Upstream cells will be OVERWRITTEN.")
     updates, conflicts, unmatched = compute_updates(records, header, rows,
                                                     allow_overwrite=allow)
     extended_header    = get_extended_header(header)
@@ -377,18 +407,28 @@ def main() -> None:
         sys.exit(2)
 
     if not args.write:
-        print(f"\nDry run complete ({len(updates)} update(s) pending). Re-run with --write to apply.")
+        print(f"\nDry run complete ({len(updates)} update(s), "
+              f"{len(renames)} header rename(s) pending). "
+              f"Re-run with --write to apply.")
         return
 
-    # new_header_cells is derived from updates, so "no updates" ⇒ nothing to write.
-    if not updates:
+    # new_header_cells is derived from updates; renames count as writes too —
+    # a rename-only state (all data cells already correct) still writes.
+    if not updates and not renames:
         print("\nNothing to write — sheet is already up to date.")
         return
 
     # --- Apply updates -------------------------------------------------------
     batch: list[dict] = []
 
-    # New column headers first
+    # Header renames first (guarded upstream by compute_header_renames)
+    for col_idx, _old, new in renames:
+        batch.append({
+            "range":  _a1_header(title, col_idx),
+            "values": [[new]],
+        })
+
+    # New column headers next
     for col_idx, col_name in new_header_cells:
         batch.append({
             "range":  _a1_header(title, col_idx),
@@ -415,7 +455,8 @@ def main() -> None:
     # --- Verify by reading back ----------------------------------------------
     print("\n=== Verification (read-back) ===")
     affected_rows = sorted({u.row for u in updates})
-    back = _sheets_get(token, f"'{title}'!A1:Z1000")  # Z-column assumption: see read note above
+    last_col = _col_letter(len(extended_header) - 1)
+    back = _sheets_get(token, f"'{title}'!A1:{last_col}1000")
     for row_idx in affected_rows:
         sheet_row = row_idx + 2  # 1-based; header is row 1
         if sheet_row - 1 < len(back):
