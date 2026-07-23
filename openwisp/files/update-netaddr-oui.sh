@@ -48,11 +48,20 @@ print("verify 7c:2c:67 ->", org)
 assert "Espressif" in org, f"unexpected org: {org!r}"
 EOF
 
-# Restart the openwisp processes: netaddr parses the index ONCE per process
-# and caches it in memory, so long-running uwsgi/celery keep serving the
-# old registry (and blanking WifiClient vendors) until restarted — seen
-# live 2026-07-23: pre-refresh workers re-emptied backfilled vendors
-# overnight.
+# Two caches hold pre-refresh lookup results and must both be flushed
+# (found live 2026-07-23, each masking the other):
+#  1. openwisp's _mac_lookup is @cache_memoize'd into the DJANGO CACHE
+#     (external, 80 h TTL, survives restarts) — stale "" entries make the
+#     device-data writer blank WifiClient vendors on every push. The
+#     memoize keys are opaque hashes, so clear the whole cache (all
+#     openwisp cache content is re-derivable).
+#  2. netaddr parses its index once per process — restart the openwisp
+#     processes so none keeps the old registry in memory.
+/opt/openwisp2/env/bin/python /opt/openwisp2/manage.py shell <<'EOF'
+from django.core.cache import cache
+cache.clear()
+print("django cache cleared")
+EOF
 if command -v supervisorctl >/dev/null; then
     supervisorctl restart all
 fi
