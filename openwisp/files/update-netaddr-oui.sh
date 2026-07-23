@@ -47,4 +47,13 @@ org = netaddr.EUI("7c-2c-67-00-00-01").oui.registration().org
 print("verify 7c:2c:67 ->", org)
 assert "Espressif" in org, f"unexpected org: {org!r}"
 EOF
+
+# Restart the openwisp processes: netaddr parses the index ONCE per process
+# and caches it in memory, so long-running uwsgi/celery keep serving the
+# old registry (and blanking WifiClient vendors) until restarted — seen
+# live 2026-07-23: pre-refresh workers re-emptied backfilled vendors
+# overnight.
+if command -v supervisorctl >/dev/null; then
+    supervisorctl restart all
+fi
 echo "netaddr OUI registry refreshed OK"
