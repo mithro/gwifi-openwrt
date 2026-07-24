@@ -30,6 +30,10 @@ chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap" \
 	"$OWRT/files/usr/sbin/gwifi-topology-push" \
 	"$OWRT/files/usr/sbin/gale-mesh-bootstrap"
 
+# RENDER_ONLY=1: stop after rendering the overlay (no image-id stamp, no build).
+# Used by the refactor no-regression gate (docs/fleet-image-base-design.md §4.8.1).
+[ "${RENDER_ONLY:-0}" = "1" ] && { echo "rendered overlay to $OWRT/files (RENDER_ONLY)"; exit 0; }
+
 # 1b) stamp the image id — the netboot installer's idempotence marker.
 # The same id is emitted as a sidecar next to factory.bin so the publish
 # step (gwifi-netboot publish) keeps manifest and baked marker in sync.
