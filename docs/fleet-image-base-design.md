@@ -122,6 +122,11 @@ tenwrt-image/       # specialization: armsr/armv8 target fragment, PCIe Wi-Fi
                     # slimmed gwifi-radio-setup (§4.5)
 ```
 
+The pre-existing `fleet-files/` overlay (mesh-era backhaul gate + hotplug
+hook) is **not** folded into `fleet-image/files/`: the tenwrt build **stops
+consuming it** (backhaul gating is mesh-era; §4.5 drops the wiring), and it
+remains in place solely for the untouched `om2p-image` build (D6).
+
 ### 4.2 Shared bootstrap functions, thin per-image drivers
 
 `fleet-image/files/lib/gwifi/bootstrap.sh` provides parameterized functions
@@ -142,6 +147,13 @@ Per-image drivers supply only what differs:
 | bridge MAC | pinned to label MAC (eth-blue section) | inherit `eth0` (virtio MAC fixed by domain XML — stable) |
 | `mac_interface` | `wan` | `eth0` |
 | hostname | puck naming (installer-set) | `tenwrt` (set in bootstrap) |
+
+The shared `etc/config/openwisp` ships with `mac_interface` unset; each
+image's bootstrap driver applies its value with a `uci set` (no per-image
+full-file override of the shared overlay). Similarly, `build-lib.sh` takes a
+**per-image required-secrets set**: gale keeps
+`MESH_SAE_KEY`/`MESH_ID`/`TOPOLOGY_RECEIVE_URL` (its extras still render
+them); tenwrt requires only `OPENWISP_URL` + `OPENWISP_SHARED_SECRET`.
 
 ### 4.3 Config layering
 
@@ -186,6 +198,10 @@ remain a no-op with no radio attached. The existing
 - `openwisp/build-templates.py`: attach `gwifi-aps` + `gwifi-base` to the
   `tenwrt` device alongside the pucks. Registration itself is automatic via
   the shared secret; `SSH Keys` auto-attaches (default template).
+  **Sequencing**: the attach loop skips devices that don't exist yet, so the
+  `tenwrt` attach only takes effect on a `build-templates.py` run **after**
+  the VM's first successful registration (documented as a deploy-runbook
+  step, not automated here).
 - lldpd stays puck-only for v1 (open item §5).
 
 ### 4.7 Host-side, staged only
@@ -201,11 +217,16 @@ work.
    render the gale overlay with `RENDER_ONLY=1` from the pre-refactor tree and
    from the refactored base+specialization, and **byte-diff the rendered
    `files/` trees**; also diff the post-`defconfig` `.config`. Both must be
-   identical (or every diff explained and approved).
+   identical (or every diff explained and approved). Note: today's
+   `build-gale-image.sh` has no `RENDER_ONLY` seam (only tenwrt/om2p do), so
+   the gate starts with a trivial preliminary commit adding that seam to the
+   pre-refactor script — the "before" render uses it unchanged otherwise.
 2. `verify-tenwrt-image.py` (on `verify_lib.py`): asserts
    `mediatek/mt7915_{wa,wm,rom_patch}.bin` present in the rootfs, `acpid` +
    `qemu-ga` installed, **no** mesh/wireless/usteer leftovers in the baked
-   overlay, no unrendered placeholders, combined-efi artifact exists.
+   overlay (including that the mesh-era `fleet-files/` pieces —
+   `gwifi-backhaul-gate` and the `30-gwifi-backhaul` hotplug hook — are
+   absent), no unrendered placeholders, combined-efi artifact exists.
 3. `qemu-smoke-boot.py`: keeps the first-boot completion marker assertion and
    gains a **graceful-shutdown assertion** — send QEMU `system_powerdown` and
    require a clean guest poweroff (exercises the exact `virsh shutdown` path
