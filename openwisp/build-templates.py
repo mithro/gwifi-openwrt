@@ -193,6 +193,7 @@ TRUNK=eth-black
 # one of the two names above (gale's own eth0 is the DSA conduit — order
 # matters), so only the VM falls through to here.
 [ -e "/sys/class/net/$TRUNK" ] || TRUNK=eth0
+[ "$TRUNK" = eth0 ] && logger -t post-reload-hook "trunk fell through to eth0 (expected only on the tenwrt VM)"
 for kv in roam=20 iot=90 guest=99; do
 	name=${kv%=*}; vid=${kv#*=}
 	uci set network.brvlan_$name="bridge-vlan"
