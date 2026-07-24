@@ -10,9 +10,12 @@
 #   CHMOD_FILES   render-root-relative files to chmod 0755 (may be empty)
 # Steps every image runs: fleet_require_secrets, fleet_render,
 # fleet_render_only_gate, fleet_seed_config, fleet_build.
-# OPT-IN steps (today: gale only — spec §4.1): fleet_image_id,
-# fleet_force_rootfs_rebuild, fleet_out. fleet_image_id must come AFTER the
-# RENDER_ONLY gate (a timestamped id would dirty the render byte-diff gates).
+# OPT-IN step (today: gale only — spec §4.1): fleet_image_id. It must come
+# AFTER the RENDER_ONLY gate (a timestamped id would dirty the render
+# byte-diff gates). Target-specific extras — forced rootfs rebuild, out/
+# artifact copy + sidecar — are NOT library steps: they stay inline in the
+# image wrapper (gale) because the paths involved are target-specific
+# (bin/targets/<target>/<subtarget>/...); om2p opts out of all three.
 #
 # Contract: callers MUST run under `set -eu`. This library does no internal
 # error checking of its own (a failing cp/sed/cat/make inside a function is
@@ -27,7 +30,7 @@
 
 fleet_require_secrets() {
 	[ -f "$FLEET_SECRETS" ] || {
-		echo "missing $FLEET_SECRETS (copy from fleet-secrets.conf.example)" >&2
+		echo "missing $FLEET_SECRETS (set FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf or copy fleet-secrets.conf.example)" >&2
 		exit 1
 	}
 	# shellcheck disable=SC1090

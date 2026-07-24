@@ -112,10 +112,14 @@ fleet-image/
     lib/gwifi/bootstrap.sh     # shared first-boot functions (§4.2)
   build-lib.sh      # sourced by image build scripts: secrets render (esc/sed),
                     # overlay merge (fleet-image/files/ then <image>/files/),
-                    # config concat + defconfig, forced rootfs rebuild,
-                    # out/ artifacts + image-id stamp & sidecar.
-                    # Stamp/out/rootfs-force are per-image OPT-IN (today they
-                    # exist only in the gale build): om2p opts out for now so
+                    # config concat + defconfig, image-id stamp.
+                    # The image-id stamp is the only per-image OPT-IN library
+                    # step (today: gale only). Forced rootfs rebuild and out/
+                    # artifact copy + sidecar are NOT library steps — they
+                    # stay inline in the image wrapper (gale) because the
+                    # paths involved are target-specific
+                    # (bin/targets/<target>/<subtarget>/...); om2p opts out
+                    # of all three (image-id stamp, rootfs-force, out/) so
                     # its render stays byte-identical (D6). The RENDER_ONLY
                     # seam sits BEFORE the image-id stamp — a timestamped id
                     # in the render would dirty every byte-diff (§4.8.1).

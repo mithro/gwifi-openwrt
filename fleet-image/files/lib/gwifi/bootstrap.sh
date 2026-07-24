@@ -55,9 +55,12 @@ gwifi_create_bridge() {
 # the label MAC lives on the eth-blue device section; the bridge otherwise
 # picks a MAC by member-join timing, and BOTH the DHCP identity and the
 # openwisp registration MAC come from the mgmt bridge). No-op when absent.
+# Precondition: GWIFI_BRDEV must already be set by a prior
+# gwifi_adopt_board_bridge/gwifi_create_bridge call.
 gwifi_pin_bridge_mac() {
+	[ -n "${GWIFI_BRDEV:-}" ] || return 1
 	_from=$(gwifi_find_device "$1") || return 0
-	_mac=$(uci -q get "network.$_from.macaddr")
+	_mac=$(uci -q get "network.$_from.macaddr") || _mac=""
 	[ -n "$_mac" ] && uci set "network.$GWIFI_BRDEV.macaddr"="$_mac"
 	return 0
 }
