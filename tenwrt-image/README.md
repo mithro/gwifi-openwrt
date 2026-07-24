@@ -120,13 +120,16 @@ published.
 FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf uv run python tenwrt-image/verify-tenwrt-image.py
 ```
 
-Checks (via `fleet-image/verify_lib.py`): required packages present
-(including `acpid`, `qemu-ga`, the `kmod-mt76xx-firmware` split packages),
-`mediatek/mt7915_{wa,wm,rom_patch}.bin` present in the rootfs, no
-mesh/wireless/usteer leftovers in the baked overlay (including that the
-mesh-era `fleet-files/` pieces are absent), `usteer` resolving to the stock
-package default (not a mesh-era baked copy), no unrendered placeholders,
-and that a `combined-efi` artifact exists.
+Checks: required packages present (including `acpid`, `qemu-ga`, the
+`kmod-mt76xx-firmware` split packages) and no unrendered placeholders — both
+via `fleet-image/verify_lib.py`'s `find_manifest`/`manifest_packages`/
+`require_packages` and `check_no_placeholders` (this is the first verifier to
+consume the shared helpers directly, rather than a locally-diverged copy).
+Also, with tenwrt-specific local checks: `mediatek/mt7915_{wa,wm,rom_patch}.bin`
+present in the rootfs, no mesh/wireless/usteer leftovers in the baked overlay
+(including that the mesh-era `fleet-files/` pieces are absent), `usteer`
+resolving to the stock package default (not a mesh-era baked copy), and that
+a `combined-efi` artifact exists.
 
 ## Smoke-boot
 

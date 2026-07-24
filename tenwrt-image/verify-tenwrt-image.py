@@ -45,7 +45,8 @@ import tarfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
-from verify_lib import parse_secrets
+from verify_lib import (check_no_placeholders, find_manifest, manifest_packages,
+                         parse_secrets, require_packages)
 
 OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt-armsr")
 IMAGE_DIR = os.path.join(OWRT, "bin/targets/armsr/armv8")
@@ -151,19 +152,6 @@ def read_rootfs(image_dir):
     return None, None, None, None
 
 
-# NOTE: intentionally NOT verify_lib's find_manifest — returns CONTENT of the
-# sorted-first *.manifest, vs lib's PATH of the mtime-newest; same name+arity
-# as verify_lib.find_manifest but different return type — importing it
-# without deleting this local def would be silently shadowed. See
-# fleet-image-base-plan.md Task 6.
-def find_manifest(image_dir):
-    for name in sorted(os.listdir(image_dir)):
-        if name.endswith(".manifest"):
-            with open(os.path.join(image_dir, name)) as fh:
-                return fh.read()
-    return None
-
-
 def main():
     if not os.path.isdir(IMAGE_DIR):
         sys.exit("ERROR: image dir not found: %s (build first)" % IMAGE_DIR)
@@ -187,14 +175,12 @@ def main():
         else:
             print("  PASS %s: %s rendered" % (label, key))
 
-    # NOTE: intentionally NOT verify_lib's check_no_placeholders — diverges
-    # (regex __[A-Z_]+__ has no digits vs lib's __[A-Z][A-Z0-9_]*__; also
-    # prints a PASS line, lib doesn't) — see fleet-image-base-plan.md Task 6.
     def check_no_ph(content, label):
-        ph = re.findall(r'__[A-Z_]+__', content)
-        if ph:
-            failures.append("FAIL %s: placeholders %s" % (label, ph))
-        else:
+        """Thin wrapper over verify_lib's check_no_placeholders (which only
+        appends failures) so the per-check PASS line is preserved."""
+        before = len(failures)
+        check_no_placeholders(content, label, failures)
+        if len(failures) == before:
             print("  PASS %s: no placeholders" % label)
 
     ow = files.get("etc/config/openwisp")
@@ -272,15 +258,15 @@ def main():
         else:
             failures.append("FAIL firmware: %s missing from rootfs" % rel)
 
-    manifest = find_manifest(IMAGE_DIR)
-    if manifest is None:
+    manifest_path = find_manifest(IMAGE_DIR)
+    if manifest_path is None:
         failures.append("FAIL manifest: none found")
     else:
+        require_packages(manifest_path, REQUIRED_PACKAGES, failures)
+        pkgs = manifest_packages(manifest_path)
         for pkg in REQUIRED_PACKAGES:
-            if pkg in manifest:
+            if pkg in pkgs:
                 print("  PASS manifest: '%s'" % pkg)
-            else:
-                failures.append("FAIL manifest: '%s' missing" % pkg)
 
     imgs = glob.glob(os.path.join(IMAGE_DIR, "*combined-efi.img")) \
         + glob.glob(os.path.join(IMAGE_DIR, "*combined-efi.img.gz"))

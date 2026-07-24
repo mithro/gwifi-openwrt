@@ -15,7 +15,11 @@
 # byte-diff gates). Target-specific extras — forced rootfs rebuild, out/
 # artifact copy + sidecar — are NOT library steps: they stay inline in the
 # image wrapper (gale) because the paths involved are target-specific
-# (bin/targets/<target>/<subtarget>/...); om2p opts out of all three.
+# (bin/targets/<target>/<subtarget>/...); om2p and tenwrt opt out of all three.
+#
+# fleet_seed_config assumes a sibling layout: it reads base.config from
+# $HERE/../fleet-image/base.config, so every image dir must be a sibling of
+# fleet-image/ (gale-image/, om2p-image/, tenwrt-image/ all are).
 #
 # Contract: callers MUST run under `set -eu`. This library does no internal
 # error checking of its own (a failing cp/sed/cat/make inside a function is

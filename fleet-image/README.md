@@ -18,8 +18,13 @@ short operational reference).
   `lib/gwifi/bootstrap.sh` (parameterized first-boot functions: create/edit
   `br0`, mgmt bridge-vlan + interface, dnsmasq/rebind, firewall zone).
 - `build-lib.sh` — sourced by each image's build wrapper.
-- `verify_lib.py` — shared verifier checks (`parse_secrets`,
-  `check_no_placeholders`, `find_manifest`/`require_packages`).
+- `verify_lib.py` — shared verifier checks. `parse_secrets` is used by all
+  three verifiers. `find_manifest`/`manifest_packages`/`require_packages` and
+  `check_no_placeholders` are consumed by the tenwrt verifier (the first real
+  adopter of the full helper set); the gale and om2p verifiers still keep
+  their own intentionally-divergent local `find_manifest`/placeholder-check
+  implementations (breadcrumbed in-file — see fleet-image-base-plan.md
+  Task 6) and should be migrated the same way when next touched.
 
 ## Wrapper contract
 
@@ -80,8 +85,12 @@ Run them via `tests/fleet-image/test-build-lib.sh`,
    `fleet-image/build-lib.sh`, call `fleet_require_secrets`, `fleet_render`,
    `fleet_render_only_gate`, then a target-lines generator function passed to
    `fleet_seed_config`, then `fleet_build`.
-3. Write `verify-<name>-image.py` using `verify_lib.py` helpers (manifest
-   package asserts, no-placeholder check, overlay-presence asserts).
+3. Write `verify-<name>-image.py` using the full `verify_lib.py` helper set —
+   `parse_secrets`, `find_manifest`/`manifest_packages`/`require_packages` for
+   manifest package asserts, and `check_no_placeholders` — plus your own
+   overlay-presence asserts. Only diverge with a local helper if the image
+   genuinely needs different semantics, and breadcrumb why (see the tenwrt
+   verifier for the pattern now that it's a real consumer).
 4. Add a `tests/fleet-image/test-<name>-bootstrap-*.sh` if the image ships
    its own first-boot driver, with a golden op-log.
 5. Document it in `<name>-image/README.md` (prerequisites, build/verify
