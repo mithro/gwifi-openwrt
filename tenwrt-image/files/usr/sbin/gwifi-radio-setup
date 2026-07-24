@@ -1,9 +1,9 @@
 #!/bin/sh
-# gwifi-radio-setup — enable the host's passed-through Wi-Fi radio(s) and anchor the
-# 802.11s mesh, DRIVER-AGNOSTIC: works for whatever PCIe card is passed through
-# (ath9k/ath10k/ath11k/ath12k, mt76, rtw88/rtw89, ...). Bands are auto-detected by
-# `wifi config`; the mesh anchors on a 5/6 GHz radio when one exists (else any radio).
-# Client APs come from OpenWISP. No-op when no phy is present (image-first /
+# gwifi-radio-setup — enable the host's passed-through Wi-Fi radio(s) and
+# band-normalize them, DRIVER-AGNOSTIC: works for whatever PCIe card is
+# passed through (ath9k/ath10k/ath11k/ath12k, mt76, rtw88/rtw89, ...). Bands
+# are auto-detected by `wifi config`. Client APs come from OpenWISP; there is
+# no mesh in the simple profile. No-op when no phy is present (image-first /
 # pre-passthrough). Sourceable for tests via GWIFI_RADIO_SOURCED=1.
 # See docs/ten64-vm-image-design.md §7.3.
 set -u
@@ -27,12 +27,17 @@ wifi_devices() {
 	uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'
 }
 
+# radio_swap_needed BAND0 BAND1 -> "1" when radio0 came up 5/6 GHz while
+# radio1 is 2.4 GHz (the gwifi-aps template binds radio0=2g4, radio1=5g).
+radio_swap_needed() {
+	case "${1:-}:${2:-}" in 5g:2g|6g:2g) echo 1 ;; esac
+}
+
 main() {
 	if [ -z "$(any_phy_present)" ]; then
 		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
 		return 0
 	fi
-	# Diagnostic: log each present phy's driver + BDF (helps debug passthrough).
 	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
 	for _p in "$_sysfs"/phy*; do
 		[ -e "$_p/device" ] || continue
@@ -40,26 +45,25 @@ main() {
 		if [ -e "$_p/device/driver" ]; then _drv=$(readlink "$_p/device/driver"); _drv=${_drv##*/}; else _drv="(unbound)"; fi
 		logger -t "$LOG_TAG" "present: $_pn driver=$_drv bdf=$(bdf_of_phy "$_pn")"
 	done
-	# Generate radioN sections (+ correct PCI paths + auto-detected band) for whatever
-	# card(s) are present. wifi config also emits a disabled default AP per radio
-	# (mode=ap network=lan ssid=OpenWrt); harmless stubs that OpenWISP overwrites.
+	# Generate radioN sections (+ PCI paths + auto-detected band) for whatever
+	# card(s) are present.
 	wifi config
-	_mesh=""        # preferred 5/6 GHz radio to anchor the mesh
-	_first=""       # fallback: first radio of any band
+	# wifi config emits a default AP per radio (ssid=OpenWrt) — never beacon it.
+	uci -q delete wireless.default_radio0
+	uci -q delete wireless.default_radio1
 	for _r in $(wifi_devices); do
-		[ -n "$_first" ] || _first=$_r
 		uci set "wireless.$_r.channel=auto"
 		uci set "wireless.$_r.disabled=0"
-		_band=$(uci -q get "wireless.$_r.band")
-		case "$_band" in
-			6g|5g) [ -n "$_mesh" ] || _mesh=$_r ;;
-		esac
-		logger -t "$LOG_TAG" "enabled $_r (band=${_band:-?})"
+		logger -t "$LOG_TAG" "enabled $_r (band=$(uci -q get "wireless.$_r.band"))"
 	done
-	[ -n "$_mesh" ] || _mesh=$_first   # no 5/6 GHz radio -> anchor mesh on whatever exists
-	if [ -n "$_mesh" ]; then
-		uci set wireless.mesh0.device="$_mesh"
-		logger -t "$LOG_TAG" "mesh0 -> $_mesh"
+	# Normalize radio0=2.4GHz / radio1=5GHz for the gwifi-aps template (DBDC
+	# phy order is not guaranteed; paths travel with the renamed sections).
+	_b0=$(uci -q get wireless.radio0.band); _b1=$(uci -q get wireless.radio1.band)
+	if [ -n "$(radio_swap_needed "$_b0" "$_b1")" ]; then
+		uci rename wireless.radio0=radiotmp
+		uci rename wireless.radio1=radio0
+		uci rename wireless.radiotmp=radio1
+		logger -t "$LOG_TAG" "swapped radio0<->radio1 (radio0 was $_b0)"
 	fi
 	uci commit wireless
 	wifi reload

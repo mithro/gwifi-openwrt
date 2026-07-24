@@ -37,4 +37,10 @@ eq "empty sysfs -> none" "" "$(any_phy_present)"
 GWIFI_RADIO_SYSFS="$SB/nonexistent"
 eq "no sysfs -> none" "" "$(any_phy_present)"
 
+eq "swap 5g:2g"    "1" "$(radio_swap_needed 5g 2g)"
+eq "swap 6g:2g"    "1" "$(radio_swap_needed 6g 2g)"
+eq "no swap 2g:5g" ""  "$(radio_swap_needed 2g 5g)"
+eq "no swap 2g:"   ""  "$(radio_swap_needed 2g "")"
+eq "no swap :"     ""  "$(radio_swap_needed "" "")"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
