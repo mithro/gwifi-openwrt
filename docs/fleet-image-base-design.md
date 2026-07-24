@@ -1,6 +1,7 @@
 # Fleet image base + tenwrt VM parity — Design Spec
 
-> Status: approved (design) 2026-07-24, pending spec review. Supersedes
+> Status: implemented on branch tenwrt-vm-parity (2026-07-25). Originally
+> approved 2026-07-24. Supersedes
 > `docs/ten64-vm-image-design.md` for the **content** of the ten64 VM image (that
 > spec's mesh-era feature set is preserved in git history and via the detached
 > `gwifi-mesh-aps` template, matching the fleet-wide 2026-07-22 simple-profile

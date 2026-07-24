@@ -17,27 +17,40 @@ time and are never committed to this repository.
 
 ## Build
 
-1. Copy the secrets template and fill in the two real secret values:
+1. Fill the **shared** fleet secrets file (one file for gale + om2p + tenwrt +
+   templates), outside this repo:
 
    ```sh
-   cp gale-image/gale-secrets.conf.example gale-image/gale-secrets.conf
-   chmod 600 gale-image/gale-secrets.conf
-   $EDITOR gale-image/gale-secrets.conf
+   cp fleet-secrets.conf.example /home/tim/local/gwifi/fleet-secrets.conf
+   chmod 600 /home/tim/local/gwifi/fleet-secrets.conf
+   $EDITOR /home/tim/local/gwifi/fleet-secrets.conf
    ```
 
-   Set `OPENWISP_SHARED_SECRET` (from OpenWISP admin → Organizations → config settings)
-   and `MESH_SAE_KEY` (must match the gwifi-puck OpenWISP template's mesh key).
-   `MESH_ID` and `OPENWISP_URL` are pre-filled with fleet defaults and rarely change.
+   Set `OPENWISP_SHARED_SECRET` (from OpenWISP admin → Organizations → config
+   settings), `MESH_SAE_KEY` (must match the gwifi-puck OpenWISP template's
+   mesh key), and `TOPOLOGY_RECEIVE_URL` (batman-adv Topology receive URL —
+   gale-only). `MESH_ID` and `OPENWISP_URL` are pre-filled with fleet defaults
+   and rarely change.
+
+   The old per-image `gale-image/gale-secrets.conf` path is **DEPRECATED**
+   (values are identical to the ones now read from `fleet-secrets.conf` —
+   verified during the migration); the build script no longer defaults to it.
 
 2. Run the build script from the repo root:
 
    ```sh
-   ./gale-image/build-gale-image.sh
+   FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf ./gale-image/build-gale-image.sh
    ```
 
-   The script renders secrets into a temporary `files/` tree in the build directory,
-   seeds `.config` with the target + package fragment, runs `make defconfig`, then
-   builds with `make -j6`.
+   The script renders secrets into a temporary `files/` tree in the build
+   directory (merging the shared `fleet-image/files/` overlay first, then this
+   directory's own `files/`), seeds `.config` as target lines +
+   `fleet-image/base.config` + `gale.config`, runs `make defconfig`, then
+   builds with `make -j6`. `RENDER_ONLY=1` renders the overlay only (no
+   defconfig, no build) — this is the seam the fleet-image no-regression
+   gates use to byte-diff the rendered tree against the pre-refactor image
+   (see `../fleet-image/README.md`); it is also useful to inspect the
+   rendered files directly.
 
 ## Outputs
 
@@ -49,8 +62,13 @@ Built images land in:
 
 ## Secret handling
 
-`gale-image/gale-secrets.conf` is untracked (gitignored). Committed overlay files
-under `files/` contain only placeholders (`__OPENWISP_SHARED_SECRET__`, etc.).
+`/home/tim/local/gwifi/fleet-secrets.conf` is untracked and lives outside this
+repo (the deprecated `gale-image/gale-secrets.conf` is also gitignored).
+Committed overlay files under `files/` contain only placeholders
+(`__OPENWISP_SHARED_SECRET__`, etc.). Built images bake real secret values and
+must **never** be published from `bin/targets/` — the build script always
+publishes from `gale-image/out/` (with an `IMAGE_ID` sidecar), which is the
+only path the netboot installer/publish tooling should ever read from.
 
 ## Verification
 
