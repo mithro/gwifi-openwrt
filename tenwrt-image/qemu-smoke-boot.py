@@ -59,6 +59,7 @@ def qmp_powerdown(sock_path):
     import json
     import socket
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10)          # a wedged-but-alive qemu must not hang readline() forever
     s.connect(sock_path)
     f = s.makefile("rw")
     f.readline()                                              # greeting banner
@@ -193,6 +194,10 @@ def main():
         if shutdown_ok:
             print("RESULT: PASS (saw %s; guest powered off via ACPI)" % MARKER)
             sys.exit(0)
+        if not powerdown_sent:
+            print("RESULT: FAIL — boot deadline expired before the ACPI settle window "
+                  "completed (powerdown never sent) — raise SMOKE_TIMEOUT")
+            sys.exit(1)
         print("RESULT: FAIL — guest ignored ACPI power button within %ds (acpid missing "
               "or not running?)" % SHUTDOWN_TIMEOUT)
         sys.exit(1)
