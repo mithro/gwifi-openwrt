@@ -13,8 +13,8 @@ Two deliverables, one branch (`tenwrt-vm-parity`):
 1. **A shared image base** — new `fleet-image/` directory holding the common
    OpenWrt config fragment, the common overlay (openwisp agent config + shared
    first-boot bootstrap functions), common build-script steps, and common
-   verifier checks. `gale-image/` (pucks) and `tenwrt-image/` (ten64 KVM guest)
-   become thin specializations of it.
+   verifier checks. `gale-image/` (pucks), `tenwrt-image/` (ten64 KVM guest)
+   and `om2p-image/` (OpenMesh OM2P) become thin specializations of it.
 2. **tenwrt VM image parity** with the deployed simple-profile fleet:
    - fix the missing MediaTek MT7915 PCIe firmware (and the other silently
      missing mt76 firmware packages),
@@ -86,8 +86,12 @@ default config maps the ACPI power button to `/sbin/poweroff`, so
   fleet-wide via OpenWISP when/if the fleet flips back.
 - **D5** Shared `fleet-image/` base specialized into gale and tenwrt (this
   spec's core; requested by Tim).
-- **D6** `om2p-image` stays untouched (slot-size-constrained); folding it onto
-  the base is a follow-up.
+- **D6** (revised 2026-07-24) `om2p-image` **also builds from the base**:
+  it adopts `build-lib.sh` + the `base.config` layering, but its overlay
+  *content* stays mesh-era as-is (own bootstrap + `fleet-files/`) and is
+  protected by the same render byte-diff gate as gale. Converting om2p to the
+  simple profile (and onto `bootstrap.sh`) is a follow-up — its 7168k slot is
+  the constraint, not the build machinery.
 - **D7** tenwrt builds use a **separate armsr OpenWrt build tree** (fresh
   v25.12.4 checkout, `OWRT=` override) so concurrent gale builds in the shared
   tree are never disturbed.
@@ -120,12 +124,20 @@ tenwrt-image/       # specialization: armsr/armv8 target fragment, PCIe Wi-Fi
                     # driver+firmware matrix, acpid + qemu-ga,
                     # 99-tenwrt-bootstrap → thin driver over bootstrap.sh,
                     # slimmed gwifi-radio-setup (§4.5)
+om2p-image/         # specialization: ath79 target fragment + 7168k-fit
+                    # disables; overlay content unchanged for now (mesh-era
+                    # bootstrap + fleet-files; D6)
 ```
 
 The pre-existing `fleet-files/` overlay (mesh-era backhaul gate + hotplug
 hook) is **not** folded into `fleet-image/files/`: the tenwrt build **stops
-consuming it** (backhaul gating is mesh-era; §4.5 drops the wiring), and it
-remains in place solely for the untouched `om2p-image` build (D6).
+consuming it** (backhaul gating is mesh-era; §4.5 drops the wiring).
+`build-lib.sh` therefore takes the overlay list per image rather than
+hardcoding it: gale and tenwrt merge `fleet-image/files/` + their own
+`files/`; om2p merges only its own `files/` + `fleet-files/` (its current
+order), skipping the base overlay so its rendered tree stays byte-identical
+through the refactor (D6, §4.8.1). `fleet-files/` stays alive solely for
+om2p until its simple-profile conversion.
 
 ### 4.2 Shared bootstrap functions, thin per-image drivers
 
@@ -159,7 +171,11 @@ them); tenwrt requires only `OPENWISP_URL` + `OPENWISP_SHARED_SECRET`.
 
 `build-lib.sh` seeds `.config` as: target lines (per image) + `base.config` +
 `<image>.config`, then `make defconfig` — the same seeding the scripts do
-today, three-layered. Later fragments override earlier ones.
+today, three-layered. Later fragments override earlier ones (kconfig takes
+the last assignment), which is what lets `om2p.config` shrink to its target
+fragment + the 7168k-fit disables: base packages it cannot afford (e.g.
+`luci`) are turned off with explicit `# CONFIG_PACKAGE_x is not set` lines,
+self-documenting the size trade.
 
 ### 4.4 tenwrt package changes
 
@@ -213,14 +229,15 @@ work.
 
 ### 4.8 Verification
 
-1. **Gale no-regression gate (must pass before the branch is finished)**:
-   render the gale overlay with `RENDER_ONLY=1` from the pre-refactor tree and
-   from the refactored base+specialization, and **byte-diff the rendered
-   `files/` trees**; also diff the post-`defconfig` `.config`. Both must be
-   identical (or every diff explained and approved). Note: today's
-   `build-gale-image.sh` has no `RENDER_ONLY` seam (only tenwrt/om2p do), so
-   the gate starts with a trivial preliminary commit adding that seam to the
-   pre-refactor script — the "before" render uses it unchanged otherwise.
+1. **Gale + om2p no-regression gates (must pass before the branch is
+   finished)**: for each, render the overlay with `RENDER_ONLY=1` from the
+   pre-refactor tree and from the refactored base+specialization, and
+   **byte-diff the rendered `files/` trees**; also diff the post-`defconfig`
+   `.config`. Both must be identical (or every diff explained and approved).
+   Notes: today's `build-gale-image.sh` has no `RENDER_ONLY` seam (tenwrt/om2p
+   have one), so the gate starts with a trivial preliminary commit adding that
+   seam to the pre-refactor script; om2p additionally keeps its existing
+   verifier green, including the 7168k fit gate.
 2. `verify-tenwrt-image.py` (on `verify_lib.py`): asserts
    `mediatek/mt7915_{wa,wm,rom_patch}.bin` present in the rootfs, `acpid` +
    `qemu-ga` installed, **no** mesh/wireless/usteer leftovers in the baked
@@ -240,6 +257,8 @@ work.
   `gwifi-radio-setup` normalizes whatever appears.
 - `gwifi-aps` stays 11n/11ac; 802.11ax uplift for MT7915 is a follow-up.
 - VM LLDP visibility (announce on `eth0` without puck side-effects).
-- Folding `om2p-image` onto `fleet-image/` (D6).
+- Converting om2p to the simple profile + `bootstrap.sh` (and retiring
+  `fleet-files/`) — its build machinery moves to the base now (D6), its
+  content later.
 - When to rebuild/republish the gale image from the refactored base — Tim's
   call; the published image is untouched until then.
