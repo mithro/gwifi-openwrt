@@ -149,13 +149,18 @@ skip the shutdown assertion and PASS on the boot marker alone.
 ## Recorded results (2026-07-25, branch `tenwrt-vm-parity`)
 
 Built in the dedicated `openwrt-armsr` tree, v25.12.4 @ `2b1b3b2266`,
-`JOBS=3`: `openwrt-armsr-armv8-generic-squashfs-combined-efi.img`.
+`JOBS=3`. Both `openwrt-armsr-armv8-generic-ext4-combined-efi.img` and
+`openwrt-armsr-armv8-generic-squashfs-combined-efi.img` are emitted; the
+**ext4 variant is the smoke-tested/deployed one** —
+`qemu-smoke-boot.py`'s `find_image()` picks the alphabetically-first
+`*combined-efi.img` match, which is `ext4` (`e` < `s`).
 
-- `verify-tenwrt-image.py`: **PASS** — all 34 required packages present
+- `verify-tenwrt-image.py`: **PASS** — all 37 required packages present
   (incl. `acpid`, `qemu-ga`, the 7 `kmod-mt76xx-firmware` packages);
   `mt7915_{wa,wm,rom_patch}.bin` present; no mesh leftovers; `usteer`
   resolves to the stock package default.
-- `qemu-smoke-boot.py`: **PASS** under TCG — `TENVM-BOOTSTRAP-COMPLETE
+- `qemu-smoke-boot.py`: **PASS** under TCG, against
+  `openwrt-armsr-armv8-generic-ext4-combined-efi.img` — `TENVM-BOOTSTRAP-COMPLETE
   uplink=eth0` seen, then QMP `system_powerdown` → `acpid` → clean
   `reboot: Power down` (the `virsh shutdown` path, proven headless).
 
@@ -174,8 +179,10 @@ normalization step exists precisely because that order is not guaranteed.
 
 ## Deploy runbook (manual — not run by this repo)
 
-1. Copy the built image to ten64:
-   `combined-efi.img` → `ten64:/var/lib/libvirt/images/tenwrt.img`.
+1. Copy the built image to ten64 — deploy what was proven (the
+   smoke-tested ext4 variant, not the squashfs one that also gets built):
+   `openwrt-armsr-armv8-generic-ext4-combined-efi.img` →
+   `ten64:/var/lib/libvirt/images/tenwrt.img`.
 2. `virsh define ten64-host/tenwrt.xml` — picks up the staged qemu-ga
    virtio-serial channel (see "Host-side, staged only" below).
 3. VFIO-bind the MT7915 PCI function and `virsh start tenwrt`, per
