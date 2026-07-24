@@ -18,6 +18,9 @@ import tarfile
 import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
+from verify_lib import parse_secrets
+
 # Mirror build-gale-image.sh: derive the image dir from $OWRT (default below).
 DEFAULT_IMAGE_DIR = os.path.join(
     os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt"),
@@ -32,24 +35,6 @@ REQUIRED_PACKAGES = [
     "usteer",
     "batctl",   # matched as substring to tolerate the -default suffix
 ]
-
-
-def parse_secrets(path):
-    """Parse KEY="value" / KEY=value lines from a secrets file."""
-    secrets = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-            if not m:
-                continue
-            val = m.group(2).strip()
-            if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
-                val = val[1:-1]
-            secrets[m.group(1)] = val
-    return secrets
 
 
 def find_image(image_dir, kind):

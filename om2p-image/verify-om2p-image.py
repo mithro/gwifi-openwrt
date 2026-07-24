@@ -21,6 +21,9 @@ import sys
 import tarfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
+from verify_lib import parse_secrets
+
 OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt")
 IMAGE_DIR = os.path.join(OWRT, "bin/targets/ath79/generic")
 FLEET_SECRETS = os.environ.get("FLEET_SECRETS",
@@ -31,23 +34,6 @@ REQUIRED_PACKAGES = ["openwisp-config", "openwisp-monitoring", "kmod-batman-adv"
                      "wpad-mesh-mbedtls", "usteer", "batctl-default"]
 PROFILES = ["openmesh_om2p-lc", "openmesh_om2p-v1",
             "openmesh_om2p-v2", "openmesh_om2p-v4"]
-
-
-def parse_secrets(path):
-    out = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-            if not m:
-                continue
-            v = m.group(2).strip()
-            if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-                v = v[1:-1]
-            out[m.group(1)] = v
-    return out
 
 
 def read_etc_files(image_dir):
