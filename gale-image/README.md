@@ -74,6 +74,8 @@ only path the netboot installer/publish tooling should ever read from.
 
 After a successful build, run:
 
-    python3 gale-image/verify-gale-image.py
+    FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf python3 gale-image/verify-gale-image.py
 
 This checks that all expected packages and config stanzas appear in the built image.
+The verifier takes the same `FLEET_SECRETS` env var as the build (defaults to
+`<repo-root>/fleet-secrets.conf` if unset).

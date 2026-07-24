@@ -4,8 +4,9 @@
 Usage:
     python3 verify-gale-image.py [sysupgrade.bin]
 
-Reads expected values from <script_dir>/gale-secrets.conf and asserts the
-rendered overlay + package manifest match. Never prints secret values.
+Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS)
+and asserts the rendered overlay + package manifest match. Never prints
+secret values.
 """
 
 import os
@@ -26,6 +27,8 @@ DEFAULT_IMAGE_DIR = os.path.join(
     os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt"),
     "bin/targets/ipq40xx/chromium",
 )
+FLEET_SECRETS = os.environ.get(
+    "FLEET_SECRETS", os.path.join(SCRIPT_DIR, "..", "fleet-secrets.conf"))
 
 REQUIRED_PACKAGES = [
     "openwisp-config",
@@ -209,10 +212,10 @@ def main():
 
     print("Image:   %s" % sysupgrade_path)
 
-    secrets_path = os.path.join(SCRIPT_DIR, "gale-secrets.conf")
-    if not os.path.isfile(secrets_path):
-        sys.exit("ERROR: secrets file not found: %s (copy from .example)" % secrets_path)
-    secrets = parse_secrets(secrets_path)
+    if not os.path.isfile(FLEET_SECRETS):
+        sys.exit("ERROR: secrets not found: %s (set FLEET_SECRETS="
+                 "/home/tim/local/gwifi/fleet-secrets.conf)" % FLEET_SECRETS)
+    secrets = parse_secrets(FLEET_SECRETS)
     print("Secrets: loaded (%d keys)" % len(secrets))
 
     if shutil.which("unsquashfs") is None:
