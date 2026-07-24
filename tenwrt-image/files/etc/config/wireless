@@ -1,0 +1,12 @@
+# Minimal wireless seed for the ten64 Wi-Fi VM. wifi-device radioN stanzas and the
+# mesh0 'device' binding are generated at first boot by /usr/sbin/gwifi-radio-setup
+# (radios arrive via VFIO at guest-assigned PCI slots). Client APs come from OpenWISP.
+config wifi-iface 'mesh0'
+	option mode 'mesh'
+	option mesh_id '__MESH_ID__'
+	option encryption 'sae'
+	option key '__MESH_SAE_KEY__'
+	option network 'mesh_hardif'
+	option mesh_fwding '0'
+	option mesh_rssi_threshold '0'
+	option disabled '0'
