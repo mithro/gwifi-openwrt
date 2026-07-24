@@ -113,7 +113,12 @@ fleet-image/
   build-lib.sh      # sourced by image build scripts: secrets render (esc/sed),
                     # overlay merge (fleet-image/files/ then <image>/files/),
                     # config concat + defconfig, forced rootfs rebuild,
-                    # out/ artifacts + image-id stamp & sidecar
+                    # out/ artifacts + image-id stamp & sidecar.
+                    # Stamp/out/rootfs-force are per-image OPT-IN (today they
+                    # exist only in the gale build): om2p opts out for now so
+                    # its render stays byte-identical (D6). The RENDER_ONLY
+                    # seam sits BEFORE the image-id stamp — a timestamped id
+                    # in the render would dirty every byte-diff (§4.8.1).
   verify_lib.py     # shared verifier checks: no unrendered placeholders,
                     # package manifest asserts, overlay-presence asserts
 
@@ -163,9 +168,21 @@ Per-image drivers supply only what differs:
 The shared `etc/config/openwisp` ships with `mac_interface` unset; each
 image's bootstrap driver applies its value with a `uci set` (no per-image
 full-file override of the shared overlay). Similarly, `build-lib.sh` takes a
-**per-image required-secrets set**: gale keeps
-`MESH_SAE_KEY`/`MESH_ID`/`TOPOLOGY_RECEIVE_URL` (its extras still render
-them); tenwrt requires only `OPENWISP_URL` + `OPENWISP_SHARED_SECRET`.
+**per-image required-secrets set**:
+
+- gale: `OPENWISP_URL` + `OPENWISP_SHARED_SECRET` +
+  `MESH_SAE_KEY`/`MESH_ID`/`TOPOLOGY_RECEIVE_URL` (its extras still render
+  them),
+- tenwrt: `OPENWISP_URL` + `OPENWISP_SHARED_SECRET` only,
+- om2p: `OPENWISP_URL` + `OPENWISP_SHARED_SECRET` + `MESH_SAE_KEY`/`MESH_ID`
+  (no `TOPOLOGY_RECEIVE_URL`), as its build requires today.
+
+All three read the repo-external `/home/tim/local/gwifi/fleet-secrets.conf`
+(the scheme om2p/tenwrt already use): gale **moves off**
+`gale-image/gale-secrets.conf` onto it, the missing gale-only variables are
+added there, and the old file keeps working via a deprecation shim or is
+deleted once values are confirmed identical — value-identical either way, so
+the §4.8.1 gate is unaffected.
 
 ### 4.3 Config layering
 
@@ -173,9 +190,14 @@ them); tenwrt requires only `OPENWISP_URL` + `OPENWISP_SHARED_SECRET`.
 `<image>.config`, then `make defconfig` — the same seeding the scripts do
 today, three-layered. Later fragments override earlier ones (kconfig takes
 the last assignment), which is what lets `om2p.config` shrink to its target
-fragment + the 7168k-fit disables: base packages it cannot afford (e.g.
-`luci`) are turned off with explicit `# CONFIG_PACKAGE_x is not set` lines,
-self-documenting the size trade.
+fragment + the 7168k-fit disables: the base packages it cannot afford
+(`luci`, `ip-full`, `tcpdump-mini`, `ethtool`) are turned off with explicit
+`# CONFIG_PACKAGE_x is not set` lines, self-documenting the size trade (the
+§4.8.1 `.config` byte-diff enforces the exact set). The per-image "target
+lines" hook is a **generator, not a static string**: om2p's seeding is
+multi-profile (`CONFIG_TARGET_MULTI_PROFILE` + four `DEVICE_openmesh_om2p-*`
+lines) with its runtime `DEVICES` env override, which must survive the
+refactor unchanged.
 
 ### 4.4 tenwrt package changes
 
