@@ -29,6 +29,11 @@ Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs;
 none are ever printed or committed. They go into the templates' default_values
 (OpenWISP DB on wisp, internal) as {{ }} substitutions and are piped to wisp
 over SSH stdin (not argv). The verification render redacts all `option key`.
+
+tenwrt VM parity (fleet-image-base-plan.md Task 13): the ten64 VM (device name
+'tenwrt') attaches to the SAME gwifi-aps + gwifi-base templates as the pucks —
+it has no physical jacks, so gwifi-base's post-reload-hook falls back to the
+virtio trunk eth0 when neither puck jack name (eth-black/lan) exists.
 """
 import json
 import subprocess
@@ -184,6 +189,10 @@ POST_RELOAD_HOOK = """#!/bin/sh
 # Client VLANs tagged on the trunk (mgmt VLAN 4 is baked in the image).
 TRUNK=eth-black
 [ -e /sys/class/net/eth-black ] || TRUNK=lan
+# tenwrt VM: no physical jacks; the virtio trunk is eth0. Pucks always match
+# one of the two names above (gale's own eth0 is the DSA conduit — order
+# matters), so only the VM falls through to here.
+[ -e "/sys/class/net/$TRUNK" ] || TRUNK=eth0
 for kv in roam=20 iot=90 guest=99; do
 	name=${kv%=*}; vid=${kv#*=}
 	uci set network.brvlan_$name="bridge-vlan"
@@ -246,6 +255,10 @@ PRESERVED = json.loads({preserved!r})
 BASE = json.loads({base!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
+# Devices the templates attach to: the pucks + the ten64 VM. The attach loop
+# skips names that have not registered yet — re-run this script after the
+# tenwrt VM's first successful registration (design spec §4.6).
+DEVICES = PUCKS + ["tenwrt"]
 
 b, bcreated = Template.objects.update_or_create(
     organization=org, name="gwifi-base",
@@ -280,7 +293,7 @@ print("gwifi-mesh-aps:", "created" if mcreated else "updated",
 
 attached = 0
 missing = []
-for name in PUCKS:
+for name in DEVICES:
     try:
         d = Device.objects.get(organization=org, name=name)
     except Device.DoesNotExist:
@@ -291,7 +304,7 @@ for name in PUCKS:
             c.templates.add(tpl)
     c.full_clean(); c.save()
     attached += 1
-print("configs attached:", attached, "/", len(PUCKS), "missing:", missing)
+print("configs attached:", attached, "/", len(DEVICES), "missing:", missing)
 
 # verification render of an online puck, passphrases redacted
 d = Device.objects.get(organization=org, name="puck12")
