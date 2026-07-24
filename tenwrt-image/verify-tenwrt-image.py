@@ -95,6 +95,11 @@ CANDIDATE_PATHS = (
     set(WANT_CONTENT) | set(WANT_PRESENCE) | set(OVERLAY_EXEC)
     | set(ABSENT) | set(FIRMWARE_BLOBS)
 )
+# The exec-check loop presence-tests each OVERLAY_EXEC entry via `files.get`,
+# which only holds content for WANT_CONTENT paths — so every OVERLAY_EXEC
+# entry must also be read as content, or the presence test silently breaks.
+assert set(OVERLAY_EXEC) <= set(WANT_CONTENT), \
+    "OVERLAY_EXEC entries must be in WANT_CONTENT"
 
 
 def read_rootfs(image_dir):
@@ -210,10 +215,11 @@ def main():
             failures.append("FAIL bootstrap: TENVM-BOOTSTRAP-COMPLETE marker missing")
         check_no_ph(bs, "bootstrap")
 
-    if "lib/gwifi/bootstrap.sh" in members:
-        print("  PASS bootstrap-lib: lib/gwifi/bootstrap.sh present")
-    else:
-        failures.append("FAIL bootstrap-lib: lib/gwifi/bootstrap.sh missing from rootfs")
+    for rel in WANT_PRESENCE:
+        if rel in members:
+            print("  PASS present: %s" % rel)
+        else:
+            failures.append("FAIL present: %s missing from rootfs" % rel)
 
     rs = files.get("usr/sbin/gwifi-radio-setup")
     if rs is None:
@@ -233,9 +239,10 @@ def main():
 
     for rel in ABSENT:
         if rel in members:
-            failures.append("FAIL absent: %s present (mesh/backhaul-gate leftover)" % rel)
+            failures.append("FAIL leftover: %s present (should be absent; "
+                             "mesh/backhaul remnant)" % rel)
         else:
-            print("  PASS absent: %s not present" % rel)
+            print("  PASS leftover-free: %s" % rel)
 
     for rel in FIRMWARE_BLOBS:
         if rel in members:
