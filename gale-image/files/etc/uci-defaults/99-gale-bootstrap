@@ -1,88 +1,31 @@
 #!/bin/sh
 # 99-gale-bootstrap — first-boot setup: the MINIMUM needed to reach the
-# OpenWISP controller (wisp). Everything else — APs, radios, client
-# VLANs, steering, lldpd, syslog — is delivered by OpenWISP templates
-# after the agent registers.
+# OpenWISP controller (wisp). Everything else — APs, radios, client VLANs,
+# steering, lldpd, syslog — is delivered by OpenWISP templates after the
+# agent registers. Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
 #
 # Ports are named after the case markings (eth-black = globe-icon jack =
 # uplink; eth-blue = the other jack, unbridged and link-down here).
-#
 # Network shape: ONE VLAN-aware bridge br0 with the single trunk port
 # eth-black; mgmt VLAN 4 untagged+pvid, DHCP from wisp (10.1.4.2).
 # Per-VLAN software bridges over 8021q uppers of a DSA port do not work
 # when the port is also hw-offload-bridged untagged (qca8k claims tagged
 # ingress); the supported DSA pattern is vlan_filtering=1 + bridge-vlans.
-#
-# STP stays OFF: netifd's default bridge priority (0x7FFF) undercuts the
-# switch fabric's 0x8000, so a puck bridge speaking 802.1D would win STP
-# root of the site L2. Idempotent: fixed UCI section names.
-MGMT_VID=4
+. /lib/gwifi/bootstrap.sh
 
-# Find the board-generated br-lan device section (anonymous; index varies).
-i=0
-brdev=""
-while name=$(uci -q get "network.@device[$i].name"); do
-	[ "$name" = "br-lan" ] && brdev="@device[$i]" && break
-	i=$((i + 1))
-done
-# On the true first boot this script can run before the board network
-# config exists. Exit NONZERO so uci-defaults keeps the script and
-# retries next boot (a silent skip would self-delete it half-done).
-if [ -z "$brdev" ]; then
+# On the true first boot this can run before the board network config exists:
+# exit NONZERO so uci-defaults keeps the script and retries next boot.
+if ! gwifi_adopt_board_bridge eth-black; then
 	echo "gale-bootstrap: br-lan device not found (board config not" \
 	     "generated yet?) — will retry next boot" >&2
 	exit 1
 fi
-uci set "network.$brdev.name"='br0'
-uci set "network.$brdev.vlan_filtering"='1'
-uci set "network.$brdev.stp"='0'
-uci -q delete "network.$brdev.ports"
-uci add_list "network.$brdev.ports"='eth-black'
-# Pin br0's MAC to the label MAC (held by the eth-blue device section):
-# the bridge otherwise picks a MAC by member-join timing, and BOTH the
-# DHCP identity and the openwisp registration MAC come from the mgmt
-# bridge (the agent ignores mac_interface).
-i=0
-while devname=$(uci -q get "network.@device[$i].name"); do
-	if [ "$devname" = "eth-blue" ]; then
-		label_mac=$(uci -q get "network.@device[$i].macaddr")
-		[ -n "$label_mac" ] && \
-			uci set "network.$brdev.macaddr"="$label_mac"
-		break
-	fi
-	i=$((i + 1))
-done
-# mgmt bridge-vlan: untagged+pvid on the trunk
-uci set network.brvlan_mgmt="bridge-vlan"
-uci set network.brvlan_mgmt.device='br0'
-uci set network.brvlan_mgmt.vlan="$MGMT_VID"
-uci -q delete network.brvlan_mgmt.ports
-uci add_list network.brvlan_mgmt.ports='eth-black:u*'
-# Default lan/wan/wan6 interfaces go away: the trunk lives in br0 and
-# eth-blue is deliberately unreferenced (stays link-down).
-uci -q delete network.lan
-uci -q delete network.wan
-uci -q delete network.wan6
-uci set network.mgmt="interface"
-uci set network.mgmt.device="br0.$MGMT_VID"
-uci set network.mgmt.proto='dhcp'
-uci commit network
-
-# No local DHCP server; wisp serves the mgmt VLAN.
-uci -q set dhcp.lan.ignore='1'
-# DNS rebind protection drops RFC1918 A answers from upstream — including
-# the OpenWISP controller's — so whitelist the site domain (without this
-# the agent cannot resolve wisp and never registers).
-uci -q del_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
-uci add_list dhcp.@dnsmasq[0].rebind_domain='mithis.com'
-uci -q commit dhcp
-
-# Firewall: mgmt joins the trusted zone (zone 0 = 'lan' in the default
-# config) so ssh + the openwisp agent work; the stale 'lan' member is
-# removed with the interface it referenced.
-uci -q del_list firewall.@zone[0].network='lan'
-uci -q del_list firewall.@zone[0].network='mgmt'
-uci add_list firewall.@zone[0].network='mgmt'
-uci commit firewall
-
+gwifi_pin_bridge_mac eth-blue
+gwifi_mgmt_vlan 'eth-black:u*'
+gwifi_mgmt_iface
+gwifi_dns_dhcp
+gwifi_firewall_mgmt
+# Device identity MAC = the wan port (the printed label MAC that OpenWISP
+# devices are pre-created with).
+gwifi_openwisp_mac wan
 exit 0

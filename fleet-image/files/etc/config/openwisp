@@ -9,9 +9,10 @@ config controller 'http'
 	# only ever gets a link-local on wired/mesh-isolated pucks, which the ping
 	# check can't reach, marking the device "problem" (found on puck10/06).
 	option management_interface 'br0.4'
-	# Device identity MAC = the wan port (the printed label MAC that
-	# OpenWISP devices are pre-created with). The default (br-lan)
-	# no longer exists and fell back to a random bridge MAC, creating
-	# junk devices (found live on puck12, 2026-07-12).
-	option mac_interface 'wan'
+	# mac_interface (device-identity MAC source) is per-image: each image's
+	# uci-defaults bootstrap driver sets it (gale: 'wan' = printed label MAC
+	# the OpenWISP devices are pre-created with; tenwrt: 'eth0' = the virtio
+	# MAC fixed by the libvirt domain XML). The default (br-lan) no longer
+	# exists on any fleet image and fell back to a random bridge MAC,
+	# creating junk devices (found live on puck12, 2026-07-12).
 	option uuid ''
