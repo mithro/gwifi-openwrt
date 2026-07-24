@@ -33,6 +33,20 @@ radio_swap_needed() {
 	case "${1:-}:${2:-}" in 5g:2g|6g:2g) echo 1 ;; esac
 }
 
+# gwifi_normalize_radios — normalize radio0=2.4GHz / radio1=5GHz for the
+# gwifi-aps template (DBDC phy order is not guaranteed; paths travel with the
+# renamed sections). Split out so tests can exercise just this rename triple
+# against the uci-stub without going through wifi config/enable.
+gwifi_normalize_radios() {
+	_b0=$(uci -q get wireless.radio0.band); _b1=$(uci -q get wireless.radio1.band)
+	if [ -n "$(radio_swap_needed "$_b0" "$_b1")" ]; then
+		uci rename wireless.radio0=radiotmp
+		uci rename wireless.radio1=radio0
+		uci rename wireless.radiotmp=radio1
+		logger -t "$LOG_TAG" "swapped radio0<->radio1 (radio0 was $_b0)"
+	fi
+}
+
 main() {
 	if [ -z "$(any_phy_present)" ]; then
 		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
@@ -48,23 +62,17 @@ main() {
 	# Generate radioN sections (+ PCI paths + auto-detected band) for whatever
 	# card(s) are present.
 	wifi config
-	# wifi config emits a default AP per radio (ssid=OpenWrt) — never beacon it.
-	uci -q delete wireless.default_radio0
-	uci -q delete wireless.default_radio1
+	# wifi config emits a default AP (ssid=OpenWrt) for every radio it finds —
+	# never beacon any of them, whatever N a card population reaches.
+	for _d in $(uci show wireless | sed -n 's/^wireless\.\(default_radio[0-9][0-9]*\)=.*/\1/p'); do
+		uci -q delete "wireless.$_d"
+	done
 	for _r in $(wifi_devices); do
 		uci set "wireless.$_r.channel=auto"
 		uci set "wireless.$_r.disabled=0"
 		logger -t "$LOG_TAG" "enabled $_r (band=$(uci -q get "wireless.$_r.band"))"
 	done
-	# Normalize radio0=2.4GHz / radio1=5GHz for the gwifi-aps template (DBDC
-	# phy order is not guaranteed; paths travel with the renamed sections).
-	_b0=$(uci -q get wireless.radio0.band); _b1=$(uci -q get wireless.radio1.band)
-	if [ -n "$(radio_swap_needed "$_b0" "$_b1")" ]; then
-		uci rename wireless.radio0=radiotmp
-		uci rename wireless.radio1=radio0
-		uci rename wireless.radiotmp=radio1
-		logger -t "$LOG_TAG" "swapped radio0<->radio1 (radio0 was $_b0)"
-	fi
+	gwifi_normalize_radios
 	uci commit wireless
 	wifi reload
 }
