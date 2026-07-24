@@ -122,13 +122,15 @@ the MAIN worktree — copy it into this worktree first (it is gitignored here;
 never edit the pre-refactor script to work around a missing secrets file):
 
 ```bash
-cp /home/tim/local/gwifi/gwifi-openwrt/gale-image/gale-secrets.conf $ROOT/gale-image/
+cp /home/tim/local/gwifi/gwifi-openwrt/.worktrees/wisp-netboot-install/gale-image/gale-secrets.conf \
+   $ROOT/gale-image/
 ```
 
-(For value-parity peace of mind: `gale-secrets.conf` and
-`/home/tim/local/gwifi/fleet-secrets.conf` are line-set identical on this box —
-all 5 vars including TOPOLOGY_RECEIVE_URL — so BEFORE (gale-secrets) and AFTER
-(fleet-secrets) renders compare equal values.)
+(The FILLED 5-var file — including TOPOLOGY_RECEIVE_URL — lives in the
+wisp-netboot-install worktree, where production gale builds ran. The main
+worktree's copy and /home/tim/local/gwifi/fleet-secrets.conf are stale 4-var
+versions; Step 4.8 brings fleet-secrets.conf up to the 5-var set so BEFORE
+(gale-secrets) and AFTER (fleet-secrets) renders compare equal values.)
 
 ```bash
 cd $ROOT
@@ -721,12 +723,14 @@ echo "publish from $OUT - never from bin/targets"
 
 - [ ] **Step 4.8: Migrate the local secrets file (repo-external, this box only)**
 
-The untracked filled secrets live in the MAIN worktree
-(`/home/tim/local/gwifi/gwifi-openwrt/gale-image/gale-secrets.conf`), not this one:
+The untracked FILLED secrets (5 vars) live in the wisp-netboot-install worktree
+(`.worktrees/wisp-netboot-install/gale-image/gale-secrets.conf` — Step 1.4
+already copied it into this worktree's `gale-image/`, also gitignored):
 
 ```bash
 grep -q '^TOPOLOGY_RECEIVE_URL=' /home/tim/local/gwifi/fleet-secrets.conf || \
-  grep '^TOPOLOGY_RECEIVE_URL=' /home/tim/local/gwifi/gwifi-openwrt/gale-image/gale-secrets.conf \
+  grep '^TOPOLOGY_RECEIVE_URL=' \
+    /home/tim/local/gwifi/gwifi-openwrt/.worktrees/wisp-netboot-install/gale-image/gale-secrets.conf \
   >> /home/tim/local/gwifi/fleet-secrets.conf
 ```
 
