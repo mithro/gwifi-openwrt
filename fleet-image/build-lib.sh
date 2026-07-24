@@ -13,6 +13,17 @@
 # OPT-IN steps (today: gale only — spec §4.1): fleet_image_id,
 # fleet_force_rootfs_rebuild, fleet_out. fleet_image_id must come AFTER the
 # RENDER_ONLY gate (a timestamped id would dirty the render byte-diff gates).
+#
+# Contract: callers MUST run under `set -eu`. This library does no internal
+# error checking of its own (a failing cp/sed/cat/make inside a function is
+# not caught here) — the wrapper's `set -e` is what turns that into a hard
+# abort instead of a silently-incomplete render/build.
+#
+# Overlay files that carry __NAME__ placeholders must be TEXT files (sed -i
+# is used for substitution; binary files are not excluded and will be
+# corrupted if matched). Secret values substituted via SECRETS_VARS must be
+# SINGLE-LINE: fleet_esc escapes sed replacement metacharacters (\, &, |) but
+# NOT newlines — a multi-line secret breaks the `sed -i "s|...|...|g"` call.
 
 fleet_require_secrets() {
 	[ -f "$FLEET_SECRETS" ] || {
@@ -22,6 +33,9 @@ fleet_require_secrets() {
 	# shellcheck disable=SC1090
 	. "$FLEET_SECRETS"
 	for _v in $SECRETS_VARS; do
+		# SECRETS_VARS is a static, developer-written identifier list (never
+		# runtime/user input) — eval here only ever indirects through names
+		# the wrapper hardcoded, so it is safe.
 		eval "_val=\${$_v:-}"
 		[ -n "$_val" ] || { echo "missing $_v in $FLEET_SECRETS" >&2; exit 1; }
 	done
@@ -32,6 +46,7 @@ fleet_require_secrets() {
 fleet_esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'; }
 
 fleet_render() {
+	[ -n "${OWRT:-}" ] || { echo "fleet_render: OWRT not set" >&2; exit 1; }
 	rm -rf "$OWRT/files"
 	mkdir -p "$OWRT/files"
 	for _d in $OVERLAYS; do cp -a "$_d/." "$OWRT/files/"; done

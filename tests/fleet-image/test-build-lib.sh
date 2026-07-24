@@ -44,4 +44,12 @@ if ( HERE="$SB/img" OWRT="$SB/owrt" FLEET_SECRETS="$SB/secrets.conf" \
 	echo "  FAIL missing-var not rejected"; fails=$((fails+1))
 else printf '  PASS missing var rejected\n'; fi
 
+# fleet_render with OWRT unset -> hard fail (guard before the rm -rf)
+if ( unset OWRT; HERE="$SB/img"; FLEET_SECRETS="$SB/secrets.conf"; \
+     OVERLAYS="$SB/base"; SECRETS_VARS="OPENWISP_URL"; CHMOD_FILES=""; \
+     . "$ROOT/fleet-image/build-lib.sh"; fleet_require_secrets; fleet_render ) \
+     2> "$SB/owrt-unset.stderr"; then
+	echo "  FAIL fleet_render with OWRT unset not rejected"; fails=$((fails+1))
+else printf '  PASS fleet_render rejects unset OWRT\n'; fi
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
