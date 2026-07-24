@@ -1,5 +1,10 @@
 # ten64 Wi-Fi VM — aarch64 OpenWrt VM image — Design Spec
 
+> **SUPERSEDED 2026-07-24** by `docs/fleet-image-base-design.md`: the fleet moved
+> to the simple profile (no baked mesh) on 2026-07-22 and the image content
+> described here is replaced by the shared `fleet-image/` base + thin tenwrt
+> specialization. Kept for the mesh-era rationale and the armsr/QEMU groundwork.
+
 > Status: approved (design), pending spec review. The build target of this spec is
 > **only the VM image** (a sibling of `gale-image`/`om2p-image`). The host-side VFIO
 > passthrough, libvirt domain, cutover, and OpenWISP device template are **deferred**
