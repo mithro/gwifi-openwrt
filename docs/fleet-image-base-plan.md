@@ -31,6 +31,9 @@ QEMU aarch64 for smoke boot.
   stdout/stderr (no `/dev/null`).
 - Python always via `uv run`. Temp files under the repo-local `tmp/` (never `/tmp`).
 - Commit after every task (small, discrete commits).
+- Never redirect output to `/dev/null` — not in ad-hoc commands (a hook blocks
+  it) and not in test files either: capture expected-failure stderr to a log
+  file under the test scratch dir instead (suppressed output = lost evidence).
 
 **Paths used throughout:**
 - `ROOT` = `/home/tim/local/gwifi/gwifi-openwrt/.worktrees/tenwrt-vm-parity`
@@ -51,9 +54,12 @@ cd /home/tim/local/gwifi
 git clone --no-checkout /home/tim/local/gwifi/openwrt openwrt-armsr
 cd openwrt-armsr
 git checkout 2b1b3b2266
-cp ../openwrt/feeds.conf .
 cp -al ../openwrt/dl dl   # hardlink copy: reuses 1.3G of tarballs, no interference
 ```
+
+(No feeds.conf copy needed: the source tree has no untracked `feeds.conf` — the
+pinned feed commits live in the tracked `feeds.conf.default`, which the clone
+already carries.)
 
 Expected: checkout at `2b1b3b2266` ("ipq40xx: fix qca8k…" — the ipq40xx patch is
 irrelevant to armsr but keeps both trees at the identical commit).
@@ -107,13 +113,22 @@ git add gale-image/build-gale-image.sh
 git commit -m "gale-image: add RENDER_ONLY seam (pre-refactor gate reference)"
 ```
 
-Record the commit hash — call it `PREREF` below (`git rev-parse --short HEAD`).
-
 - [ ] **Step 1.4: Capture BEFORE renders for gale and om2p**
 
 The render step only writes `$OWRT/files`, so a scratch dir works as `OWRT` — no
-build tree needed. Secrets: gale still reads `gale-image/gale-secrets.conf` at this
-point; om2p reads `../fleet-secrets.conf` (real local files, present on this box).
+build tree needed. Secrets: the pre-refactor gale script hardcodes
+`$HERE/gale-secrets.conf`, and the FILLED file is untracked so it exists only in
+the MAIN worktree — copy it into this worktree first (it is gitignored here;
+never edit the pre-refactor script to work around a missing secrets file):
+
+```bash
+cp /home/tim/local/gwifi/gwifi-openwrt/gale-image/gale-secrets.conf $ROOT/gale-image/
+```
+
+(For value-parity peace of mind: `gale-secrets.conf` and
+`/home/tim/local/gwifi/fleet-secrets.conf` are line-set identical on this box —
+all 5 vars including TOPOLOGY_RECEIVE_URL — so BEFORE (gale-secrets) and AFTER
+(fleet-secrets) renders compare equal values.)
 
 ```bash
 cd $ROOT
@@ -188,7 +203,7 @@ del_list) log "del_list $1" ;;
 delete)   log "delete $1"; state_del "$1" ;;
 rename)   log "rename $1" ;;
 commit)   log "commit ${1:-}" ;;
-batch)    log "batch"; cat > /dev/null ;;
+batch)    log "batch"; cat >> "$UCI_LOG" ;;   # keep the payload: it IS the op evidence
 *)        echo "uci-stub: unsupported: $cmd $*" >&2; exit 2 ;;
 esac
 ```
@@ -247,7 +262,7 @@ the board section is absent (uci-defaults keeps + retries):
 printf 'network.@device[0].name=something-else\n' > "$SB/state"
 : > "$SB/retry.log"
 if env PATH="$SB/bin:$PATH" UCI_STATE="$SB/state" UCI_LOG="$SB/retry.log" \
-	sh "$SB/new.sh" 2> /dev/null; then
+	sh "$SB/new.sh" 2> "$SB/retry.stderr"; then
 	echo "FAIL: new bootstrap must exit nonzero without br-lan"; exit 1
 fi
 ```
@@ -321,7 +336,7 @@ eq "chmod applied" "755" "$perms"
 # missing required var -> hard fail
 if ( HERE="$SB/img" OWRT="$SB/owrt" FLEET_SECRETS="$SB/secrets.conf" \
      OVERLAYS="$SB/base" SECRETS_VARS="OPENWISP_URL NOSUCH_VAR" CHMOD_FILES=""; \
-     . "$ROOT/fleet-image/build-lib.sh"; fleet_require_secrets ) 2> /dev/null; then
+     . "$ROOT/fleet-image/build-lib.sh"; fleet_require_secrets ) 2> "$SB/missing-var.stderr"; then
 	echo "  FAIL missing-var not rejected"; fails=$((fails+1))
 else printf '  PASS missing var rejected\n'; fi
 
@@ -394,7 +409,7 @@ fleet_image_id() {  # $1 = image name prefix (e.g. gale-openwrt). OPT-IN.
 	echo "image id: $IMAGE_ID"
 }
 
-fleet_seed_config() {  # $1 = name of a function that prints target lines
+fleet_seed_config() {  # $1 = function printing target lines; $2 = per-image fragment (relative to $HERE)
 	{ "$1"; cat "$HERE/../fleet-image/base.config"; cat "$HERE/$2"; } > "$OWRT/.config"
 	( cd "$OWRT" && make defconfig )
 }
@@ -658,6 +673,8 @@ OWRT=${OWRT:-/home/tim/local/gwifi/openwrt}
 FLEET_SECRETS=${FLEET_SECRETS:-$HERE/../fleet-secrets.conf}
 SECRETS_VARS="OPENWISP_SHARED_SECRET MESH_SAE_KEY MESH_ID OPENWISP_URL TOPOLOGY_RECEIVE_URL"
 OVERLAYS="$HERE/../fleet-image/files $HERE/files"
+# gale-netconsole is a parity ADDITION to the old chmod list (it is already
+# 100755 in git, so this is a no-op belt-and-braces line).
 CHMOD_FILES="etc/uci-defaults/99-gale-bootstrap etc/init.d/gwifi-topology
              usr/sbin/gwifi-topology-push usr/sbin/gale-mesh-bootstrap
              etc/init.d/gale-netconsole"
@@ -736,12 +753,14 @@ OWRT=$ROOT/tmp/gate/after-gale RENDER_ONLY=1 \
 diff -r tmp/gate/before-gale/files tmp/gate/after-gale/files
 ```
 
-Expected diff — EXACTLY this allowlist, nothing else:
-1. `Only in after-gale/files/lib/gwifi: bootstrap.sh` (new shared lib),
+Expected diff — EXACTLY this allowlist, judged semantically (diff -r prints the
+topmost new directory, i.e. `Only in …/after-gale/files: lib`, since the before
+tree has no `lib/` at all):
+1. the new `lib/` subtree (only content: `lib/gwifi/bootstrap.sh`),
 2. `files/etc/uci-defaults/99-gale-bootstrap` differs (monolith → driver),
 3. `files/etc/config/openwisp` differs (mac_interface option + comment moved out,
    replacement comment in).
-Any other line = regression; fix before proceeding.
+Any other file appearing in the diff = regression; fix before proceeding.
 
 - [ ] **Step 4.11: `.config` gate**
 
@@ -1546,7 +1565,12 @@ TRUNK=eth-black
 
 - [ ] **Step 13.2: Attach set**
 
-After the `PUCKS = […]` list add:
+⚠️ There are TWO `PUCKS` bindings in this file: the module-level list (~line 44)
+and `PUCKS = {pucks!r}` INSIDE the `DJANGO` heredoc template (~line 248) that is
+executed remotely on wisp. The attach loop (`for name in PUCKS:`) and its
+summary print live inside that template string — `py_compile` cannot see them.
+Add the new line **inside the DJANGO template, immediately after
+`PUCKS = {pucks!r}`**:
 
 ```python
 # Devices the templates attach to: the pucks + the ten64 VM. The attach loop
@@ -1555,9 +1579,10 @@ After the `PUCKS = […]` list add:
 DEVICES = PUCKS + ["tenwrt"]
 ```
 
-Change the attach loop `for name in PUCKS:` → `for name in DEVICES:` and the
-summary print to use `len(DEVICES)`. Update the module docstring (one paragraph:
-tenwrt attaches to the same gwifi-aps + gwifi-base; hook trunk fallback).
+Then, in the same template, change the attach loop `for name in PUCKS:` →
+`for name in DEVICES:` and the summary print to use `len(DEVICES)`. Update the
+module docstring (one paragraph: tenwrt attaches to the same gwifi-aps +
+gwifi-base; hook trunk fallback).
 
 - [ ] **Step 13.3: Syntax check + commit**
 

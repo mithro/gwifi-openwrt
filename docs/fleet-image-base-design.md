@@ -32,7 +32,7 @@ Two deliverables, one branch (`tenwrt-vm-parity`):
 `tenwrt-image/` existed only on `openwisp-controller` (mesh-era design);
 the deployed puck reality lives on `wisp-netboot-install` (+ tools on
 `puck-sheet-live-sync`). Branch `tenwrt-vm-parity` was created off `main` and
-both lines merged (commit `980703c`); the four conflicts were resolved to the
+both lines merged (commit `71acaac`); the four conflicts were resolved to the
 deployed `wisp-netboot-install` side. Baseline after merge: 54 gwifi-netboot
 pytest + `tests/tenwrt/test-radio-setup.sh` + backhaul decide tests all pass.
 
