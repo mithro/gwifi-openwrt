@@ -4,8 +4,10 @@
 Simple-profile reality (docs/fleet-image-base-design.md, fleet-image-base-plan.md
 Task 7-9): the image bakes ONLY what is needed to reach the OpenWISP controller
 on first boot — APs, client VLAN legs and steering all arrive later via
-OpenWISP templates. There is no mesh, no usteer, no backhaul gate in this
-image; those are om2p/gale-only.
+OpenWISP templates. There is no mesh, no backhaul gate in this image; those
+are om2p/gale-only. /etc/config/usteer IS present (it ships with the usteer
+package, same as gale) but must be the stock package default, not our
+mesh-era baked overlay copy — the wisp template overwrites it post-registration.
 
 Checks, against the rootfs (the *-rootfs.tar.gz emitted by CONFIG_TARGET_ROOTFS_TARGZ,
 or the build staging root-* dir as fallback):
@@ -16,7 +18,14 @@ or the build staging root-* dir as fallback):
                              TENVM-BOOTSTRAP-COMPLETE marker; no placeholders
   - /lib/gwifi/bootstrap.sh : present (shared bootstrap function library)
   - /usr/sbin/gwifi-radio-setup : executable; radio_swap_needed (band normalizer)
-  - mesh/gate leftovers ABSENT: /etc/config/wireless, /etc/config/usteer,
+  - /etc/config/usteer      : present (shipped by the usteer package itself,
+                             same as gale) but must be the STOCK package
+                             default, not our mesh-era baked overlay copy —
+                             no 'ansells', no 'mesh_rssi', no placeholders.
+                             The wisp gwifi-base template overwrites it after
+                             registration.
+  - mesh/gate leftovers ABSENT: /etc/config/wireless (no package ships this
+    statically; `wifi config` generates it at runtime),
     /usr/sbin/gwifi-backhaul-gate, /etc/hotplug.d/net/30-gwifi-backhaul
   - MediaTek mt7915 firmware blobs present (tar member names, not decoded):
     lib/firmware/mediatek/{mt7915_wa,mt7915_wm,mt7915_rom_patch}.bin
@@ -72,15 +81,19 @@ WANT_CONTENT = (
     "etc/config/openwisp",
     "etc/uci-defaults/99-tenwrt-bootstrap",
     "usr/sbin/gwifi-radio-setup",
+    "etc/config/usteer",
 )
 # Present-only (existence, no content read needed).
 WANT_PRESENCE = (
     "lib/gwifi/bootstrap.sh",
 )
 # Mesh/backhaul-gate leftovers that must NOT be in a simple-profile rootfs.
+# etc/config/usteer is deliberately NOT here — the usteer package itself
+# ships a stock default (same as gale); it is checked by content below
+# instead, so we can fail on our old mesh-era baked copy specifically
+# without false-failing on the legitimate package default.
 ABSENT = [
     "etc/config/wireless",
-    "etc/config/usteer",
     "usr/sbin/gwifi-backhaul-gate",
     "etc/hotplug.d/net/30-gwifi-backhaul",
 ]
@@ -228,6 +241,15 @@ def main():
         print("  PASS radio-setup: radio_swap_needed present")
     else:
         failures.append("FAIL radio-setup: radio_swap_needed not found")
+
+    us = files.get("etc/config/usteer")
+    if us is None:
+        failures.append("FAIL usteer: not in rootfs (expected: usteer package default)")
+    elif "ansells" in us or "mesh_rssi" in us or re.search(r'__[A-Z_]+__', us):
+        failures.append("FAIL usteer: looks like the mesh-era baked overlay copy, "
+                         "not the stock package default")
+    else:
+        print("  PASS usteer: stock package default (no baked overlay leftover)")
 
     for rel in OVERLAY_EXEC:
         if rel not in files:
