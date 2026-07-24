@@ -117,10 +117,10 @@ def check_no_placeholders(text, label, failures):
 
 def check_value(content, secrets, key, label, failures):
     """Assert secrets[key]'s value appears in content. Fails (not skips) if the
-    key is missing/empty from gale-secrets.conf. Never prints the value."""
+    key is missing/empty from the FLEET_SECRETS file. Never prints the value."""
     val = secrets.get(key)
     if not val:
-        failures.append("FAIL %s: expected key %s missing/empty in gale-secrets.conf"
+        failures.append("FAIL %s: expected key %s missing/empty in the FLEET_SECRETS file"
                         % (label, key))
     elif val not in content:
         failures.append("FAIL %s: %s value not present in rendered config"

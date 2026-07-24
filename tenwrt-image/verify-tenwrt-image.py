@@ -45,7 +45,7 @@ import tarfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
-from verify_lib import (check_no_placeholders, find_manifest, manifest_packages,
+from verify_lib import (check_no_placeholders, find_manifest,
                          parse_secrets, require_packages)
 
 OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt-armsr")
@@ -262,8 +262,7 @@ def main():
     if manifest_path is None:
         failures.append("FAIL manifest: none found")
     else:
-        require_packages(manifest_path, REQUIRED_PACKAGES, failures)
-        pkgs = manifest_packages(manifest_path)
+        pkgs = require_packages(manifest_path, REQUIRED_PACKAGES, failures)
         for pkg in REQUIRED_PACKAGES:
             if pkg in pkgs:
                 print("  PASS manifest: '%s'" % pkg)
