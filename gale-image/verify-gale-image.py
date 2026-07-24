@@ -78,6 +78,9 @@ def unsquash(squashfs_file, dest_dir):
     return out
 
 
+# NOTE: intentionally NOT verify_lib's find_manifest(image_dir) — this is the
+# documented two-arg exception (tar-first, returns content not path); see
+# fleet-image-base-plan.md Task 6.
 def find_manifest(image_dir, tar_path):
     """Return package-manifest text: prefer the sysupgrade tar's control manifest,
     else a *.manifest in the image dir. Surfaces (not swallows) tar read errors."""
@@ -98,6 +101,9 @@ def find_manifest(image_dir, tar_path):
     return None
 
 
+# NOTE: intentionally NOT verify_lib's check_no_placeholders — diverges (regex
+# __[A-Z_]+__ has no digits vs lib's __[A-Z][A-Z0-9_]*__; also prints a PASS
+# line, lib doesn't) — see fleet-image-base-plan.md Task 6.
 def check_no_placeholders(text, label, failures):
     found = re.findall(r'__[A-Z_]+__', text)
     if found:

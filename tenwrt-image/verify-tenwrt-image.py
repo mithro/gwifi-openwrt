@@ -81,6 +81,11 @@ def read_rootfs(image_dir):
     return None, None, None
 
 
+# NOTE: intentionally NOT verify_lib's find_manifest — returns CONTENT of the
+# sorted-first *.manifest, vs lib's PATH of the mtime-newest; same name+arity
+# as verify_lib.find_manifest but different return type — importing it
+# without deleting this local def would be silently shadowed. See
+# fleet-image-base-plan.md Task 6.
 def find_manifest(image_dir):
     for name in sorted(os.listdir(image_dir)):
         if name.endswith(".manifest"):
@@ -112,6 +117,9 @@ def main():
         else:
             print("  PASS %s: %s rendered" % (label, key))
 
+    # NOTE: intentionally NOT verify_lib's check_no_placeholders — diverges
+    # (regex __[A-Z_]+__ has no digits vs lib's __[A-Z][A-Z0-9_]*__; also
+    # prints a PASS line, lib doesn't) — see fleet-image-base-plan.md Task 6.
     def check_no_ph(content, label):
         ph = re.findall(r'__[A-Z_]+__', content)
         if ph:
