@@ -255,8 +255,9 @@ else echo "FAIL: uci op sequences diverge"; exit 1; fi
 
 - [ ] **Step 2.3: Also assert the retry-path (missing br-lan → nonzero exit)**
 
-Append to the test, before the final PASS line — both scripts must exit nonzero when
-the board section is absent (uci-defaults keeps + retries):
+Append to the test, before the final PASS line — the NEW bootstrap must exit
+nonzero when the board section is absent (uci-defaults keeps + retries; the old
+monolith is frozen history and needs no assertion):
 
 ```sh
 printf 'network.@device[0].name=something-else\n' > "$SB/state"
