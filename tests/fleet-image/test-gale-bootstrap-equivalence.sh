@@ -32,7 +32,16 @@ run_one() {  # $1=script $2=oplog
 }
 run_one "$SB/old.sh" "$SB/old.log" || { echo "FAIL: old bootstrap rc!=0"; exit 1; }
 run_one "$SB/new.sh" "$SB/new.log" || { echo "FAIL: new bootstrap rc!=0"; exit 1; }
-grep -v -e '^set openwisp\.http\.mac_interface=' -e '^commit openwisp' \
+# Allowed-ops filter must be exact, not a blunt strip: a grep -v removes EVERY
+# matching line, so a future bootstrap emitting the mac_interface set/commit
+# twice (or in a loop) would still slip through. Require each allowed pattern
+# to occur 0 or 1 times in new.log (0 today: the pre-refactor monolith emits
+# neither; 1 once Task 4's driver always emits both) — never more.
+mac_count=$(grep -c '^set openwisp\.http\.mac_interface=' "$SB/new.log")
+commit_count=$(grep -c '^commit openwisp$' "$SB/new.log")
+[ "$mac_count" -le 1 ] || { echo "FAIL: mac_interface set appears $mac_count times (expected 0 or 1)"; exit 1; }
+[ "$commit_count" -le 1 ] || { echo "FAIL: commit openwisp appears $commit_count times (expected 0 or 1)"; exit 1; }
+grep -v -e '^set openwisp\.http\.mac_interface=' -e '^commit openwisp$' \
 	"$SB/new.log" > "$SB/new.filtered"
 diff -u "$SB/old.log" "$SB/new.filtered" || { echo "FAIL: uci op sequences diverge"; exit 1; }
 
@@ -42,6 +51,8 @@ printf 'network.@device[0].name=something-else\n' > "$SB/state"
 : > "$SB/retry.log"
 if env PATH="$SB/bin:$PATH" UCI_STATE="$SB/state" UCI_LOG="$SB/retry.log" \
 	sh "$SB/new.sh" 2> "$SB/retry.stderr"; then
-	echo "FAIL: new bootstrap must exit nonzero without br-lan"; exit 1
+	echo "FAIL: new bootstrap must exit nonzero without br-lan"
+	cat "$SB/retry.stderr" >&2
+	exit 1
 fi
 echo "ALL PASS"

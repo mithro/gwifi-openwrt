@@ -17,8 +17,8 @@ state_del() { awk -v k="$1=" 'index($0, k) != 1' "$UCI_STATE" > "$UCI_STATE.new"
 case "$cmd" in
 get)      state_get "$1" ;;
 set)      log "set $1"; k=${1%%=*}; state_del "$k"; printf '%s\n' "$1" >> "$UCI_STATE" ;;
-add_list) log "add_list $1" ;;
-del_list) log "del_list $1" ;;
+add_list) log "add_list $1" ;;   # logged only: does NOT mutate $UCI_STATE —
+del_list) log "del_list $1" ;;   #   a later `get` cannot observe list contents
 delete)   log "delete $1"; state_del "$1" ;;
 rename)   log "rename $1" ;;
 commit)   log "commit ${1:-}" ;;
