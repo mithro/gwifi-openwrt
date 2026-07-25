@@ -46,6 +46,7 @@ FIELD_TO_HEADER: dict[str, str] = {
     "wifi_wl_guest_2g4":   "wl-guest-2g4",
     "wifi_wl_guest_5g":    "wl-guest-5g",
     "wifi_wl_iot_2g4":     "wl-iot-2g4",
+    "wifi_wl_iot_5g":      "wl-iot-5g",   # added to the simple profile 2026-07-25
     "wifi_mesh_2g4":       "mesh-2g4",
     "wifi_mesh_5g":        "mesh-5g",
 }
@@ -75,7 +76,7 @@ LIVE_OVERWRITE_FIELDS: frozenset[str] = frozenset({
     "upstream",
     "wifi_wl_main_2g4", "wifi_wl_main_5g",
     "wifi_wl_guest_2g4", "wifi_wl_guest_5g",
-    "wifi_wl_iot_2g4",
+    "wifi_wl_iot_2g4", "wifi_wl_iot_5g",
     "wifi_mesh_2g4", "wifi_mesh_5g",
 })
 

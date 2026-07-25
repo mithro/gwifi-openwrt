@@ -474,10 +474,10 @@ def test_update_live_allows_upstream_overwrite_only():
 def test_extended_header_width_covers_all_new_columns():
     """len(get_extended_header()) is the column count the ranges must span."""
     ext = get_extended_header(RENAMED_HEADER)
-    # 28 existing + 5 appended (guest x2, iot, mesh x2) = 33 columns (A..AG)
-    assert len(ext) == 33
+    # 28 existing + 6 appended (guest x2, iot x2, mesh x2) = 34 columns (A..AH)
+    assert len(ext) == 34
     assert ext[28:] == ["wl-guest-2g4", "wl-guest-5g", "wl-iot-2g4",
-                        "mesh-2g4", "mesh-5g"]
+                        "wl-iot-5g", "mesh-2g4", "mesh-5g"]
 
 
 def test_update_live_allows_wifi_bssid_overwrite():

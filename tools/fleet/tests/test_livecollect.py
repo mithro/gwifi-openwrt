@@ -32,6 +32,7 @@ def test_parse_iw_dev():
         "wl-main-5g":   "42:07:0b:01:a2:24",
         "wl-guest-5g":  "46:07:0b:01:a2:24",
         "wl-iot-2g4":   "42:07:0b:01:a2:28",
+        "wl-iot-5g":    "4e:07:0b:01:a2:24",
         "mesh-2g4":     "4e:07:0b:01:a2:28",
         "wl-guest-2g4": "46:07:0b:01:a2:28",
         "wl-main-2g4":  "44:07:0b:01:a2:28",
@@ -57,7 +58,7 @@ def test_upstream_from_lldp_dumb_switch_returns_none():
 
 
 def test_missing_wifi_interface_detected():
-    """A puck missing one of the 7 expected wifi interfaces must fail loud."""
+    """A puck missing one of the 8 expected wifi interfaces must fail loud."""
     from galeflash.livecollect import check_wifi_complete
     macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
     check_wifi_complete("puck12", macs)  # complete — no raise

@@ -31,6 +31,12 @@ phy#1
 		multicast TXQ:
 			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
 			0	0	0	0	0	0	0	0		0
+phy#1
+	Interface wl-iot-5g
+		ifindex 38
+		wdev 0x10
+		addr 4e:07:0b:01:a2:24
+		type AP
 phy#0
 	Interface wl-iot-2g4
 		ifindex 37

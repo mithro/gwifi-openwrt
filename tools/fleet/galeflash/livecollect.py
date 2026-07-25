@@ -11,12 +11,14 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-# The 7 wireless interfaces every production gale puck runs (2026-07-22
-# image).  A live puck missing one is an error, not a gap to skip.
+# The 8 wireless interfaces every production gale puck runs (the
+# openwisp-managed simple profile added wl-iot-5g, first seen live
+# 2026-07-25 on puck03).  A live puck missing one is an error, not a gap
+# to skip.
 EXPECTED_WIFI_IFACES: frozenset[str] = frozenset({
     "wl-main-2g4", "wl-main-5g",
     "wl-guest-2g4", "wl-guest-5g",
-    "wl-iot-2g4",
+    "wl-iot-2g4", "wl-iot-5g",
     "mesh-2g4", "mesh-5g",
 })
 
