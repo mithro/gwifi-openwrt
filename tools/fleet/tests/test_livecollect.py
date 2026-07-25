@@ -46,6 +46,18 @@ def test_ethernet_macs_from_ip_link():
     assert wan == "44:07:0b:01:a2:21"
 
 
+def test_bridge_mac_from_ip_link():
+    from galeflash.livecollect import bridge_mac_from_ip_link
+    doc = json.loads((FIXTURES / "puck12_ip_link.json").read_text())
+    assert bridge_mac_from_ip_link(doc) == "44:07:0b:01:a2:21"
+
+
+def test_bridge_mac_missing_br0_fails_loud():
+    from galeflash.livecollect import bridge_mac_from_ip_link
+    with pytest.raises(ValueError, match="br0"):
+        bridge_mac_from_ip_link([{"ifname": "lan", "address": "aa:bb:cc:dd:ee:01"}])
+
+
 def test_upstream_from_lldp_managed_switch():
     doc = json.loads((FIXTURES / "puck12_lldp.json").read_text())
     up = upstream_from_lldp(doc)

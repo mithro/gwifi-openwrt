@@ -106,6 +106,23 @@ def ethernet_macs_from_ip_link(doc: list[dict]) -> tuple[str, str]:
         raise ValueError(f"ip -j link missing interface: {exc}") from exc
 
 
+def bridge_mac_from_ip_link(doc: list[dict]) -> str:
+    """Return br0's MAC from an ``ip -j link`` document.
+
+    br0 carries the VPD wan MAC even when the DSA user ports' netdev MACs
+    have been clobbered with a locally-administered address by a config
+    apply (observed 2026-07-25: rebooted puck07 reported the same
+    4a:4b:fd:... on both lan and wan).  The DSA conduit eth0 is NOT usable
+    for this — its MAC is random per boot — so br0 is the stable fallback
+    identity anchor.
+    """
+    by_name = {i["ifname"]: i for i in doc}
+    try:
+        return by_name["br0"]["address"]
+    except KeyError as exc:
+        raise ValueError(f"ip -j link missing interface: {exc}") from exc
+
+
 def upstream_from_lldp(doc: dict) -> str | None:
     """Extract 'shortname port <id>' from lldpcli -f json0 output.
 

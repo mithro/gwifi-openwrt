@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from galeflash.livecollect import (
     check_wifi_complete,
+    bridge_mac_from_ip_link,
     ethernet_macs_from_ip_link,
     merge_live_fields,
     parse_iw_dev,
@@ -125,9 +126,17 @@ def collect_one(reg, inventory_dir: Path) -> str:
 
     lan_mac, wan_mac = ethernet_macs_from_ip_link(json.loads(s["iplink"]))
     if (lan_mac.lower(), wan_mac.lower()) != (reg.lan_mac, reg.wan_mac):
-        raise ValueError(
-            f"{reg.name}: live MACs lan={lan_mac} wan={wan_mac} do not match "
-            f"registry lan={reg.lan_mac} wan={reg.wan_mac} — identity mismatch")
+        # A config apply can clobber the DSA user ports' netdev MACs with a
+        # locally-administered address; br0 keeps the VPD wan MAC (see
+        # bridge_mac_from_ip_link) — identity falls back to it.
+        conduit = bridge_mac_from_ip_link(json.loads(s["iplink"])).lower()
+        if conduit != reg.wan_mac:
+            raise ValueError(
+                f"{reg.name}: live MACs lan={lan_mac} wan={wan_mac} "
+                f"(br0={conduit}) do not match registry "
+                f"lan={reg.lan_mac} wan={reg.wan_mac} — identity mismatch")
+        print(f"  {reg.name}: lan/wan netdev MACs are config-clobbered "
+              f"(lan={lan_mac} wan={wan_mac}); identity via br0={conduit}")
 
     wifi_macs = parse_iw_dev(s["iwdev"])
     check_wifi_complete(reg.name, wifi_macs)
