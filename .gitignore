@@ -34,3 +34,7 @@ tmp/
 !gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin
 !gale-ec-systemmem-bootloader-2026-06-04.bin
 !gale-ec-optionbytes-2026-06-04.bin
+
+# Exception: the Renode equivalence harness vendors the option bytes (a copy of
+# the dump above, sha256 cdb247d4…) so the harness is self-contained.
+!gale-ec/renode/data/gale-optionbytes.bin

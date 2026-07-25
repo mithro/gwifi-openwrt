@@ -1,0 +1,10 @@
+# Dedicated base for the spi_dma_wait SR-busy-timeout coverage session ONLY.
+# Identical to base.resc, then swaps the stock spi2 controller for GaleSpi (which has a ForceBusy knob),
+# at MACHINE-BUILD time (before boot) so no runtime LoadPlatformDescriptionFromString is needed later
+# (a runtime one disrupts CreateExecutionTracing). gale's boot does NOT use spi2 (the SPI-flash bridge is
+# console-triggered), so a non-bridging GaleSpi during boot is harmless; the knobs (ForceBusy etc.) are
+# set via mon after boot so boot itself sees a benign not-busy SR.
+include $h/base.resc
+sysbus Unregister sysbus.spiflash
+sysbus Unregister sysbus.spi2
+machine LoadPlatformDescriptionFromString "galespi: Miscellaneous.GaleSpi @ sysbus 0x40003800"

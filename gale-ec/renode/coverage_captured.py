@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""Branch-coverage measurement of the CAPTURED DEVICE firmware (the reference).
+
+The captured firmware is a raw flash dump with no ELF/symbols, so branches are enumerated by
+DISASSEMBLING THE RAW BINARY (objdump -b binary, Thumb) — RO at 0x08000000, RW at 0x08010000.
+A PC execution trace is captured while the firmware runs the test suite, then mapped against
+that disassembly to compute instruction + both-directions branch coverage.
+
+Per the project goal: the captured firmware is the reference; every branch in it must be
+reachable and executed by the emulation test suite. The test scenarios here are
+address-INDEPENDENT (console commands, sysjump, deliberate crashes, AP host commands via the
+GaleI2c injector — the firmware fills its own buffers), so they run identically on the captured
+and rebuilt firmwares.
+
+Usage: uv run python coverage_captured.py [--bin <captured>] [--boot 2.0]
+"""
+import argparse
+import os
+import re
+import subprocess
+
+import coverage_full
+import hostcmd   # reuse the address-independent scenario helpers (console-edit, faults, cmd args)
+import rda       # validated recursive-descent disassembler -> honest branch denominator
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.path.join(HERE, "base.resc")
+# System cross-binutils (arm-none-eabi-* on PATH); no external toolchain dir needed.
+OBJDUMP = "arm-none-eabi-objdump"
+CAPTURED = os.path.join(HERE, "..", "..", "gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin")
+TMP = os.path.join(HERE, "tmp")
+COND = re.compile(r'\b(b(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le)|cbz|cbnz)(\.[nw])?\b')
+
+RO_CMDS = ["version", "sysinfo", "gettime", "taskinfo", "timerinfo", "gpioget", "adc",
+           "panicinfo", "chan", "flashinfo", "shmem", "history", "hcdebug", "hostevent",
+           "pd 0 state", "pd 0 srccaps", "pd dump 3", "tcpc", "typec", "syslock", "waitms 1",
+           "gpioget LID_OPEN", "md 0x20000000", "flashwp", "gale",
+           # hash command (command_hash, 13 unreached): no-arg status + recompute RO/RW + abort
+           "hash", "hash ro", "hash rw", "hash 0x10000 0x100", "hash abort", "hash bogus"]
+CRASH = ["crash unaligned", "crash divzero", "crash udf", "crash assert", "crash watchdog"]
+# Console commands with VALID + ERROR args (address-independent) -> command_* parsing + vfnprintf
+CMD_ARGS = [
+    "help", "help pd", "help gpioget", "help xyzzy", "version foo",
+    "gpioget EC_INT_L", "gpioget NOPE", "gpioset EC_INT_L 1", "gpioset BADPIN 1",
+    "md 0x20000000 4", "md .b 0x08000000", "md badaddr", "rw 0x20000000", "rw badaddr",
+    "spixfer rlen 0 0x9f 3", "spixfer 0", "spixfer badarg",
+    "pd 0", "pd 9 state", "pd 0 bogus", "pd 0 dump 9", "pd 0 trysrc 1",
+    # full command_pd subcommand surface (correct syntax: `pd dualrole ...` has no port arg) —
+    # drives the command_pd dispatch branches AND initiates PD actions (soft/hard reset, swaps, VDM)
+    "pd dualrole", "pd dualrole on", "pd dualrole off", "pd dualrole sink", "pd dualrole source",
+    "pd dump", "pd dump 0", "pd dump 2", "pd enable 0", "pd enable 1", "pd trysrc 0", "pd trysrc 1",
+    "pd 0 state", "pd 0 soft", "pd 0 hard", "pd 0 ping", "pd 0 swap power", "pd 0 swap data",
+    "pd 0 swap bogus", "pd 0 vdm ping", "pd 0 vdm curr", "pd 0 vdm vers", "pd 0 tx",
+    "pd 0 bist_rx", "pd 0 bist_tx", "pd 0 charger", "pd 0 clock 48000000", "pd 0 dev 20",
+    "pd 0 dualrole sink", "pd 0 dualrole toggle-off", "pd 0 dualrole freeze",
+    "tcpc 0", "typec 0", "flashwp bogus", "flashwp enable", "flashwp now", "flashwp disable",
+    "chan 0", "chan save", "chan restore", "hcdebug params", "gale power on ap", "gale power off ap",
+    "reboot ro", "hibernate 1"]
+
+
+def _hc_packet(cmd, ver, sver, dlen, data, bad_csum=False):
+    """Build an I2C host-command write payload: 0xda + ec_host_request + data + checksum."""
+    req = [sver & 0xFF, 0x00, cmd & 0xFF, (cmd >> 8) & 0xFF, ver & 0xFF, 0x00,
+           dlen & 0xFF, (dlen >> 8) & 0xFF] + list(data)
+    req[1] = ((-sum(req)) & 0xFF) ^ (0xA5 if bad_csum else 0)
+    return "da" + "".join("%02x" % b for b in req)
+
+
+def host_cmd_battery():
+    """EC host-command packets driving host_command_process + hc_* — valid commands AND the
+    error cases ported from test/host_command.c (each flips a different host_command_process
+    branch: SUCCESS / INVALID_COMMAND / INVALID_VERSION / INVALID_HEADER / REQUEST_TRUNCATED /
+    INVALID_CHECKSUM)."""
+    out = []
+    # Valid commands (cover hc_* handlers)
+    for cmd, dlen, data in [(0x0001, 4, [0x44, 0x33, 0x22, 0x11]),  # HELLO in_data=0x11223344
+                            (0x0002, 0, []), (0x0003, 0, []), (0x0004, 0, []), (0x0005, 0, []),
+                            (0x0006, 0, []), (0x0007, 4, [0, 0, 0, 0]), (0x0008, 2, [1, 0]),
+                            (0x000b, 0, []), (0x0010, 0, []), (0x000d, 0, []), (0x000f, 0, [])]:
+        out.append(_hc_packet(cmd, 0, 3, dlen, data))
+    # Error cases (ported from test/host_command.c) -> host_command_process error branches
+    out.append(_hc_packet(0x00ff, 0, 3, 0, []))                 # invalid command -> INVALID_COMMAND
+    out.append(_hc_packet(0x0001, 1, 3, 4, [0, 0, 0, 0]))       # wrong cmd version -> INVALID_VERSION
+    out.append(_hc_packet(0x0001, 0, 4, 4, [0, 0, 0, 0]))       # struct_version 4 -> INVALID_HEADER
+    out.append(_hc_packet(0x0001, 0, 2, 4, [0, 0, 0, 0]))       # struct_version 2 -> INVALID_HEADER
+    out.append(_hc_packet(0x0001, 0, 3, 0xFFFF, []))            # huge data_len -> REQUEST_TRUNCATED
+    out.append(_hc_packet(0x0001, 0, 3, 4, [0, 0, 0, 0], bad_csum=True))  # bad checksum -> INVALID_CHECKSUM
+    return out
+
+
+def _pd_contract_post():
+    """Address-independent live PD contract: ForceSourceCc sink-attach + queue-delivered
+    Source_Caps/Accept/PS_RDY + counter-based auto-GoodCRC (no per-firmware RAM addresses)."""
+    import pd_encode
+    def hexmsg(m):
+        sm = pd_encode.encode_message(*m)
+        return (sm + bytes([(sm[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])).hex()
+    c = ['sysbus.dma1 ClearResponses', 'sysbus.dma1 ReactiveEnabled true']
+    for i in range(8):
+        c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, hexmsg(pd_encode.ctrl(1, i)))]
+    # Reactive-partner replies: Accept (slots 0-7, for soft-reset / DR/PR/VCONN swaps) + Sink_Cap
+    # (slot 8, for Get_Sink_Cap). The C# partner decodes gale's TX and delivers the matching reply,
+    # so the swap/reset handshakes complete -> pd_task's SNK_SWAP_*/SOFT_RESET/DR_SWAP states run.
+    sink_cap = (pd_encode.header(4, 1, 0), [0x2601912C])   # PD_DATA_SINK_CAP + a fixed 5V sink PDO
+    for i in range(8):
+        c += ['sysbus.dma1 SetReply %d "%s"' % (i, hexmsg(pd_encode.ACCEPT(i)))]
+    c += ['sysbus.dma1 SetReply 8 "%s"' % hexmsg(sink_cap)]
+    for m in (pd_encode.SRC_CAP, pd_encode.ACCEPT(1), pd_encode.PS_RDY(2)):
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)]
+    def fire(t):
+        f = ['sysbus.dma1 ExpectContractMsg']
+        for _ in range(3):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+        return f + ['emulation RunFor "%s"' % t]
+    c += fire("0.2") + fire("0.2") + fire("0.4")
+    # GALE-INITIATED actions from a clean SNK_READY (BEFORE the disruptive battery), with the
+    # REACTIVE partner auto-Accepting each so the swap/soft-reset handshakes complete and pd_task's
+    # SNK_SWAP_*/SOFT_RESET/DR_SWAP states run. After each console action, fire the COMP IRQ so
+    # gale's pd_rx_start pops the auto-GoodCRC then the reactive reply.
+    def cc(scmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
+    # FIX: fire WITHOUT ExpectContractMsg for gale-initiated swaps so the RX window delivers the
+    # pendingGoodCrc(GoodCRC) then replyQueue(Accept) the handshake needs (ExpectContractMsg would
+    # force a queued contract msg into the slot and break the swap). Also fix vdm vers->version.
+    def fire_swap(t):
+        f = []
+        for _ in range(4):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000008"']
+        return f + ['emulation RunFor "%s"' % t]
+    for action in ("pd 0 swap data", "pd 0 swap power", "pd 0 swap vconn",
+                   "pd 0 vdm version", "pd 0 soft"):
+        c += cc(action) + ['emulation RunFor "0.05"'] + fire_swap("0.15") + fire_swap("0.15")
+    # SNK_READY: inject a broad set of message TYPES the EC dispatches -> handle_ctrl_request /
+    # handle_data_request / pd_svdm branches. ctrl types: GOTO_MIN2 ACCEPT3 REJECT4 PING5 PS_RDY6
+    # GET_SRC_CAP7 GET_SNK_CAP8 DR_SWAP9 PR_SWAP10 VCONN_SWAP11 WAIT12 SOFT_RESET13.
+    mid = 3
+    msgs = []
+    for t in (8, 7, 9, 10, 11, 12, 5, 2, 4, 13, 6, 3):
+        msgs.append(pd_encode.ctrl(t, mid)); mid += 1
+    # VDM commands: Discover Identity(1)/SVIDs(2)/Modes(3)/Enter(4)/Exit(5) + a data SOURCE_CAP.
+    for vcmd in (1, 2, 3, 4, 5):
+        vdm = (0xFF00 << 16) | (1 << 15) | (0 << 6) | vcmd
+        msgs.append((pd_encode.header(15, 1, mid), [vdm])); mid += 1
+    msgs.append(pd_encode.SRC_CAP)            # re-send Source_Caps in READY (re-request path)
+    for m in msgs:
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.1")
+    c += cc("pd 0 hard") + ['emulation RunFor "0.3"']   # hard reset last (tears down the contract)
+    return c
+
+
+def _src_contract_post():
+    """Drive gale AS SOURCE through a full source contract (the previously-mis-excused SRC states).
+    With GaleAdc.PartnerSink (CC1 in the source Rd band, CC2 open) and `pd dualrole source`, gale
+    enters SRC_STARTUP -> SRC_DISCOVERY and TX's Source_Caps; we deliver a sink Request (FireComp
+    contract msg), and the counter-based auto-GoodCRC acks gale's own TXs (Source_Caps/Accept/
+    PS_RDY), driving SRC_NEGOCIATE -> SRC_ACCEPTED -> SRC_TRANSITION -> SRC_READY. Then exercise
+    ready-state requests so the source ready-state handlers run."""
+    import pd_encode
+    def hexmsg(m):
+        sm = pd_encode.encode_message(*m)
+        return (sm + bytes([(sm[-1] + 8 * (i + 1)) & 0xFF for i in range(8)])).hex()
+    def cc(scmd):
+        return ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (scmd + "\r")]
+    def fire(t):
+        f = ['sysbus.dma1 ExpectContractMsg']
+        for _ in range(3):
+            f += ['sysbus.exti FireComp 21', 'emulation RunFor "0.000005"']
+        return f + ['emulation RunFor "%s"' % t]
+    c = ['sysbus.dma1 ClearResponses']
+    for i in range(8):
+        c += ['sysbus.dma1 SetGoodCrc %d "%s"' % (i, hexmsg(pd_encode.ctrl(1, i)))]
+    c += cc("pd dualrole source") + ['emulation RunFor "1.2"']   # -> SRC_DISCOVERY (TX Source_Caps)
+    # Deliver the sink Request, then Get_Sink_Cap-ack window; gale's Accept/PS_RDY auto-GoodCRC'd.
+    for m in (pd_encode.REQUEST(2), pd_encode.REQUEST(3)):
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(m)] + fire("0.3")
+    # SRC_READY: drive ready-state requests the source responds to (Get_Source_Cap / VDM / swaps).
+    mid = 4
+    for t in (7, 8, 9, 10, 11, 5, 2):    # GET_SRC_CAP GET_SNK_CAP DR_SWAP PR_SWAP VCONN_SWAP PING GOTO_MIN
+        c += ['sysbus.dma1 StageResponse "%s"' % hexmsg(pd_encode.ctrl(t, mid))] + fire("0.1"); mid += 1
+    return c
+
+
+def _fault_hc_post():
+    """Inject flash hardware faults DURING the flash host commands so the flash_command_* /
+    flash_physical_* error-return paths (WRPRTERR / PGERR / busy-timeout / EC_RES_ERROR) run, not
+    just the success side. Each: arm a GaleFlash fault knob, then send the matching EC_CMD_FLASH_*
+    packet via the GaleI2c injector. Also re-run them clean so both directions of each guard flip."""
+    def hc(cmd, ver, sver, data):
+        return 'sysbus.i2c1 HostCmd "%s"' % hostcmd._pkt(cmd, ver, sver, data)
+    le = hostcmd._le32
+    c = []
+    seq = [
+        ("sysbus.flashif InjectProgErr true",      0x12, le(0x18000) + le(4) + le(0xDEADBEEF)),  # FLASH_WRITE prog-fail
+        ("sysbus.flashif InjectWriteProtErr true", 0x13, le(0x18000) + le(0x800)),               # FLASH_ERASE wp-fail
+        ("sysbus.flashif StuckBusy true",          0x12, le(0x18000) + le(4) + le(0x11223344)),  # FLASH_WRITE busy-timeout
+        ("sysbus.flashif StuckBusy false",         0x10, []),                                     # FLASH_INFO (clear)
+        ("sysbus.flashif InjectProgErr true",      0x15, le(1) + le(1)),                          # FLASH_PROTECT set under fault
+    ]
+    for knob, cmd, data in seq:
+        c += [knob, hc(cmd, 0, 3, data), 'emulation RunFor "0.06"']
+    # clean re-runs (success direction)
+    for cmd, data in ((0x13, le(0x18000) + le(0x800)), (0x12, le(0x18000) + le(4) + le(0)), (0x15, le(0) + le(0))):
+        c += [hc(cmd, 0, 3, data), 'emulation RunFor "0.06"']
+    return c
+
+
+def _usb_post():
+    """Drive USB device enumeration on the captured (CCD via SNK_ACCESSORY brings up usb_init).
+    A broad EP0 SETUP battery exercises ep0_rx's request dispatch: GET_DESCRIPTOR (device/config/
+    string indices), SET_ADDRESS, SET/GET_CONFIGURATION, GET_STATUS, CLEAR/SET_FEATURE, the vendor
+    USB_SPI_ENABLE (iface 3), and an unsupported request (STALL path). EP0 RX buffer at PMA+0x80
+    (btable_ep[0].rx_addr read live; BTABLE=0). Addresses are USB-hardware PMA = firmware-independent."""
+    import usb_host
+    ep0 = 0x40006080
+    setups = [
+        usb_host.GET_DEV,                       # GET_DEVICE_DESCRIPTOR
+        [0x0680, 0x0200, 0x0000, 0x0040],       # GET_CONFIG_DESCRIPTOR
+        [0x0680, 0x0300, 0x0000, 0x00ff],       # GET_STRING_DESCRIPTOR idx0 (langid)
+        [0x0680, 0x0301, 0x0409, 0x00ff],       # GET_STRING idx1
+        [0x0680, 0x0302, 0x0409, 0x00ff],       # GET_STRING idx2
+        [0x0680, 0x0600, 0x0000, 0x000a],       # GET_DEVICE_QUALIFIER (often STALLed)
+        [0x8000, 0x0000, 0x0000, 0x0002],       # GET_STATUS (device)
+        [0x0500, 0x0005, 0x0000, 0x0000],       # SET_ADDRESS 5
+        usb_host.SET_CFG,                       # SET_CONFIGURATION(1)
+        [0x8008, 0x0000, 0x0000, 0x0001],       # GET_CONFIGURATION
+        [0x0100, 0x0000, 0x0000, 0x0000],       # CLEAR_FEATURE
+        [0x0300, 0x0000, 0x0000, 0x0000],       # SET_FEATURE
+        [0x0900, 0x0000, 0x0000, 0x0000],       # SET_CONFIGURATION(0)
+        usb_host.SET_CFG,                       # re-SET_CONFIGURATION(1)
+        usb_host.SPI_EN,                        # vendor USB_SPI_ENABLE -> iface 3
+        [0x00ff, 0x0000, 0x0000, 0x0000],       # unsupported request -> STALL
+    ]
+    c = ['sysbus.usb SignalReset', 'emulation RunFor "0.1"']
+    for hws in setups:
+        c += usb_host.setup_ep0(ep0, hws)
+    # raiden SPI bridge over USB (usb_spi on ep3 for the captured: tx_addr 0x140, rx_addr 0x180) —
+    # drives the never-entered usb_spi / ep-handler functions (RDID 0x9f -> ef4017). btable ep3
+    # rx_count at PMA + 3*8 + 6 = 0x4000601E.
+    c += usb_host.raiden_cmds(3, 0x40006180, 0x40006140, 0x40006000 + 3 * 8 + 6)
+    return c
+
+
+def scenarios(boot):
+    s = [("ro", [], RO_CMDS, boot, [])]
+    # Live USB-PD contract (ForceSourceCc = address-independent sink attach) — RO + RW
+    s.append(("pd", ['sysbus.adc ForceSourceCc true'], [], "2.0", _pd_contract_post()))
+    s.append(("pd_rw", ['sysbus.adc ForceSourceCc true'], ["sysjump rw"], "2.0", _pd_contract_post()))
+    # Debug accessory -> SRC_ACCESSORY -> ccd_set_mode -> usb_init/CCD + raiden over the bridge.
+    s.append(("ccd", ['sysbus.adc ForceAccessory true'],
+              ["spixfer rlen 0 0x1f 3", "spixfer 500 0x9f", "pd 0 state", "typec", "version"], "2.5", []))
+    s.append(("ccd_rw", ['sysbus.adc ForceAccessory true'],
+              ["sysjump rw", "spixfer rlen 0 0x1f 3", "pd 0 state"], "2.5", []))
+    # SOURCE contract (gale forced source + sink partner) -> SRC_STARTUP..SRC_READY + source
+    # ready-state handlers (the previously-mis-excused source-role states). RO + RW.
+    s.append(("src", ['sysbus.adc PartnerSink true'], [], "1.5", _src_contract_post()))
+    s.append(("src_rw", ['sysbus.adc PartnerSink true'], ["sysjump rw"], "1.5", _src_contract_post()))
+    # USB enumeration: CCD (SNK_ACCESSORY) brings up usb_init, then an EP0 SETUP battery exercises
+    # ep0_rx / descriptor handling / usb_spi. VERIFIED: captured returns a valid device descriptor.
+    s.append(("usb", ['sysbus.adc ForceAccessory true'], [], "2.5", _usb_post()))
+    s.append(("usb_rw", ['sysbus.adc ForceAccessory true'], ["sysjump rw"], "2.5", _usb_post()))
+    # Flash faults injected DURING the flash host commands -> flash_command_*/flash_physical_*
+    # error-return branches (write/erase/protect failure paths), then clean re-runs.
+    s.append(("fault_hc", [], [], boot, _fault_hc_post()))
+    s.append(("fault_hc_rw", [], ["sysjump rw"], boot, _fault_hc_post()))
+    # Reset-cause variety: set the RCC_CSR reset-flag register (0x40021024) pre-boot so
+    # check_reset_cause() reads each cause (genuine HW state = what a real reset leaves behind):
+    # watchdog 0x60000000, soft 0x10000000, power-on 0x08000000, pin 0x04000000, other 0x02000000.
+    for tag, csr in (("wdt", 0x60000000), ("soft", 0x10000000), ("por", 0x08000000),
+                     ("pin", 0x04000000), ("other", 0x02000000)):
+        s.append(("rst_" + tag, ['sysbus WriteDoubleWord 0x40021024 0x%08X' % csr],
+                  ["sysinfo", "panicinfo"], "0.6", []))
+    s.append(("rw", [], ["sysjump rw"] + RO_CMDS, boot, []))
+    for c in CRASH:
+        s.append(("crash_" + c.split()[1], [], [c], boot, []))
+        s.append(("crashrw_" + c.split()[1], [], ["sysjump rw", c], boot, []))
+    # AP host commands (address-independent injector) — RO and RW
+    hc = hostcmd.post([])
+    s.append(("hostcmd", [], [], boot, hc))
+    s.append(("hostcmd_rw", [], ["sysjump rw"], boot, hc))
+    # address-independent high-yield scenarios (reused from coverage_full)
+    s.append(("cmd_args", [], CMD_ARGS, boot, []))
+    s.append(("cmd_args_rw", [], ["sysjump rw"] + CMD_ARGS, boot, []))
+    s.append(("console_edit", [], [], boot, coverage_full._edit_bytes()))
+    s.append(("console_edit_rw", [], ["sysjump rw"], boot, coverage_full._edit_bytes()))
+    s.append(("flash_fault", [], [], boot, coverage_full._fault_post()))
+    s.append(("flash_fault_rw", [], ["sysjump rw"], boot, coverage_full._fault_post()))
+    return s
+
+
+# .text (code) ranges — branches/instructions outside these are .rodata/.data mis-disassembled
+# as Thumb and must NOT be counted. Bounds from the equivalent rebuilt ELF (.text size 0xb744,
+# RO @0x08000000, RW @0x08010000); the captured firmware shares this layout (same source).
+TEXT_RANGES = [(0x08000000, 0x0800b744), (0x08010000, 0x0801b744)]
+
+
+def _in_text(addr):
+    return any(lo <= addr < hi for lo, hi in TEXT_RANGES)
+
+
+def disasm_branches(binpath):
+    """Disassemble the raw binary (Thumb) at 0x08000000; return (insn addrs, cond branch map).
+    Only .text-range instructions are counted (excludes .rodata/.data false branches)."""
+    out = subprocess.run([OBJDUMP, "-D", "-b", "binary", "-marm", "-Mforce-thumb",
+                          "--adjust-vma=0x08000000", binpath],
+                         stdout=subprocess.PIPE, universal_newlines=True).stdout
+    insns, cond = {}, {}
+    for ln in out.splitlines():
+        m = re.match(r'\s*([0-9a-f]+):\s+([0-9a-f ]+?)\s+(\S.*)$', ln)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        if not _in_text(addr):
+            continue
+        nb = len(m.group(2).replace(" ", "")) // 2
+        insns[addr] = nb
+        cm = COND.search(m.group(3))
+        if cm:
+            tm = re.search(r'\b([0-9a-f]+)\s+<', m.group(3)) or re.search(r'#?(0x[0-9a-f]+)', m.group(3))
+            if tm:
+                cond[addr] = (addr + nb, int(tm.group(1), 16))
+    return set(insns), cond
+
+
+# Hard per-process RSS ceiling for each renode (mono) instance via a transient systemd cgroup
+# scope. RLIMIT_AS is unusable here — mono reserves tens of GB of *virtual* space, so an address-
+# space cap kills it even at modest real usage; MemoryMax caps actual resident memory and the
+# cgroup OOM-kills only if the run genuinely exceeds it. One gale machine + a file-streamed trace
+# sits well under 2.5 GiB. Override with RENODE_MEM_MAX (systemd size, e.g. "3G").
+RENODE_MEM_MAX = os.environ.get("RENODE_MEM_MAX", "2500M")
+
+
+def _renode_cmd(monitor_script):
+    base = ["renode", "--disable-gui", "--console", "-e", monitor_script]
+    # Prefer a cgroup RSS cap; fall back to bare renode if systemd-run is unavailable.
+    if _HAVE_SYSTEMD_RUN:
+        return ["systemd-run", "--user", "--scope", "-q",
+                "-p", "MemoryMax=%s" % RENODE_MEM_MAX, "-p", "MemorySwapMax=0"] + base
+    return base
+
+
+def _have_systemd_run():
+    try:
+        return subprocess.run(["systemd-run", "--user", "--scope", "-q", "true"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+_HAVE_SYSTEMD_RUN = _have_systemd_run()
+
+
+def run_scenario(name, mon, cmds, boot, post, binpath):
+    trace = os.path.join(TMP, "cap_%s.txt" % name)
+    c = ['$h=@%s' % HERE, '$bin=@%s' % binpath, '$name="cap"', 'include @%s' % BASE] + mon
+    c += ['cpu CreateExecutionTracing "tr_%s" @%s PC' % (name, trace), 'emulation RunFor "%s"' % boot]
+    for cmd in cmds:
+        c += ['sysbus.usart1 WriteChar %d' % ord(ch) for ch in (cmd + "\r")]
+        c.append('emulation RunFor "0.06"')
+    c += (post or [])
+    c += ['cpu DisableExecutionTracing', 'quit']
+    # Single renode at a time (no parallelism), RSS-capped via a transient systemd scope.
+    subprocess.run(_renode_cmd("; ".join(c)),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=900)
+    return trace
+
+
+def fold_edges(path, executed, edges):
+    """Pass 1: collect executed PCs and the set of directed control-flow edges (prev -> pc) from
+    a trace. We do NOT need the branch map yet — the rda denominator is built afterward, seeded by
+    `executed`, then taken/not-taken are derived from `edges`. Edges are deduplicated, so memory is
+    bounded by the number of distinct transitions, not trace length."""
+    prev = None
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for ln in f:
+            ln = ln.strip()
+            if not ln.startswith("0x"):
+                prev = None
+                continue
+            pc = int(ln, 16)
+            executed.add(pc)
+            if prev is not None:
+                edges.add((prev, pc))
+            prev = pc
+    os.remove(path)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", default=CAPTURED)
+    ap.add_argument("--boot", default="2.0")
+    ap.add_argument("--reuse", action="store_true",
+                    help="reuse cached executed/edges from the last run (skip renode) — for fast "
+                         "re-analysis after denominator/reporting changes")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated scenario names to (re)run; ACCUMULATES into the cache "
+                         "(loads existing, unions new coverage) instead of overwriting it")
+    args = ap.parse_args()
+    os.makedirs(TMP, exist_ok=True)
+    binpath = os.path.abspath(args.bin)
+    scns = scenarios(args.boot)
+    only = set(args.only.split(",")) if args.only else None
+    if only:
+        scns = [t for t in scns if t[0] in only]
+    # bin-specific cache so running on the rebuilt firmware can't clobber the captured campaign cache
+    cache = os.path.join(TMP, "rebuilt_trace_cache.pkl" if "rebuilt" in os.path.basename(binpath)
+                         else "cap_trace_cache.pkl")
+    print("CAPTURED firmware coverage: %s (%d scenarios)" % (os.path.basename(binpath), len(scns)))
+
+    # Pass 1: run every scenario, collecting executed PCs + control-flow edges (or reuse the cache).
+    executed, edges = set(), set()
+    if args.reuse and os.path.exists(cache):
+        import pickle
+        with open(cache, "rb") as f:
+            executed, edges = pickle.load(f)
+        print("  reusing cached trace: %d executed PCs, %d edges" % (len(executed), len(edges)))
+    else:
+        import pickle
+        # --only ACCUMULATES: seed from the existing cache so a partial re-run unions new coverage
+        # instead of discarding the other scenarios' 949-both-dirs contribution.
+        if only and os.path.exists(cache):
+            with open(cache, "rb") as f:
+                executed, edges = pickle.load(f)
+            print("  accumulating into cache: %d executed PCs, %d edges" % (len(executed), len(edges)))
+        # SERIAL: one renode at a time (keeps peak memory low — no concurrent VM instances). Each
+        # renode process is additionally memory-capped (see run_scenario).
+        for (n, m, c, b, p) in scns:
+            print("  scenario: %-16s" % n)
+            fold_edges(run_scenario(n, m, c, b, p, binpath), executed, edges)
+        with open(cache, "wb") as f:
+            pickle.dump((executed, edges), f)
+
+    # HONEST, FIXED denominator: recursive-descent disassembly (rda, validated 0-FP/0-FN vs the
+    # rebuilt ELF) seeded by the vector table, EVERY function-pointer-table target, AND every
+    # executed PC. Seeding with the pointer-table targets (DECLARE_HOST_COMMAND / CONSOLE / HOOK /
+    # task list) makes the denominator COMPLETE and STABLE — it counts the branches inside
+    # functions the suite has not yet entered, so the total does not grow as coverage improves.
+    # No flat-disasm phantom branches.
+    seeds = set(executed) | rda.ptr_targets(binpath)
+    insns, cond, calls = rda.analyze(binpath, extra_seeds=seeds)
+    taken = set(a for a in cond if (a, cond[a][1]) in edges)         # branch -> target edge seen
+    nottaken = set(a for a in cond if (a, cond[a][0]) in edges)      # branch -> fall-through seen
+
+    reached = [a for a in cond if a in executed]
+    both = [a for a in cond if a in taken and a in nottaken]
+    ex = executed & insns
+    print("\n=== CAPTURED firmware (rda denominator) ===")
+    print("  instructions: %d executed / %d in recursive-descent code" % (len(ex), len(insns)))
+    print("  cond branches: %d total (rda), %d reached, %d both-dirs covered" %
+          (len(cond), len(reached), len(both)))
+    print("  branch coverage: %.1f%% of total, %.1f%% of reached both-dirs" %
+          (100.0 * len(both) / max(len(cond), 1), 100.0 * len(both) / max(len(reached), 1)))
+
+    # Every uncovered branch (unreached, or reached one-direction-only) with its state, for the
+    # grind / exclusion-justification analysis.
+    uncov = sorted(a for a in cond if a not in (taken & nottaken))
+    with open(os.path.join(HERE, "cap_uncovered.txt"), "w") as f:
+        for a in uncov:
+            if a not in executed:
+                st = "unreached"
+            elif a in taken:
+                st = "taken-only"
+            elif a in nottaken:
+                st = "nottaken-only"
+            else:
+                st = "reached-nofold"
+            f.write("0x%08x %s\n" % (a, st))
+    print("  wrote %d uncovered branches -> cap_uncovered.txt" % len(uncov))
+
+    # Completeness pass: function-pointer-table targets the suite never entered (dead-code
+    # candidates to drive or justify) — the union check the goal demands ("no dead code").
+    ptrs = rda.ptr_targets(binpath)
+    never = sorted(p for p in ptrs if p not in executed)
+    with open(os.path.join(HERE, "cap_unentered_funcs.txt"), "w") as f:
+        for p in never:
+            f.write("0x%08x\n" % p)
+    print("  pointer-table targets never entered: %d -> cap_unentered_funcs.txt" % len(never))
+
+
+if __name__ == "__main__":
+    main()

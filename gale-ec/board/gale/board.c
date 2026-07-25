@@ -193,7 +193,12 @@ void usb_spi_board_disable(struct usb_spi_config const *config)
 	spi_enable(CONFIG_SPI_FLASH_PORT, 0);
 }
 
-USB_SPI_CONFIG(usb_spi, USB_IFACE_SPI, USB_EP_SPI);
+/*
+ * The raiden SPI bridge over USB (interface 3 / endpoint 4) is owned by
+ * common/case_closed_debug.c's USB_SPI_CONFIG(ccd_usb_spi, ...) and enabled by
+ * ccd_set_mode(). With CONFIG_CASE_CLOSED_DEBUG we must not also declare a
+ * board-level usb_spi on the same iface/ep (duplicate iface3/ep4 symbols).
+ */
 
 /******************************************************************************
  * ADC channels (ordered by AIN id for STM32F0).
