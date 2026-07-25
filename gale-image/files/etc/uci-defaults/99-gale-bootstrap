@@ -1,63 +1,31 @@
 #!/bin/sh
-# 99-gale-bootstrap — first-boot network/mesh setup for gale auto-provisioning.
-# Idempotent: uses fixed UCI section names so re-runs overwrite, not duplicate.
-# VLAN map: NAME=VID. mgmt(5) gets DHCP; the rest are L2-only (APs attach later).
-VLANS="mgmt=5 int=10 roam=20 iot=90 guest=99"
+# 99-gale-bootstrap — first-boot setup: the MINIMUM needed to reach the
+# OpenWISP controller (wisp). Everything else — APs, radios, client VLANs,
+# steering, lldpd, syslog — is delivered by OpenWISP templates after the
+# agent registers. Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
+#
+# Ports are named after the case markings (eth-black = globe-icon jack =
+# uplink; eth-blue = the other jack, unbridged and link-down here).
+# Network shape: ONE VLAN-aware bridge br0 with the single trunk port
+# eth-black; mgmt VLAN 4 untagged+pvid, DHCP from wisp (10.1.4.2).
+# Per-VLAN software bridges over 8021q uppers of a DSA port do not work
+# when the port is also hw-offload-bridged untagged (qca8k claims tagged
+# ingress); the supported DSA pattern is vlan_filtering=1 + bridge-vlans.
+. /lib/gwifi/bootstrap.sh
 
-# --- batman-adv core (bat0) + the 802.11s hardif join ---
-uci -q batch <<'EOF'
-set network.bat0=interface
-set network.bat0.proto='batadv'
-set network.bat0.routing_algo='BATMAN_IV'
-set network.bat0.bridge_loop_avoidance='1'
-set network.bat0.distributed_arp_table='1'
-set network.bat0.gw_mode='client'
-set network.mesh_hardif=interface
-set network.mesh_hardif.proto='batadv_hardif'
-set network.mesh_hardif.master='bat0'
-set network.mesh_hardif.mtu='1536'
-EOF
-
-for kv in $VLANS; do
-	name=${kv%=*}; vid=${kv#*=}
-	# tagged sub-iface on the wired DSA trunk port 'wan'
-	uci set network.wan_$vid="device"
-	uci set network.wan_$vid.type='8021q'
-	uci set network.wan_$vid.ifname='wan'
-	uci set network.wan_$vid.vid="$vid"
-	uci set network.wan_$vid.name="wan.$vid"
-	# tagged sub-iface on the batman mesh
-	uci set network.bat_$vid="device"
-	uci set network.bat_$vid.type='8021q'
-	uci set network.bat_$vid.ifname='bat0'
-	uci set network.bat_$vid.vid="$vid"
-	uci set network.bat_$vid.name="bat0.$vid"
-	# per-VLAN bridge: wired + mesh (APs auto-attach via wifi-iface network=)
-	uci set network.br_$name="device"
-	uci set network.br_$name.type='bridge'
-	uci set network.br_$name.name="br-$name"
-	uci -q delete network.br_$name.ports
-	uci add_list network.br_$name.ports="wan.$vid"
-	uci add_list network.br_$name.ports="bat0.$vid"
-	# interface on the bridge
-	uci set network.$name="interface"
-	uci set network.$name.device="br-$name"
-	if [ "$name" = "mgmt" ]; then
-		uci set network.$name.proto='dhcp'
-	else
-		uci set network.$name.proto='none'
-	fi
-done
-uci commit network
-
-# --- backhaul-gating: 1-min cron re-assert + ensure crond runs (idempotent) ---
-CRON=/etc/crontabs/root
-LINE='* * * * * /usr/sbin/gwifi-backhaul-gate --once'
-mkdir -p /etc/crontabs
-{ [ -f "$CRON" ] && grep -qF "$LINE" "$CRON"; } || echo "$LINE" >> "$CRON"
-/etc/init.d/cron enable || true
-/etc/init.d/cron restart || true
-# Fail-closed boot: the gate defaults serve=OFF until it confirms backhaul; the
-# hotplug hook fires as interfaces come up, so the first evaluation runs at boot.
-
+# On the true first boot this can run before the board network config exists:
+# exit NONZERO so uci-defaults keeps the script and retries next boot.
+if ! gwifi_adopt_board_bridge eth-black; then
+	echo "gale-bootstrap: br-lan device not found (board config not" \
+	     "generated yet?) — will retry next boot" >&2
+	exit 1
+fi
+gwifi_pin_bridge_mac eth-blue
+gwifi_mgmt_vlan 'eth-black:u*'
+gwifi_mgmt_iface
+gwifi_dns_dhcp
+gwifi_firewall_mgmt
+# Device identity MAC = the wan port (the printed label MAC that OpenWISP
+# devices are pre-created with).
+gwifi_openwisp_mac wan
 exit 0

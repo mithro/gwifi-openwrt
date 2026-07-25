@@ -2,39 +2,53 @@
 set -eu
 HERE=$(cd "$(dirname "$0")" && pwd)
 OWRT=${OWRT:-/home/tim/local/gwifi/openwrt}
+# fleet-secrets.conf lives OUTSIDE the repo (om2p/tenwrt convention; gale moved
+# off gale-secrets.conf — design spec §4.2). The in-repo default path never
+# exists, so runs always say FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf
+# and fleet_require_secrets' error explains that when forgotten.
 FLEET_SECRETS=${FLEET_SECRETS:-$HERE/../fleet-secrets.conf}
-[ -f "$FLEET_SECRETS" ] || { echo "missing $FLEET_SECRETS (copy from fleet-secrets.conf.example)"; exit 1; }
-# shellcheck disable=SC1090
-. "$FLEET_SECRETS"
-: "${OPENWISP_SHARED_SECRET:?}"; : "${MESH_SAE_KEY:?}"; : "${MESH_ID:?}"; : "${OPENWISP_URL:?}"
+SECRETS_VARS="OPENWISP_SHARED_SECRET MESH_SAE_KEY MESH_ID OPENWISP_URL TOPOLOGY_RECEIVE_URL"
+OVERLAYS="$HERE/../fleet-image/files $HERE/files"
+# gale-netconsole is a parity ADDITION to the old chmod list (it is already
+# 100755 in git, so this is a no-op belt-and-braces line).
+CHMOD_FILES="etc/uci-defaults/99-gale-bootstrap etc/init.d/gwifi-topology
+             usr/sbin/gwifi-topology-push usr/sbin/gale-mesh-bootstrap
+             etc/init.d/gale-netconsole"
+# shellcheck disable=SC1091
+. "$HERE/../fleet-image/build-lib.sh"
+fleet_require_secrets
+fleet_render
+fleet_render_only_gate
 
-# 1) render overlay into the build tree (gitignored there)
-rm -rf "$OWRT/files"
-cp -a "$HERE/files" "$OWRT/files"
-# merge the shared fleet overlay (canonical source for cross-image files)
-cp -a "$HERE/../fleet-files/." "$OWRT/files/"
-# Escape sed replacement metacharacters (\, &, |) so a secret containing them
-# substitutes literally rather than corrupting the rendered config (backslash
-# first, to avoid double-escaping).
-esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/&/\\&/g' -e 's/|/\\|/g'; }
-ss=$(esc "$OPENWISP_SHARED_SECRET"); mk=$(esc "$MESH_SAE_KEY")
-mi=$(esc "$MESH_ID"); ou=$(esc "$OPENWISP_URL")
-find "$OWRT/files" -type f -exec sed -i \
-	-e "s|__OPENWISP_SHARED_SECRET__|$ss|g" \
-	-e "s|__MESH_SAE_KEY__|$mk|g" \
-	-e "s|__MESH_ID__|$mi|g" \
-	-e "s|__OPENWISP_URL__|$ou|g" {} +
-chmod 0755 "$OWRT/files/etc/uci-defaults/99-gale-bootstrap"
-chmod 0755 "$OWRT/files/usr/sbin/gwifi-backhaul-gate" \
-           "$OWRT/files/etc/hotplug.d/net/30-gwifi-backhaul"
+# image id — the netboot installer's idempotence marker; sidecar emitted at
+# the out/ step so publish (gwifi-netboot publish) keeps manifest and baked
+# marker in sync. See docs/wisp-netboot-install-design.md §5.5.
+fleet_image_id gale-openwrt
 
-[ "${RENDER_ONLY:-0}" = "1" ] && { echo "rendered overlay to $OWRT/files (RENDER_ONLY)"; exit 0; }
+gale_targets() {
+	printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n'
+}
+fleet_seed_config gale_targets gale.config
 
-# 2) seed config: stock device config + our fragment
-{ printf 'CONFIG_TARGET_ipq40xx=y\nCONFIG_TARGET_ipq40xx_chromium=y\nCONFIG_TARGET_ipq40xx_chromium_DEVICE_google_wifi=y\n';
-	cat "$HERE/gale.config"; } > "$OWRT/.config"
-( cd "$OWRT" && make defconfig )
+# Force the rootfs image to regenerate: OpenWrt caches root.squashfs and does
+# NOT rebuild it when only files/ changes — it shipped a squashfs baked with a
+# STALE image-id marker on 2026-07-18 (installer post-flash check failed every
+# reflash). Removing the outputs makes make rebuild them from the current
+# staging, which carries the marker just written above.
+rm -f "$OWRT"/build_dir/target-*/linux-ipq40xx_chromium/root.squashfs \
+      "$OWRT"/bin/targets/ipq40xx/chromium/*-google_wifi-squashfs-factory.bin
+fleet_build
 
-# 3) build
-( cd "$OWRT" && make -j"${JOBS:-6}" )
-echo "images: $OWRT/bin/targets/ipq40xx/chromium/"
+# out/ artifacts + sidecar: bin/targets is SHARED with other builds (the
+# installer build regenerates factory.bin there with stock files). Publishing
+# from bin/targets shipped a stock image to the fleet on 2026-07-12. Always
+# publish from out/.
+BIN="$OWRT/bin/targets/ipq40xx/chromium/openwrt-ipq40xx-chromium-google_wifi-squashfs-factory.bin"
+OUT="$HERE/out"
+mkdir -p "$OUT"
+cp "$BIN" "$OUT/factory-$IMAGE_ID.bin"
+ln -sf "factory-$IMAGE_ID.bin" "$OUT/factory.bin"
+printf '%s\n' "$IMAGE_ID" > "$OUT/factory.bin.image-id"
+echo "artifact: $OUT/factory-$IMAGE_ID.bin"
+echo "sidecar: $OUT/factory.bin.image-id ($IMAGE_ID)"
+echo "publish from $OUT - never from bin/targets"

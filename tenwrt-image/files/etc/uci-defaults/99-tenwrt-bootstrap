@@ -1,76 +1,38 @@
 #!/bin/sh
-# 99-tenwrt-bootstrap — first-boot network/mesh setup for the ten64 Wi-Fi VM.
-# Idempotent: fixed UCI section names so re-runs overwrite, not duplicate.
-# VLAN map: NAME=VID. mgmt(5) gets DHCP; the rest are L2-only (APs attach later).
-# Uplink is a single virtio TRUNK NIC (eth0) carrying all VLANs (cf. gale's DSA 'wan').
-VLANS="mgmt=5 int=10 roam=20 iot=90 guest=99"
-UPLINK=eth0
+# 99-tenwrt-bootstrap — first-boot wisp-connectivity for the ten64 Wi-Fi VM
+# (KVM guest 'tenwrt'): exact simple-profile parity with the pucks — bake ONLY
+# what reaches the OpenWISP controller. APs and the client VLAN legs arrive
+# via OpenWISP templates after registration (gwifi-base post-reload-hook keys
+# on the eth0 trunk). Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
+#
+# Uplink: single virtio TRUNK NIC eth0 on ten64's br-raw (floods all tagged
+# frames), so mgmt VLAN 4 rides TAGGED here — pucks get it untagged from
+# their switch port. A QEMU guest matches no armsr board case, so no board
+# network exists: create br0 from scratch (no retry path needed).
+. /lib/gwifi/bootstrap.sh
 
-# --- batman-adv core (bat0) + the 802.11s hardif join ---
-uci -q batch <<'EOF'
-set network.bat0=interface
-set network.bat0.proto='batadv'
-set network.bat0.routing_algo='BATMAN_IV'
-set network.bat0.bridge_loop_avoidance='1'
-set network.bat0.distributed_arp_table='1'
-set network.bat0.gw_mode='client'
-set network.mesh_hardif=interface
-set network.mesh_hardif.proto='batadv_hardif'
-set network.mesh_hardif.master='bat0'
-set network.mesh_hardif.mtu='1536'
-EOF
+uci set system.@system[0].hostname='tenwrt'
+uci commit system
 
-for kv in $VLANS; do
-	name=${kv%=*}; vid=${kv#*=}
-	# tagged sub-iface on the virtio trunk NIC ($UPLINK)
-	uci set network.up_$vid="device"
-	uci set network.up_$vid.type='8021q'
-	uci set network.up_$vid.ifname="$UPLINK"
-	uci set network.up_$vid.vid="$vid"
-	uci set network.up_$vid.name="$UPLINK.$vid"
-	# tagged sub-iface on the batman mesh
-	uci set network.bat_$vid="device"
-	uci set network.bat_$vid.type='8021q'
-	uci set network.bat_$vid.ifname='bat0'
-	uci set network.bat_$vid.vid="$vid"
-	uci set network.bat_$vid.name="bat0.$vid"
-	# per-VLAN bridge: wired + mesh (APs auto-attach via wifi-iface network=)
-	uci set network.br_$name="device"
-	uci set network.br_$name.type='bridge'
-	uci set network.br_$name.name="br-$name"
-	uci -q delete network.br_$name.ports
-	uci add_list network.br_$name.ports="$UPLINK.$vid"
-	uci add_list network.br_$name.ports="bat0.$vid"
-	# interface on the bridge
-	uci set network.$name="interface"
-	uci set network.$name.device="br-$name"
-	if [ "$name" = "mgmt" ]; then
-		uci set network.$name.proto='dhcp'
-	else
-		uci set network.$name.proto='none'
-	fi
-done
-uci commit network
+gwifi_create_bridge eth0
+gwifi_mgmt_vlan 'eth0:t'
+gwifi_mgmt_iface
+gwifi_dns_dhcp
+gwifi_firewall_mgmt
+# Device identity MAC = the virtio NIC (fixed by the libvirt domain XML).
+gwifi_openwisp_mac eth0
 
-# --- backhaul-gating: 1-min cron re-assert + ensure crond runs (idempotent) ---
-CRON=/etc/crontabs/root
-LINE='* * * * * /usr/sbin/gwifi-backhaul-gate --once'
-mkdir -p /etc/crontabs
-{ [ -f "$CRON" ] && grep -qF "$LINE" "$CRON"; } || echo "$LINE" >> "$CRON"
-/etc/init.d/cron enable || true
-/etc/init.d/cron restart || true
-# Fail-closed boot: the gate defaults serve=OFF until it confirms backhaul; the
-# hotplug hook fires as interfaces come up, so the first evaluation runs at boot.
-
-# --- radios: assign mesh/band roles by driver (no-op until passthrough exists) ---
+# Radios (VFIO passthrough) may already be present at first boot: normalize
+# radio0=2.4GHz / radio1=5GHz so the OpenWISP gwifi-aps template binds.
+# No-op with no phy (pre-passthrough / smoke boot).
 [ -x /usr/sbin/gwifi-radio-setup ] && /usr/sbin/gwifi-radio-setup || true
 
-# First-boot completion marker. uci-defaults stdout is captured by logd, NOT shown on
-# the serial console, so write it to /dev/console explicitly — visible to an operator
-# watching the console and observable by qemu-smoke-boot.py. Fall back to stdout.
+# First-boot completion marker. uci-defaults stdout is captured by logd, NOT
+# shown on the serial console, so write it to /dev/console explicitly —
+# visible to an operator and observable by qemu-smoke-boot.py.
 if [ -w /dev/console ]; then
-	echo "TENVM-BOOTSTRAP-COMPLETE uplink=$UPLINK" > /dev/console
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=eth0" > /dev/console
 else
-	echo "TENVM-BOOTSTRAP-COMPLETE uplink=$UPLINK"
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=eth0"
 fi
 exit 0

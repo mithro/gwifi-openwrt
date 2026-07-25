@@ -1,0 +1,38 @@
+ipq40xx: chromium: google_wifi (gale): declare the on-board ChromeOS EC
+
+The gale EC is an I2C slave to the AP at 0x1e on blsp1_i2c4 (the 78b8000
+bus, /dev/i2c-1 in Linux), speaking the cros_ec host-command protocol v3.
+The stock manufacturer devicetree never declared it, so upstream OpenWrt
+has no node and cros_ec_i2c cannot bind. Add the node so, with
+CONFIG_CROS_EC{,_I2C,_CHARDEV} enabled (set from gale.config via the
+CONFIG_KERNEL_ passthrough), the AP gets /dev/cros_ec and can issue host
+commands (HELLO/GET_VERSION/USB_PD_CONTROL/USB_PD_PORTS — validated live
+2026-07-18).
+
+No AP-side EC interrupt is wired for host use, so the node omits
+`interrupts`; cros_ec treats the irq as optional (host commands are
+synchronous), so polled reads work without it.
+
+Tested against: OpenWrt v25.12.4 (r32933-4ccb782af7).
+
+--- a/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-wifi.dts
++++ b/target/linux/ipq40xx/files-6.12/arch/arm/boot/dts/qcom/qcom-ipq4019-wifi.dts
+@@ -323,6 +323,18 @@
+ 	pinctrl-names = "default";
+ 	status = "okay";
+
++	/*
++	 * ChromeOS EC (gale_v1.1.5337). It is an I2C slave to the AP at 0x1e
++	 * on this bus, speaking the cros_ec host-command protocol (v3). Not in
++	 * the stock manufacturer DT; validated live 2026-07-18. No AP-side
++	 * interrupt is wired to us, so this node omits `interrupts` — cros_ec
++	 * treats the irq as optional and host commands are synchronous.
++	 */
++	cros_ec: ec@1e {
++		compatible = "google,cros-ec-i2c";
++		reg = <0x1e>;
++	};
++
+ 	led-controller@32 {
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;

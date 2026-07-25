@@ -1,0 +1,107 @@
+package: kernel: add kmod-cros-ec (ChromeOS EC driver family)
+
+Package the cros_ec driver family (enabled =m by patch 0003) so the .ko are
+installed and the transport chain auto-loaded, bringing up /dev/cros_ec on the
+gale puck. OpenWrt installs only packaged kernel modules, so without this the
+=m .ko would build but never reach the image.
+
+Owns the cros-specific modules plus typec.ko (which OpenWrt does not package);
+depends on kmod-mfd and kmod-usb-roles for the shared mfd-core.ko / roles.ko
+rather than double-owning them. Restricted to the ipq40xx/chromium subtarget.
+
+Validated on puck12 2026-07-18 (image g6f0edc8): 22 modules load, no file
+conflicts (mfd-core.ko owned by kmod-mfd, roles.ko by kmod-usb-roles),
+/dev/cros_ec works, EC version read in-band via /sys/class/chromeos/cros_ec.
+
+Tested against: OpenWrt v25.12.4 (r32933-4ccb782af7).
+
+diff --git a/package/kernel/linux/modules/cros-ec.mk b/package/kernel/linux/modules/cros-ec.mk
+new file mode 100644
+index 0000000000..b997715ad2
+--- /dev/null
++++ b/package/kernel/linux/modules/cros-ec.mk
+@@ -0,0 +1,84 @@
++# SPDX-License-Identifier: GPL-2.0-only
++#
++# ChromeOS Embedded Controller (cros_ec) module family for the gale puck.
++# The gale EC is an I2C slave to the AP at 0x1e on blsp1_i2c4 (see the DT node
++# in openwrt-patches). The symbols are enabled =m in the ipq40xx/chromium
++# subtarget kernel config; this file packages the resulting .ko so they are
++# installed and (for the core transport) auto-loaded, bringing up /dev/cros_ec.
++
++define KernelPackage/cros-ec
++  SUBMENU:=Other modules
++  TITLE:=ChromeOS Embedded Controller (cros_ec) full family
++  DEPENDS:=@TARGET_ipq40xx_chromium +kmod-usb-roles +kmod-mfd
++  KCONFIG:= \
++	CONFIG_CHROME_PLATFORMS=y \
++	CONFIG_CROS_EC \
++	CONFIG_CROS_EC_PROTO=y \
++	CONFIG_CROS_EC_I2C \
++	CONFIG_CROS_EC_SPI \
++	CONFIG_MFD_CROS_EC_DEV \
++	CONFIG_MFD_CORE \
++	CONFIG_CROS_EC_CHARDEV \
++	CONFIG_CROS_EC_SYSFS \
++	CONFIG_CROS_EC_DEBUGFS \
++	CONFIG_CROS_EC_LIGHTBAR \
++	CONFIG_CROS_EC_VBC \
++	CONFIG_CROS_EC_SENSORHUB \
++	CONFIG_CROS_USBPD_LOGGER \
++	CONFIG_CROS_USBPD_NOTIFY \
++	CONFIG_REGULATOR_CROS_EC \
++	CONFIG_RTC_DRV_CROS_EC \
++	CONFIG_GPIO_CROS_EC \
++	CONFIG_I2C_CROS_EC_TUNNEL \
++	CONFIG_EXTCON_USBC_CROS_EC \
++	CONFIG_CHARGER_CROS_USBPD \
++	CONFIG_CHARGER_CROS_PCHG \
++	CONFIG_LEDS_CROS_EC \
++	CONFIG_TYPEC \
++	CONFIG_USB_ROLE_SWITCH \
++	CONFIG_CROS_EC_TYPEC
++  FILES:= \
++	$(LINUX_DIR)/drivers/usb/typec/typec.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_i2c.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_spi.ko \
++	$(LINUX_DIR)/drivers/mfd/cros_ec_dev.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_chardev.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_sysfs.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_debugfs.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_lightbar.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_ec_vbc.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros-ec-sensorhub.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_usbpd_logger.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros_usbpd_notify.ko \
++	$(LINUX_DIR)/drivers/platform/chrome/cros-ec-typec.ko \
++	$(LINUX_DIR)/drivers/regulator/cros-ec-regulator.ko \
++	$(LINUX_DIR)/drivers/rtc/rtc-cros-ec.ko \
++	$(LINUX_DIR)/drivers/gpio/gpio-cros-ec.ko \
++	$(LINUX_DIR)/drivers/i2c/busses/i2c-cros-ec-tunnel.ko \
++	$(LINUX_DIR)/drivers/extcon/extcon-usbc-cros-ec.ko \
++	$(LINUX_DIR)/drivers/power/supply/cros_usbpd-charger.ko \
++	$(LINUX_DIR)/drivers/power/supply/cros_peripheral_charger.ko \
++	$(LINUX_DIR)/drivers/leds/leds-cros_ec.ko
++  # Autoload the transport chain so /dev/cros_ec comes up at boot; the consumer
++  # drivers are installed and load in dependency order (harmless if they find
++  # no matching device on gale's minimal EC).
++  AUTOLOAD:=$(call AutoProbe, \
++	cros_ec cros_ec_i2c cros_ec_spi cros_ec_dev \
++	cros_ec_chardev cros_ec_sysfs cros_ec_debugfs cros_ec_lightbar \
++	cros_ec_vbc cros-ec-sensorhub roles typec cros_usbpd_notify \
++	cros_usbpd_logger cros-ec-typec extcon-usbc-cros-ec \
++	cros_usbpd-charger cros_peripheral_charger cros-ec-regulator rtc-cros-ec \
++	gpio-cros-ec i2c-cros-ec-tunnel leds-cros_ec)
++endef
++
++define KernelPackage/cros-ec/description
++ The full ChromeOS Embedded Controller driver family as kernel modules:
++ the cros_ec core + I2C/SPI transports + MFD chardev/sysfs/debugfs (giving
++ /dev/cros_ec for host commands), plus the sub-function and consumer drivers
++ (regulator, rtc, gpio, i2c-tunnel, extcon, usbpd charger/notify/logger,
++ typec, sensorhub, lightbar, vbc, leds, hps). Validated in-band channel:
++ EC at 0x1e on /dev/i2c-1, host-command protocol v3.
++endef
++
++$(eval $(call KernelPackage,cros-ec))

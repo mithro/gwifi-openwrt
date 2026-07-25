@@ -1,0 +1,18 @@
+config controller 'http'
+	option url '__OPENWISP_URL__'
+	option shared_secret '__OPENWISP_SHARED_SECRET__'
+	option interval '120'
+	option verify_ssl '1'
+	# VLAN 4 (br0.4) is the management network: it carries the wisp/OpenWISP
+	# host (10.1.4.2) and each puck's stable reserved 10.1.4.x lease, so the
+	# OpenWISP ping check can always reach it. br-mgmt (VLAN 5) was wrong — it
+	# only ever gets a link-local on wired/mesh-isolated pucks, which the ping
+	# check can't reach, marking the device "problem" (found on puck10/06).
+	option management_interface 'br0.4'
+	# mac_interface (device-identity MAC source) is per-image: each image's
+	# uci-defaults bootstrap driver sets it (gale: 'wan' = printed label MAC
+	# the OpenWISP devices are pre-created with; tenwrt: 'eth0' = the virtio
+	# MAC fixed by the libvirt domain XML). The default (br-lan) no longer
+	# exists on any fleet image and fell back to a random bridge MAC,
+	# creating junk devices (found live on puck12, 2026-07-12).
+	option uuid ''

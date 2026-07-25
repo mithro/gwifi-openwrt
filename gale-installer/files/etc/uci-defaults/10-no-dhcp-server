@@ -1,0 +1,11 @@
+#!/bin/sh
+# The stock initramfs runs dnsmasq serving 192.168.1.x on br-lan. A
+# PARKED installer therefore leaks rogue DHCP offers onto the mgmt VLAN
+# — puck07's installer answered its own wan-side DISCOVER with
+# 192.168.1.230 and wedged its install (2026-07-12). The installer must
+# never serve DHCP/DNS: it is a client only.
+/etc/init.d/dnsmasq stop 2>/dev/null
+/etc/init.d/dnsmasq disable 2>/dev/null
+/etc/init.d/odhcpd stop 2>/dev/null
+/etc/init.d/odhcpd disable 2>/dev/null
+exit 0

@@ -33,27 +33,38 @@ and the first-install runbook in
 
 ## Build
 
-1. Fill the **shared** fleet secrets (one file for gale + om2p + templates):
+1. Fill the **shared** fleet secrets file (one file for gale + om2p + tenwrt +
+   templates), which lives **outside this repo**:
    ```sh
-   cp fleet-secrets.conf.example fleet-secrets.conf   # at the repo root
-   chmod 600 fleet-secrets.conf
-   $EDITOR fleet-secrets.conf
+   cp fleet-secrets.conf.example /home/tim/local/gwifi/fleet-secrets.conf
+   chmod 600 /home/tim/local/gwifi/fleet-secrets.conf
+   $EDITOR /home/tim/local/gwifi/fleet-secrets.conf
    ```
    Set `OPENWISP_SHARED_SECRET` (org `default` shared secret) and `MESH_SAE_KEY`
    (the ONE fleet mesh key — must match the deployed pucks / gale image).
-   `MESH_ID` and `OPENWISP_URL` are pre-filled.
+   `MESH_ID` and `OPENWISP_URL` are pre-filled. (om2p does not use
+   `TOPOLOGY_RECEIVE_URL` — gale-only.)
 
 2. Build (from the repo root):
    ```sh
-   ./om2p-image/build-om2p-image.sh
+   FLEET_SECRETS=/home/tim/local/gwifi/fleet-secrets.conf ./om2p-image/build-om2p-image.sh
    ```
+   The script builds from the shared `fleet-image/` base (`build-lib.sh` +
+   `.config` seeded as target lines + `fleet-image/base.config` +
+   `om2p.config`; later fragments win, which is how `om2p.config` turns off
+   base packages it can't afford for the 7168k fit) but keeps its **own**
+   overlay content (`files/` + `../fleet-files/`, no `fleet-image/files/`) —
+   mesh-era bootstrap unchanged, protected by the same render byte-diff gate
+   as gale (see `../fleet-image/README.md`).
+
    The first run compiles the `ath79` (mips_24kc) toolchain — budget ~30–60 min.
    To build a single revision instead of all four (per-device fallback):
    ```sh
    DEVICES="openmesh_om2p-lc" ./om2p-image/build-om2p-image.sh
    ```
    `OWRT=`, `FLEET_SECRETS=`, `JOBS=`, and `RENDER_ONLY=1` (render the overlay
-   only, no build) are honored as env overrides.
+   only, no build — the no-regression gates' seam) are honored as env
+   overrides.
 
 ## Outputs
 
@@ -75,6 +86,7 @@ manifest, and that each image is **≤ 7168 KiB**. Never prints secrets.
 
 ## Secret handling
 
-`fleet-secrets.conf` is untracked (gitignored, shared with gale). Committed
-overlay files contain only placeholders (`__OPENWISP_SHARED_SECRET__`, etc.).
-Built `.bin`s contain the substituted secrets and must not be published.
+`/home/tim/local/gwifi/fleet-secrets.conf` is untracked and lives outside
+this repo (shared with gale/tenwrt). Committed overlay files contain only
+placeholders (`__OPENWISP_SHARED_SECRET__`, etc.). Built `.bin`s contain the
+substituted secrets and must not be published.

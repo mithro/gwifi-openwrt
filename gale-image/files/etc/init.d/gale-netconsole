@@ -1,0 +1,31 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: Apache-2.0
+# Stream kernel printk (incl. panics) to wisp over UDP — the gale fleet
+# has no accessible serial console in the field; this is the remote
+# debugging channel. Receiver: gwifi-netconsole.service on wisp :6666.
+# Loads late so br-mgmt has its DHCP address (netconsole needs a live
+# source IP/interface at module load).
+START=99
+
+TARGET_IP="10.1.4.2"
+TARGET_MAC="02:00:0a:01:04:02"   # wisp net0 (stable; encodes 10.1.4.2)
+TARGET_PORT="6666"
+DEV="br-mgmt"
+
+boot() {
+    i=0
+    while [ $i -lt 45 ]; do
+        SRC=$(ip -4 addr show "$DEV" 2>/dev/null | sed -n 's/.*inet \([0-9.]*\).*/\1/p' | head -1)
+        [ -n "$SRC" ] && break
+        sleep 2
+        i=$((i + 1))
+    done
+    if [ -z "$SRC" ]; then
+        logger -t gale-netconsole "no address on $DEV; netconsole not started"
+        return 1
+    fi
+    # '+' = extended netconsole (release feature not needed but harmless)
+    modprobe netconsole "netconsole=+6665@$SRC/$DEV,$TARGET_PORT@$TARGET_IP/$TARGET_MAC" \
+        && logger -t gale-netconsole "streaming printk from $SRC to $TARGET_IP:$TARGET_PORT" \
+        || logger -t gale-netconsole "netconsole modprobe FAILED"
+}

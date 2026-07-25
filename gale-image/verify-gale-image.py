@@ -4,8 +4,9 @@
 Usage:
     python3 verify-gale-image.py [sysupgrade.bin]
 
-Reads expected values from <script_dir>/gale-secrets.conf and asserts the
-rendered overlay + package manifest match. Never prints secret values.
+Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS)
+and asserts the rendered overlay + package manifest match. Never prints
+secret values.
 """
 
 import os
@@ -18,11 +19,16 @@ import tarfile
 import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
+from verify_lib import parse_secrets
+
 # Mirror build-gale-image.sh: derive the image dir from $OWRT (default below).
 DEFAULT_IMAGE_DIR = os.path.join(
     os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt"),
     "bin/targets/ipq40xx/chromium",
 )
+FLEET_SECRETS = os.environ.get(
+    "FLEET_SECRETS", os.path.join(SCRIPT_DIR, "..", "fleet-secrets.conf"))
 
 REQUIRED_PACKAGES = [
     "openwisp-config",
@@ -32,24 +38,6 @@ REQUIRED_PACKAGES = [
     "usteer",
     "batctl",   # matched as substring to tolerate the -default suffix
 ]
-
-
-def parse_secrets(path):
-    """Parse KEY="value" / KEY=value lines from a secrets file."""
-    secrets = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-            if not m:
-                continue
-            val = m.group(2).strip()
-            if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
-                val = val[1:-1]
-            secrets[m.group(1)] = val
-    return secrets
 
 
 def find_image(image_dir, kind):
@@ -81,16 +69,21 @@ def extract_rootfs_member(tar_path, dest_dir):
 
 
 def unsquash(squashfs_file, dest_dir):
-    # Extract only /etc — all our assertions live there, and it avoids the
-    # device nodes under /dev that unsquashfs cannot create as non-root.
+    # Extract only the trees the assertions read (/etc + /usr/sbin) — this
+    # avoids the device nodes under /dev that unsquashfs cannot create as
+    # non-root.
     out = os.path.join(dest_dir, "squashfs-root")
-    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file, "/etc", "/usr/sbin/gwifi-backhaul-gate"],
+    r = subprocess.run(["unsquashfs", "-d", out, squashfs_file,
+                        "/etc", "/usr/sbin"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("unsquashfs failed:\n%s" % r.stderr)
     return out
 
 
+# NOTE: intentionally NOT verify_lib's find_manifest(image_dir) — this is the
+# documented two-arg exception (tar-first, returns content not path); see
+# fleet-image-base-plan.md Task 6.
 def find_manifest(image_dir, tar_path):
     """Return package-manifest text: prefer the sysupgrade tar's control manifest,
     else a *.manifest in the image dir. Surfaces (not swallows) tar read errors."""
@@ -111,6 +104,9 @@ def find_manifest(image_dir, tar_path):
     return None
 
 
+# NOTE: intentionally NOT verify_lib's check_no_placeholders — diverges (regex
+# __[A-Z_]+__ has no digits vs lib's __[A-Z][A-Z0-9_]*__; also prints a PASS
+# line, lib doesn't) — see fleet-image-base-plan.md Task 6.
 def check_no_placeholders(text, label, failures):
     found = re.findall(r'__[A-Z_]+__', text)
     if found:
@@ -121,10 +117,10 @@ def check_no_placeholders(text, label, failures):
 
 def check_value(content, secrets, key, label, failures):
     """Assert secrets[key]'s value appears in content. Fails (not skips) if the
-    key is missing/empty from gale-secrets.conf. Never prints the value."""
+    key is missing/empty from the FLEET_SECRETS file. Never prints the value."""
     val = secrets.get(key)
     if not val:
-        failures.append("FAIL %s: expected key %s missing/empty in gale-secrets.conf"
+        failures.append("FAIL %s: expected key %s missing/empty in the FLEET_SECRETS file"
                         % (label, key))
     elif val not in content:
         failures.append("FAIL %s: %s value not present in rendered config"
@@ -146,19 +142,40 @@ def run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path):
         check_value(content, secrets, "OPENWISP_SHARED_SECRET", "openwisp", failures)
         check_no_placeholders(content, "openwisp", failures)
 
-    # 2) /etc/config/wireless — mesh mode + real MESH_ID + SAE key, no placeholders.
+    # 2) /etc/config/wireless — the image ships NO wireless config at all:
+    # radios + APs are delivered by OpenWISP after the agent registers.
     wireless_path = os.path.join(rootfs_dir, "etc", "config", "wireless")
-    if not os.path.isfile(wireless_path):
-        failures.append("FAIL wireless: /etc/config/wireless not found")
+    if os.path.isfile(wireless_path):
+        failures.append("FAIL wireless: /etc/config/wireless present — the "
+                        "image must ship no wireless config (wisp-managed)")
     else:
-        content = open(wireless_path).read()
-        if "mode 'mesh'" in content:
-            print("  PASS wireless: mesh mode present")
+        print("  PASS wireless: no baked wireless config")
+
+    # 2a) bootstrap uses the case-marking port names.
+    bs_path = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")
+    if os.path.isfile(bs_path) and "eth-black" in open(bs_path).read():
+        print("  PASS bootstrap: eth-black trunk port")
+    else:
+        failures.append("FAIL bootstrap: eth-black trunk port not found")
+
+    # 2b) /usr/sbin/gale-mesh-bootstrap — the preserved mesh profile:
+    # executable, mesh mode + real MESH_ID + SAE key rendered.
+    meshboot = os.path.join(rootfs_dir, "usr", "sbin", "gale-mesh-bootstrap")
+    if not os.path.isfile(meshboot):
+        failures.append("FAIL mesh-bootstrap: gale-mesh-bootstrap not found")
+    else:
+        if os.stat(meshboot).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            print("  PASS mesh-bootstrap: present and executable")
         else:
-            failures.append("FAIL wireless: \"mode 'mesh'\" not found")
-        check_value(content, secrets, "MESH_ID", "wireless", failures)
-        check_value(content, secrets, "MESH_SAE_KEY", "wireless", failures)
-        check_no_placeholders(content, "wireless", failures)
+            failures.append("FAIL mesh-bootstrap: present but not executable")
+        content = open(meshboot).read()
+        if "mode='mesh'" in content or "mode 'mesh'" in content:
+            print("  PASS mesh-bootstrap: mesh mode present")
+        else:
+            failures.append("FAIL mesh-bootstrap: mesh mode not found")
+        check_value(content, secrets, "MESH_ID", "mesh-bootstrap", failures)
+        check_value(content, secrets, "MESH_SAE_KEY", "mesh-bootstrap", failures)
+        check_no_placeholders(content, "mesh-bootstrap", failures)
 
     # 3) /etc/uci-defaults/99-gale-bootstrap exists and is executable.
     bootstrap = os.path.join(rootfs_dir, "etc", "uci-defaults", "99-gale-bootstrap")
@@ -168,21 +185,6 @@ def run_assertions(rootfs_dir, secrets, image_dir, sysupgrade_path):
         print("  PASS bootstrap: present and executable")
     else:
         failures.append("FAIL bootstrap: present but not executable")
-
-    # 5) backhaul-gate script + hotplug hook present & executable; cron wired in bootstrap.
-    gate = os.path.join(rootfs_dir, "usr", "sbin", "gwifi-backhaul-gate")
-    hook = os.path.join(rootfs_dir, "etc", "hotplug.d", "net", "30-gwifi-backhaul")
-    for path, label in ((gate, "backhaul-gate"), (hook, "backhaul-hotplug")):
-        if not os.path.isfile(path):
-            failures.append("FAIL %s: %s missing" % (label, path))
-        elif os.stat(path).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-            print("  PASS %s: present and executable" % label)
-        else:
-            failures.append("FAIL %s: present but not executable" % label)
-    if os.path.isfile(bootstrap) and "gwifi-backhaul-gate --once" in open(bootstrap).read():
-        print("  PASS bootstrap: cron line installed")
-    else:
-        failures.append("FAIL bootstrap: cron-install snippet missing")
 
     # 4) Package manifest lists the required packages.
     manifest = find_manifest(image_dir, sysupgrade_path)
@@ -210,10 +212,10 @@ def main():
 
     print("Image:   %s" % sysupgrade_path)
 
-    secrets_path = os.path.join(SCRIPT_DIR, "gale-secrets.conf")
-    if not os.path.isfile(secrets_path):
-        sys.exit("ERROR: secrets file not found: %s (copy from .example)" % secrets_path)
-    secrets = parse_secrets(secrets_path)
+    if not os.path.isfile(FLEET_SECRETS):
+        sys.exit("ERROR: secrets not found: %s (set FLEET_SECRETS="
+                 "/home/tim/local/gwifi/fleet-secrets.conf)" % FLEET_SECRETS)
+    secrets = parse_secrets(FLEET_SECRETS)
     print("Secrets: loaded (%d keys)" % len(secrets))
 
     if shutil.which("unsquashfs") is None:

@@ -1,0 +1,184 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# gale eMMC auto-installer — runs from the netbooted initramfs.
+# See gwifi-openwrt docs/wisp-netboot-install-design.md section 5.5.
+#
+# Flow: derive server from the tftpserverip= cmdline arg (appended by the
+# depthcharge netboot payload) -> fetch manifest -> compare the installed
+# /etc/gwifi-image-id marker (idempotence) -> fetch + sha256-verify +
+# dd factory image -> verify marker on the new rootfs -> phone home ->
+# reboot. ANY failure (including phone-home delivery failure, even on an
+# already-current result) => report if possible and STAY UP: serial shell
+# reachable, puck still netbootable for a retry cycle, no reboot loops.
+
+log() { echo "gale-autoinstall: $*"; }
+
+SERVER=$(sed -n 's/.*tftpserverip=\([0-9.]*\).*/\1/p' /proc/cmdline)
+[ -n "$SERVER" ] || { log "no tftpserverip in cmdline; aborting"; exit 1; }
+API="http://$SERVER:8080"
+
+# Guarded reads: NEVER `VAR=$(cat f 2>&1 || fallback)` — that captures the
+# error text into VAR when f is missing. Test readability first instead.
+MAC=""
+for f in /sys/class/net/wan/address /sys/class/net/eth0/address \
+         /sys/class/net/eth1/address; do
+    [ -r "$f" ] && MAC=$(cat "$f") && break
+done
+[ -n "$MAC" ] || { log "no MAC readable"; exit 1; }
+SERIAL=unknown
+# device-tree serial-number is NUL-terminated; tr strips it (busybox has
+# no strings applet)
+[ -r /proc/device-tree/serial-number ] \
+    && SERIAL=$(tr -d '\0' < /proc/device-tree/serial-number)
+
+phone_home() {  # $1=result $2=detail $3=image_id
+    uclient-fetch -q -O - --post-data \
+      "{\"serial\":\"$SERIAL\",\"mac\":\"$MAC\",\"result\":\"$1\",\"detail\":\"$2\",\"image_id\":\"$3\"}" \
+      "$API/phone-home"
+}
+
+has_10_addr() { ip -4 addr show 2>&1 | grep -q "inet 10\."; }
+carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>&1)" = "1" ]; }
+
+# The throwaway installer runs on the mgmt VLAN and only needs to reach
+# wisp; the stock image firewall puts the WAN jack in an UNTRUSTED zone,
+# so a puck cabled in the black/WAN port (validated black=wan on both
+# rigs 2026-07-13) had its address land in the wan zone and mgmt was
+# blocked — while LAN-cabled pucks (s1) landed in the trusted lan zone
+# and worked. Drop the firewall entirely: no zones, no asymmetry.
+/etc/init.d/firewall stop 2>&1 || true
+{ command -v fw4 >/dev/null && fw4 flush; } 2>&1 || true
+{ command -v iptables >/dev/null && iptables -P INPUT ACCEPT && \
+  iptables -P OUTPUT ACCEPT && iptables -F; } 2>&1 || true
+
+wait_net() {
+    # DHCP on whichever wired jack actually has carrier, PLUS an explicit
+    # VLAN-4 tagged subinterface on it — the puck's switch port delivers
+    # VLAN 4 either untagged (access; the raw iface gets it) or tagged
+    # (trunk; the .4 subiface gets it), and the cable may sit in either
+    # physical jack (fleet s1 = blue/lan, emx = black/wan). netifd's own
+    # dhcp on 'wan' may already have landed an address — check first.
+    i=0
+    while [ $i -lt 8 ]; do has_10_addr && return 0; sleep 2; i=$((i + 1)); done
+    for base in wan lan; do
+        [ -e "/sys/class/net/$base" ] || continue
+        carrier "$base" || continue
+        ip link set "$base" up 2>&1
+        # VLAN-4 tagged subiface (idempotent)
+        [ -e "/sys/class/net/$base.4" ] || \
+            ip link add link "$base" name "$base.4" type vlan id 4 2>&1
+        ip link set "$base.4" up 2>&1
+    done
+    i=0
+    while [ $i -lt 12 ]; do
+        # Prefer the carrier-up raw jack + its .4; keep br-lan (the
+        # enslaved-lan bridge) as the historical fallback.
+        for dev in wan wan.4 lan lan.4 br-lan; do
+            [ -e "/sys/class/net/$dev" ] || continue
+            case "$dev" in
+                br-lan) : ;;                         # bridge: always try
+                *) carrier "${dev%.4}" || continue ;; # skip dead jack
+            esac
+            udhcpc -n -q -t 3 -i "$dev" 2>&1
+            has_10_addr && return 0
+        done
+        sleep 2; i=$((i + 1))
+    done
+    return 1
+}
+
+log "server=$SERVER mac=$MAC serial=$SERIAL"
+wait_net || { log "no network after timeout; staying up"; exit 1; }
+
+MANIFEST=$(uclient-fetch -q -O - "$API/manifest") \
+    || { log "manifest fetch failed; staying up"; exit 1; }
+# busybox-safe JSON field extraction — the manifest is guaranteed FLAT by
+# gwifi-netboot's publish step (no jq in this image).
+jfield() { echo "$MANIFEST" | sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" | head -1; }
+IMAGE_ID=$(jfield image_id); FILENAME=$(jfield filename); SHA=$(jfield sha256)
+[ -n "$IMAGE_ID" ] && [ -n "$FILENAME" ] && [ -n "$SHA" ] \
+    || { log "bad manifest: '$MANIFEST'"; exit 1; }
+
+# Idempotence: read the installed marker, then UNMOUNT (nothing may hold
+# the device during dd).
+CURRENT=""
+mkdir -p /tmp/p2
+if mount -o ro /dev/mmcblk0p2 /tmp/p2; then
+    [ -r /tmp/p2/etc/gwifi-image-id ] && CURRENT=$(cat /tmp/p2/etc/gwifi-image-id)
+    umount /tmp/p2
+fi
+
+# NOTE: matches the MAC anywhere in the manifest body, not just the
+# "force" array — safe ONLY because publish.py guarantees a flat manifest
+# where no other field may contain MAC text.
+FORCE=$(echo "$MANIFEST" | grep -io "\"$MAC\"" || true)
+if [ "$CURRENT" = "$IMAGE_ID" ] && [ -z "$FORCE" ]; then
+    log "already current ($IMAGE_ID)"
+    phone_home already-current "marker match" "$IMAGE_ID" \
+        || { log "phone-home unreachable; staying up (no reboot loop)"; exit 1; }
+    log "rebooting to eMMC"
+    reboot; exit 0
+fi
+
+log "installing $IMAGE_ID (was: ${CURRENT:-none})"
+uclient-fetch -O /tmp/factory.bin "http://$SERVER/$FILENAME" \
+    || { phone_home failed "image fetch" "$IMAGE_ID"; exit 1; }
+GOT=$(sha256sum /tmp/factory.bin | cut -d' ' -f1)
+[ "$GOT" = "$SHA" ] \
+    || { phone_home failed "sha256 mismatch got=$GOT" "$IMAGE_ID"; exit 1; }
+log "image verified ($GOT); writing to eMMC"
+
+dd if=/tmp/factory.bin of=/dev/mmcblk0 bs=4M conv=fsync \
+    || { phone_home failed "dd write" "$IMAGE_ID"; exit 1; }
+sync
+# Full-table re-read (blockdev), NOT partx -u: the incremental update
+# against a completely replaced GPT left a half-old half-missing device
+# view on puck12 (2026-07-12). Retry while the kernel settles.
+#
+# The re-read must run UNCONDITIONALLY: on a stock-layout puck the OLD
+# table already has a p2 (16MB KERN-A), so "p2 exists" proves nothing —
+# gating the loop on it skipped rereadpt entirely and the mount hit the
+# stale vboot partition (puck11, 2026-07-12, "post-flash mount"). Our
+# factory GPT has exactly 2 partitions and stock has 12, so a live p3
+# means the kernel still holds the old table.
+# Settle AFTER each re-read before testing: rereadpt deletes and
+# re-adds the partition nodes, so testing immediately races their
+# re-creation — and re-reading again on failure restarts the race
+# (bit puck07 2026-07-12: 10 false "stale" verdicts on a good table).
+i=0
+while :; do
+    blockdev --rereadpt /dev/mmcblk0 || true
+    sleep 1
+    { [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } && break
+    i=$((i + 1))
+    [ $i -ge 10 ] && break
+done
+{ [ -b /dev/mmcblk0p2 ] && [ ! -b /dev/mmcblk0p3 ]; } \
+    || { phone_home failed "stale partition table after rereadpt" "$IMAGE_ID"; exit 1; }
+
+mount -o ro /dev/mmcblk0p2 /tmp/p2 \
+    || { phone_home failed "post-flash mount" "$IMAGE_ID"; exit 1; }
+VERIFY=""
+[ -r /tmp/p2/etc/gwifi-image-id ] && VERIFY=$(cat /tmp/p2/etc/gwifi-image-id)
+umount /tmp/p2
+[ "$VERIFY" = "$IMAGE_ID" ] \
+    || { phone_home failed "post-flash marker '$VERIFY'" "$IMAGE_ID"; exit 1; }
+
+# Invalidate the old overlay (rootfs_data lives in p2 BEYOND the image
+# extent, so dd leaves it intact and its stale /etc/config shadows the
+# new image's baked config — bit the mesh rollout on puck11 2026-07-12).
+# Zeroing 8 MiB from the first 64 KiB boundary past the image kills any
+# f2fs superblock; fstools reformats on first boot (= clean firstboot,
+# and the openwisp agent re-registers via the baked shared secret,
+# matching its pre-created device by MAC).
+P2_START=$(( $(cat /sys/block/mmcblk0/mmcblk0p2/start) * 512 ))
+IMG_BYTES=$(wc -c < /tmp/factory.bin)
+OVL_64K=$(( (IMG_BYTES - P2_START + 65535) / 65536 ))
+dd if=/dev/zero of=/dev/mmcblk0p2 bs=64k seek="$OVL_64K" count=128 conv=fsync \
+    || { phone_home failed "overlay invalidation dd" "$IMAGE_ID"; exit 1; }
+log "old overlay invalidated (64k blocks $OVL_64K..$((OVL_64K + 127)))"
+
+phone_home success "flashed+verified" "$IMAGE_ID" \
+    || { log "flashed OK but phone-home unreachable; staying up"; exit 1; }
+log "success — rebooting to eMMC"
+reboot

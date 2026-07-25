@@ -21,6 +21,9 @@ import sys
 import tarfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
+from verify_lib import parse_secrets
+
 OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt")
 IMAGE_DIR = os.path.join(OWRT, "bin/targets/ath79/generic")
 FLEET_SECRETS = os.environ.get("FLEET_SECRETS",
@@ -31,23 +34,6 @@ REQUIRED_PACKAGES = ["openwisp-config", "openwisp-monitoring", "kmod-batman-adv"
                      "wpad-mesh-mbedtls", "usteer", "batctl-default"]
 PROFILES = ["openmesh_om2p-lc", "openmesh_om2p-v1",
             "openmesh_om2p-v2", "openmesh_om2p-v4"]
-
-
-def parse_secrets(path):
-    out = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-            if not m:
-                continue
-            v = m.group(2).strip()
-            if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-                v = v[1:-1]
-            out[m.group(1)] = v
-    return out
 
 
 def read_etc_files(image_dir):
@@ -77,6 +63,11 @@ def read_etc_files(image_dir):
     return None, None, None
 
 
+# NOTE: intentionally NOT verify_lib's find_manifest — returns CONTENT of the
+# sorted-first *.manifest, vs lib's PATH of the mtime-newest; same name+arity
+# as verify_lib.find_manifest but different return type — importing it
+# without deleting this local def would be silently shadowed. See
+# fleet-image-base-plan.md Task 6.
 def find_manifest(image_dir):
     for name in sorted(os.listdir(image_dir)):
         if name.endswith(".manifest"):
@@ -107,6 +98,9 @@ def main():
         else:
             print("  PASS %s: %s rendered" % (label, key))
 
+    # NOTE: intentionally NOT verify_lib's check_no_placeholders — diverges
+    # (regex __[A-Z_]+__ has no digits vs lib's __[A-Z][A-Z0-9_]*__; also
+    # prints a PASS line, lib doesn't) — see fleet-image-base-plan.md Task 6.
     def check_no_ph(content, label):
         ph = re.findall(r'__[A-Z_]+__', content)
         if ph:

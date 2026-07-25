@@ -1,0 +1,27 @@
+#!/bin/sh
+# uci-stub — stand-in `uci` for bootstrap tests: answers `get` from a flat
+# state file ($UCI_STATE, key=value lines) and appends every MUTATING call to
+# $UCI_LOG. Supports exactly the subset the bootstrap scripts use. Reads are
+# not logged (read patterns may differ between implementations; only the
+# write sequence must match).
+set -u
+[ "${1:-}" = "-q" ] && shift
+cmd=${1:-}; [ $# -gt 0 ] && shift
+log() { printf '%s\n' "$*" >> "$UCI_LOG"; }
+state_get() {  # $1=key -> value on stdout, rc 1 if absent (awk: exact prefix)
+	awk -v k="$1=" 'index($0, k) == 1 { print substr($0, length(k) + 1); f = 1; exit }
+	                END { exit f ? 0 : 1 }' "$UCI_STATE"
+}
+state_del() { awk -v k="$1=" 'index($0, k) != 1' "$UCI_STATE" > "$UCI_STATE.new" && \
+	mv "$UCI_STATE.new" "$UCI_STATE"; }
+case "$cmd" in
+get)      state_get "$1" ;;
+set)      log "set $1"; k=${1%%=*}; state_del "$k"; printf '%s\n' "$1" >> "$UCI_STATE" ;;
+add_list) log "add_list $1" ;;   # logged only: does NOT mutate $UCI_STATE —
+del_list) log "del_list $1" ;;   #   a later `get` cannot observe list contents
+delete)   log "delete $1"; state_del "$1" ;;
+rename)   log "rename $1" ;;
+commit)   log "commit ${1:-}" ;;
+batch)    log "batch"; cat >> "$UCI_LOG" ;;   # keep the payload: it IS the op evidence
+*)        echo "uci-stub: unsupported: $cmd $*" >&2; exit 2 ;;
+esac

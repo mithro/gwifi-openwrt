@@ -1,32 +1,55 @@
 #!/usr/bin/env python3
-"""Build the OpenWISP 'gwifi-puck' config template + attach to the 11 pucks.
+"""Build the OpenWISP AP config templates + attach the active one to the pucks.
 
-Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs
-and a fresh mesh key is generated; none are ever printed. They go into the
-template's default_values (OpenWISP DB on wisp, internal) and are piped to wisp
+Two profiles exist (2026-07-22 restructure):
+
+  simple (ACTIVE, template 'gwifi-aps') — the fleet's current config.
+    Six APs, no mesh. The gale image/local config provides the network
+    shape (vlan-aware br0 with the WAN jack as uplink trunk: VLAN 4
+    untagged/pvid + 20/90/99 tagged; lan disabled; no batman — see
+    tools/fleet/puck_profile.py). OpenWISP layers the SSIDs:
+      wl-main-5g/-2g4  -> roam  (VLAN 20) 'ansells'       high-bandwidth,
+                                          802.11k/v steering hints
+      wl-iot-5g/-2g4   -> iot   (VLAN 90) 'ansells-iot'   high-compat: DTIM 3,
+                                          legacy rates on 2.4, no PMF, never
+                                          kick weak clients, no steering
+      wl-guest-5g/-2g4 -> guest (VLAN 99) 'ansells-guest' high-bandwidth,
+                                          client isolation
+    Client steering is usteer, configured locally by puck_profile.py
+    (netjsonconfig has no usteer schema); it talks over mgmt (the wan
+    trunk) and steers only 'ansells'/'ansells-guest'.
+
+  mesh-aps (PRESERVED, template 'gwifi-mesh-aps', attached to nothing) —
+    the advanced-mesh-era 5-AP layer (WPA3 + 802.11r fast-roam main, no
+    iot-5g). Kept so devices & network can be switched back to the mesh
+    architecture later: restore the per-puck network snapshot with
+    puck_profile.py mesh, then attach this template instead of gwifi-aps.
+
+Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs;
+none are ever printed or committed. They go into the templates' default_values
+(OpenWISP DB on wisp, internal) as {{ }} substitutions and are piped to wisp
 over SSH stdin (not argv). The verification render redacts all `option key`.
+
+tenwrt VM parity (fleet-image-base-plan.md Task 13): the ten64 VM (device name
+'tenwrt') attaches to the SAME gwifi-aps + gwifi-base templates as the pucks —
+it has no physical jacks, so gwifi-base's post-reload-hook falls back to the
+virtio trunk eth0 when neither puck jack name (eth-black/lan) exists.
 """
 import json
-import os
-import re
 import subprocess
 import sys
 
 SSH_TEN64 = ["ssh", "ten64.welland.mithis.com"]
 SSH_WISP = [
-    "ssh", "-J", "ten64.welland.mithis.com",
-    "-i", "/home/tim/.ssh/keys/new_misc_key",
-    "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=30",
-    "tim@10.1.5.2",
+    "ssh", "-o", "ConnectTimeout=30", "wisp.welland.mithis.com",
     "sudo", "/opt/openwisp2/env/bin/python", "/opt/openwisp2/manage.py", "shell",
 ]
-# The ONE fleet mesh key lives here (shared by images + templates); it is READ,
-# never regenerated — regenerating would orphan the deployed pucks + baked images.
-FLEET_SECRETS = os.environ.get(
-    "FLEET_SECRETS",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fleet-secrets.conf"))
 
-PUCKS = ["G1", "G2", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12"]
+# The pucks (OpenWISP device names). No puck03 exists.
+PUCKS = ["puck01", "puck02", "puck04", "puck05", "puck06",
+         "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"]
+
+SSID_MAIN, SSID_IOT, SSID_GUEST = "ansells", "ansells-iot", "ansells-guest"
 
 
 def parse_hostapd(text):
@@ -56,7 +79,8 @@ def read_passphrases():
             sys.stderr.write(p.stderr)
             raise SystemExit(f"failed to read {fn}")
         cfgs.update(parse_hostapd(p.stdout))
-    need = {"ansells": "ansells_key", "ansells-iot": "iot_key", "ansells-guest": "guest_key"}
+    need = {"ansells": "ansells_key", "ansells-iot": "iot_key",
+            "ansells-guest": "guest_key"}
     vals = {}
     for ssid, var in need.items():
         if ssid not in cfgs or not cfgs[ssid]:
@@ -65,65 +89,158 @@ def read_passphrases():
     return vals
 
 
-def netjson():
-    def wpa3(key):
-        return {"protocol": "wpa3_personal", "cipher": "ccmp", "ieee80211w": "2", "key": key}
+def _wpa2(key):
+    return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
 
-    def wpa2(key):
-        return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
+
+def netjson_simple():
+    """Six-AP simple profile — must render to the same effective config
+    puck_profile.py applies locally (psk2+ccmp everywhere; matching per-BSS
+    tuning) so agent applies converge instead of churning."""
+    steer = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
+    iot = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
+
+    def ap(name, radio, ssid, network, key, **extra):
+        return {"name": name, "type": "wireless", "wireless": dict(
+            radio=radio, mode="access_point", ssid=ssid,
+            network=[network], encryption=_wpa2(key), **extra)}
+
+    radios = [
+        {"name": "radio0", "driver": "mac80211", "protocol": "802.11n",
+         "channel": 6, "channel_width": 20},
+        {"name": "radio1", "driver": "mac80211", "protocol": "802.11ac",
+         "channel": 36, "channel_width": 80},
+    ]
+    return {"radios": radios, "interfaces": [
+        ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
+        ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
+        ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **iot),
+        ap("wl-iot-2g4", "radio0", SSID_IOT, "iot", "{{ iot_key }}",
+           legacy_rates=True, **iot),
+        ap("wl-guest-5g", "radio1", SSID_GUEST, "guest", "{{ guest_key }}",
+           isolate=True, **steer),
+        ap("wl-guest-2g4", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
+           isolate=True, **steer),
+    ]}
+
+
+def netjson_mesh_aps():
+    """The advanced-mesh-era AP layer (preserved, unattached): WPA3 +
+    802.11r/k/v fast-roam main, single-band iot, WPA2 guest."""
+    def wpa3(key):
+        return {"protocol": "wpa3_personal", "cipher": "ccmp",
+                "ieee80211w": "2", "key": key}
 
     roam = {"ieee80211r": True, "mobility_domain": "a1b2",
-            "ft_psk_generate_local": True, "ieee80211k": True, "bss_transition": True}
-    return {
-        "radios": [
-            {"name": "radio0", "protocol": "802.11n", "channel": 6, "channel_width": 20,
-             "phy": "phy0", "country": "AU"},
-            {"name": "radio1", "protocol": "802.11ac", "channel": 36, "channel_width": 80,
-             "phy": "phy1", "country": "AU"},
-        ],
-        "interfaces": [
-            {"type": "8021q", "vid": 5, "name": "wan"},
-            {"type": "8021q", "vid": 20, "name": "wan"},
-            {"type": "8021q", "vid": 90, "name": "wan"},
-            {"type": "8021q", "vid": 99, "name": "wan"},
-            {"type": "8021q", "vid": 5, "name": "bat0"},
-            {"type": "8021q", "vid": 20, "name": "bat0"},
-            {"type": "8021q", "vid": 90, "name": "bat0"},
-            {"type": "8021q", "vid": 99, "name": "bat0"},
-            {"name": "br-mgmt", "type": "bridge", "bridge_members": ["wan.5", "bat0.5"],
-             "addresses": [{"proto": "dhcp", "family": "ipv4"}]},
-            {"name": "br-roam", "type": "bridge", "bridge_members": ["wan.20", "bat0.20", "lan"]},
-            {"name": "br-iot", "type": "bridge", "bridge_members": ["wan.90", "bat0.90"]},
-            {"name": "br-guest", "type": "bridge", "bridge_members": ["wan.99", "bat0.99"]},
-            {"name": "wl-ans-5", "type": "wireless", "wireless": dict(
-                radio="radio1", mode="access_point", ssid="ansells", network=["br-roam"],
-                encryption=wpa3("{{ ansells_key }}"), **roam)},
-            {"name": "wl-ans-2", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid="ansells", network=["br-roam"],
-                encryption=wpa3("{{ ansells_key }}"), **roam)},
-            {"name": "wl-iot", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid="ansells-iot", network=["br-iot"],
-                encryption=wpa2("{{ iot_key }}"))},
-            {"name": "wl-guest", "type": "wireless", "wireless": dict(
-                radio="radio1", mode="access_point", ssid="ansells-guest", network=["br-guest"],
-                encryption=wpa2("{{ guest_key }}"), isolate=True)},
-            {"name": "mp0", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="802.11s", mesh_id="gwifi-mesh", network=["mesh0"],
-                encryption=wpa3("{{ mesh_key }}"))},
-            {"name": "mp1", "type": "wireless", "wireless": dict(
-                radio="radio1", mode="802.11s", mesh_id="gwifi-mesh", network=["mesh1"],
-                encryption=wpa3("{{ mesh_key }}"))},
-        ],
-        "network": [
-            {"config_name": "interface", "config_value": "bat0", "proto": "batadv",
-             "routing_algo": "BATMAN_IV", "bridge_loop_avoidance": "1",
-             "distributed_arp_table": "1"},
-            {"config_name": "interface", "config_value": "mesh0",
-             "proto": "batadv_hardif", "master": "bat0"},
-            {"config_name": "interface", "config_value": "mesh1",
-             "proto": "batadv_hardif", "master": "bat0"},
-        ],
-    }
+            "ft_psk_generate_local": True, "ieee80211k": True,
+            "bss_transition": True}
+    return {"interfaces": [
+        {"name": "wl-main-5g", "type": "wireless", "wireless": dict(
+            radio="radio1", mode="access_point", ssid=SSID_MAIN,
+            network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
+        {"name": "wl-main-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_MAIN,
+            network=["roam"], encryption=wpa3("{{ ansells_key }}"), **roam)},
+        {"name": "wl-iot-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_IOT,
+            network=["iot"], encryption=_wpa2("{{ iot_key }}"))},
+        {"name": "wl-guest-5g", "type": "wireless", "wireless": dict(
+            radio="radio1", mode="access_point", ssid=SSID_GUEST,
+            network=["guest"], encryption=_wpa2("{{ guest_key }}"),
+            isolate=True)},
+        {"name": "wl-guest-2g4", "type": "wireless", "wireless": dict(
+            radio="radio0", mode="access_point", ssid=SSID_GUEST,
+            network=["guest"], encryption=_wpa2("{{ guest_key }}"),
+            isolate=True)},
+    ]}
+
+
+LLDPD_CONFIG = """config lldpd 'config'
+	# Announce on the physical jacks only (both port-name generations are
+	# listed; the init resolves the ones that exist on this device).
+	list interface 'eth-black'
+	list interface 'eth-blue'
+	list interface 'lan'
+	list interface 'wan'
+	option enable_cdp 1
+	option enable_fdp 1
+	option enable_sonmp 1
+	option enable_edp 1
+	option lldp_class 4
+"""
+
+USTEER_CONFIG = """config usteer
+	option network 'mgmt'
+	option local_mode '0'
+	option assoc_steering '1'
+	option load_balancing_threshold '0'
+	list ssid_list 'ansells'
+	list ssid_list 'ansells-guest'
+"""
+
+CRONTAB = """# lldpd snapshots the hostname at start; reassert so renames propagate.
+*/5 * * * * lldpcli configure system hostname "$(uname -n)"
+"""
+
+POST_RELOAD_HOOK = """#!/bin/sh
+# openwisp post-reload-hook (delivered by the gwifi-base template):
+# device state the agent cannot express as plain uci-file templates.
+
+# Client VLANs tagged on the trunk (mgmt VLAN 4 is baked in the image).
+TRUNK=eth-black
+[ -e /sys/class/net/eth-black ] || TRUNK=lan
+# tenwrt VM: no physical jacks; the virtio trunk is eth0. Pucks always match
+# one of the two names above (gale's own eth0 is the DSA conduit — order
+# matters), so only the VM falls through to here.
+[ -e "/sys/class/net/$TRUNK" ] || TRUNK=eth0
+[ "$TRUNK" = eth0 ] && logger -t post-reload-hook "trunk fell through to eth0 (expected only on the tenwrt VM)"
+for kv in roam=20 iot=90 guest=99; do
+	name=${kv%=*}; vid=${kv#*=}
+	uci set network.brvlan_$name="bridge-vlan"
+	uci set network.brvlan_$name.device='br0'
+	uci set network.brvlan_$name.vlan="$vid"
+	uci -q delete network.brvlan_$name.ports
+	uci add_list network.brvlan_$name.ports="$TRUNK:t"
+	uci set network.$name="interface"
+	uci set network.$name.device="br0.$vid"
+	uci set network.$name.proto='none'
+done
+uci commit network
+
+# wifi-detect's placeholder ifaces must never beacon the OpenWrt SSID.
+uci -q delete wireless.default_radio0
+uci -q delete wireless.default_radio1
+uci -q commit wireless
+
+# Remote syslog to wisp.
+uci set system.@system[0].log_ip='10.1.4.2'
+uci set system.@system[0].log_port='6666'
+uci set system.@system[0].log_proto='udp'
+uci commit system
+
+/etc/init.d/lldpd enable
+/etc/init.d/lldpd restart
+/etc/init.d/usteer enable
+/etc/init.d/usteer restart
+/etc/init.d/cron enable
+/etc/init.d/cron restart
+exit 0
+"""
+
+
+def netjson_base():
+    """Fleet-base config delivered by wisp: lldpd, steering, cron, and a
+    post-reload hook for the pieces that are not uci-file templates."""
+    return {"files": [
+        {"path": "/etc/config/lldpd", "mode": "0644",
+         "contents": LLDPD_CONFIG},
+        {"path": "/etc/config/usteer", "mode": "0644",
+         "contents": USTEER_CONFIG},
+        {"path": "/etc/crontabs/root", "mode": "0600",
+         "contents": CRONTAB},
+        {"path": "/etc/openwisp/post-reload-hook", "mode": "0755",
+         "contents": POST_RELOAD_HOOK},
+    ]}
 
 
 DJANGO = r'''
@@ -134,168 +251,81 @@ Config = load_model("config", "Config")
 Org = load_model("openwisp_users", "Organization")
 Device = load_model("config", "Device")
 org = Org.objects.get(slug="default")
-CONFIG = json.loads({cfg!r})
+ACTIVE = json.loads({active!r})
+PRESERVED = json.loads({preserved!r})
+BASE = json.loads({base!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
+# Devices the templates attach to: the pucks + the ten64 VM. The attach loop
+# skips names that have not registered yet — re-run this script after the
+# tenwrt VM's first successful registration (design spec §4.6).
+DEVICES = PUCKS + ["tenwrt"]
 
-t, created = Template.objects.update_or_create(
-    organization=org, name="gwifi-puck",
+b, bcreated = Template.objects.update_or_create(
+    organization=org, name="gwifi-base",
     defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
-                  config=CONFIG, default=True, default_values=DEFAULTS),
+                  config=BASE, default=False),
+)
+b.full_clean(); b.save()
+print("gwifi-base:", "created" if bcreated else "updated", "id=", b.id)
+
+# Active template: 'gwifi-aps' (already attached fleet-wide) now carries the
+# simple six-AP profile.
+t, created = Template.objects.update_or_create(
+    organization=org, name="gwifi-aps",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=ACTIVE, default=False, default_values=DEFAULTS),
 )
 t.full_clean(); t.save()
-print("template:", "created" if created else "updated", "id=", t.id, "default=", t.default)
+print("gwifi-aps:", "created" if created else "updated", "id=", t.id)
+
+# Preserved template: 'gwifi-mesh-aps' exists but is attached to nothing.
+m, mcreated = Template.objects.update_or_create(
+    organization=org, name="gwifi-mesh-aps",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=PRESERVED, default=False, default_values=DEFAULTS),
+)
+m.full_clean(); m.save()
+detached = 0
+for c in Config.objects.filter(templates=m):
+    c.templates.remove(m); detached += 1
+print("gwifi-mesh-aps:", "created" if mcreated else "updated",
+      "id=", m.id, "detached-from:", detached)
 
 attached = 0
-for name in PUCKS:
-    d = Device.objects.get(organization=org, name=name)
+missing = []
+for name in DEVICES:
+    try:
+        d = Device.objects.get(organization=org, name=name)
+    except Device.DoesNotExist:
+        missing.append(name); continue
     c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    if t not in c.templates.all():
-        c.templates.add(t)
+    for tpl in (b, t):
+        if tpl not in c.templates.all():
+            c.templates.add(tpl)
     c.full_clean(); c.save()
     attached += 1
-print("configs attached:", attached, "/", len(PUCKS))
+print("configs attached:", attached, "/", len(DEVICES), "missing:", missing)
 
-# verification render of G1, passphrases redacted
-d = Device.objects.get(organization=org, name="G1")
+# verification render of an online puck, passphrases redacted
+d = Device.objects.get(organization=org, name="puck12")
 rendered = d.config.backend_instance.render()
 rendered = re.sub(r"(option key ').*?(')", r"\g<1><REDACTED>\g<2>", rendered)
 print("=" * 60)
-print("G1 rendered config (keys redacted):")
+print("puck12 rendered config (keys redacted):")
 print("=" * 60)
 print(rendered)
 '''
 
 
-def read_fleet_mesh_key():
-    """Return the fleet MESH_SAE_KEY from fleet-secrets.conf (never generated)."""
-    with open(FLEET_SECRETS) as f:
-        for line in f:
-            m = re.match(r'^\s*MESH_SAE_KEY=(.*)$', line)
-            if m:
-                v = m.group(1).strip()
-                if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-                    v = v[1:-1]
-                if v:
-                    return v
-    raise SystemExit("MESH_SAE_KEY not set in %s" % FLEET_SECRETS)
-
-
-def om2p_netjson():
-    """Single-radio (2.4 GHz) OM2P config: the radio0 subset of the puck netjson,
-    with per-device {{ uplink_port }}/{{ client_port }} for the per-model GMAC map."""
-    def wpa3(key):
-        return {"protocol": "wpa3_personal", "cipher": "ccmp", "ieee80211w": "2", "key": key}
-
-    def wpa2(key):
-        return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
-
-    roam = {"ieee80211r": True, "mobility_domain": "a1b2",
-            "ft_psk_generate_local": True, "ieee80211k": True, "bss_transition": True}
-    return {
-        "radios": [
-            {"name": "radio0", "protocol": "802.11n", "channel": 6, "channel_width": 20,
-             "phy": "phy0", "country": "AU"},
-        ],
-        "interfaces": [
-            {"type": "8021q", "vid": 5, "name": "{{ uplink_port }}"},
-            {"type": "8021q", "vid": 20, "name": "{{ uplink_port }}"},
-            {"type": "8021q", "vid": 90, "name": "{{ uplink_port }}"},
-            {"type": "8021q", "vid": 5, "name": "bat0"},
-            {"type": "8021q", "vid": 20, "name": "bat0"},
-            {"type": "8021q", "vid": 90, "name": "bat0"},
-            {"name": "br-mgmt", "type": "bridge",
-             "bridge_members": ["{{ uplink_port }}.5", "bat0.5"],
-             "addresses": [{"proto": "dhcp", "family": "ipv4"}]},
-            {"name": "br-roam", "type": "bridge",
-             "bridge_members": ["{{ uplink_port }}.20", "bat0.20", "{{ client_port }}"]},
-            {"name": "br-iot", "type": "bridge",
-             "bridge_members": ["{{ uplink_port }}.90", "bat0.90"]},
-            {"name": "wl-ans-2", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid="ansells", network=["br-roam"],
-                encryption=wpa3("{{ ansells_key }}"), **roam)},
-            {"name": "wl-iot", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="access_point", ssid="ansells-iot", network=["br-iot"],
-                encryption=wpa2("{{ iot_key }}"))},
-            {"name": "mp0", "type": "wireless", "wireless": dict(
-                radio="radio0", mode="802.11s", mesh_id="gwifi-mesh", network=["mesh0"],
-                encryption=wpa3("{{ mesh_key }}"))},
-        ],
-        "network": [
-            {"config_name": "interface", "config_value": "bat0", "proto": "batadv",
-             "routing_algo": "BATMAN_IV", "bridge_loop_avoidance": "1",
-             "distributed_arp_table": "1"},
-            {"config_name": "interface", "config_value": "mesh0",
-             "proto": "batadv_hardif", "master": "bat0"},
-        ],
-    }
-
-
-# Per-device ORM: create the gwifi-om2p template (NOT default), attach it to every
-# org-default device whose model starts "OpenMesh OM2P", and set each device's
-# uplink_port/client_port context by model (design C4). Bare "OpenMesh OM2P"
-# (revision unknown until onboard) is attached but left ports-pending.
-DJANGO_OM2P = r'''
-import json, re
-from swapper import load_model
-Template = load_model("config", "Template")
-Config = load_model("config", "Config")
-Org = load_model("openwisp_users", "Organization")
-Device = load_model("config", "Device")
-org = Org.objects.get(slug="default")
-CONFIG = json.loads({cfg!r})
-DEFAULTS = json.loads({defaults!r})
-
-t, created = Template.objects.update_or_create(
-    organization=org, name="gwifi-om2p",
-    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
-                  config=CONFIG, default=False, default_values=DEFAULTS),
-)
-t.full_clean(); t.save()
-print("om2p template:", "created" if created else "updated", "id=", t.id)
-
-
-def ports_for(model):
-    m = (model or "").lower()
-    if "om2p-lc" in m or "om2p v2" in m:
-        return {{"uplink_port": "eth1", "client_port": "eth0"}}
-    if "om2p v1" in m or "om2p v4" in m:
-        return {{"uplink_port": "eth0", "client_port": "eth1"}}
-    return None
-
-
-attached = pending = 0
-for d in Device.objects.filter(organization=org, model__startswith="OpenMesh OM2P"):
-    c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    if t not in c.templates.all():
-        c.templates.add(t)
-    p = ports_for(d.model)
-    if p is None:
-        pending += 1
-        print("WARN: %s model=%r -> set uplink/client after onboard" % (d.name, d.model))
-    else:
-        ctx = dict(c.context or {{}}); ctx.update(p); c.context = ctx
-    c.full_clean(); c.save()
-    attached += 1
-print("om2p configs attached:", attached, " (ports-pending:", pending, ")")
-
-d = Device.objects.filter(organization=org, model__startswith="OpenMesh OM2P").first()
-if d:
-    rendered = d.config.backend_instance.render()
-    rendered = re.sub(r"(option key ').*?(')", r"\g<1><REDACTED>\g<2>", rendered)
-    print("=" * 60); print("OM2P sample render (keys redacted):"); print("=" * 60)
-    print(rendered)
-'''
-
-
 def main() -> int:
     vals = read_passphrases()
-    vals["mesh_key"] = read_fleet_mesh_key()  # the ONE fleet key; never regenerate
-
-    cfg = json.dumps(netjson())
-    defaults = json.dumps(vals)
-    script = DJANGO.format(cfg=cfg, defaults=defaults, pucks=PUCKS)
-    p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True, timeout=180)
+    script = DJANGO.format(active=json.dumps(netjson_simple()),
+                           preserved=json.dumps(netjson_mesh_aps()),
+                           base=json.dumps(netjson_base()),
+                           defaults=json.dumps(vals), pucks=PUCKS)
+    p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
+                       timeout=180)
     # safety: redact any stray key values from the captured output before printing
     out = p.stdout
     for v in vals.values():
@@ -306,24 +336,9 @@ def main() -> int:
         for v in vals.values():
             err = err.replace(v, "<REDACTED>")
         sys.stderr.write("\n--- stderr ---\n" + err)
-
-    # --- OM2P single-radio template (radio0 subset; per-device port vars) ---
-    om2p_script = DJANGO_OM2P.format(cfg=json.dumps(om2p_netjson()),
-                                     defaults=json.dumps(vals))
-    p2 = subprocess.run(SSH_WISP, input=om2p_script, text=True,
-                        capture_output=True, timeout=180)
-    out2 = p2.stdout
-    for v in vals.values():
-        out2 = out2.replace(v, "<REDACTED>")
-    sys.stdout.write(out2)
-    if p2.stderr.strip():
-        err2 = p2.stderr
-        for v in vals.values():
-            err2 = err2.replace(v, "<REDACTED>")
-        sys.stderr.write("\n--- om2p stderr ---\n" + err2)
-
-    print("\n(secrets: ansells/iot/guest from ten64; mesh_key read from fleet-secrets.conf)")
-    return p.returncode or p2.returncode
+    print("\n(secrets: ansells/iot/guest sourced from ten64 hostapd; never "
+          "printed or committed)")
+    return p.returncode
 
 
 if __name__ == "__main__":

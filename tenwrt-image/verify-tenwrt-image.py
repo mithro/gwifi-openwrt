@@ -1,13 +1,36 @@
 #!/usr/bin/env python3
 """verify-tenwrt-image.py — validate the built ten64 Wi-Fi VM image.
 
+Simple-profile reality (docs/fleet-image-base-design.md, fleet-image-base-plan.md
+Task 7-9): the image bakes ONLY what is needed to reach the OpenWISP controller
+on first boot — APs, client VLAN legs and steering all arrive later via
+OpenWISP templates. There is no mesh, no backhaul gate in this image; those
+are om2p/gale-only. /etc/config/usteer IS present (it ships with the usteer
+package, same as gale) but must be the stock package default, not our
+mesh-era baked overlay copy — the wisp template overwrites it post-registration.
+
 Checks, against the rootfs (the *-rootfs.tar.gz emitted by CONFIG_TARGET_ROOTFS_TARGZ,
 or the build staging root-* dir as fallback):
-  - /etc/config/openwisp   : real URL + shared_secret, no placeholders
-  - /etc/config/wireless   : mesh mode + real MESH_ID + SAE key, no placeholders
-  - /etc/uci-defaults/99-tenwrt-bootstrap : executable; eth0 trunk; cron line; no placeholders
-  - /usr/sbin/gwifi-radio-setup, gwifi-backhaul-gate, hotplug hook : present + executable
-  - package manifest       : required packages incl. all in-tree PCIe Wi-Fi drivers+firmware
+  - /etc/config/openwisp   : real URL + shared_secret, management_interface
+                             'br0.4', NO `option mac_interface` line (the
+                             bootstrap driver sets it per-image), no placeholders
+  - /etc/uci-defaults/99-tenwrt-bootstrap : executable; gwifi_create_bridge eth0;
+                             TENVM-BOOTSTRAP-COMPLETE marker; no placeholders
+  - /lib/gwifi/bootstrap.sh : present (shared bootstrap function library)
+  - /usr/sbin/gwifi-radio-setup : executable; radio_swap_needed (band normalizer)
+  - /etc/config/usteer      : present (shipped by the usteer package itself,
+                             same as gale) but must be the STOCK package
+                             default, not our mesh-era baked overlay copy —
+                             no 'ansells', no 'mesh_rssi', no placeholders.
+                             The wisp gwifi-base template overwrites it after
+                             registration.
+  - mesh/gate leftovers ABSENT: /etc/config/wireless (no package ships this
+    statically; `wifi config` generates it at runtime),
+    /usr/sbin/gwifi-backhaul-gate, /etc/hotplug.d/net/30-gwifi-backhaul
+  - MediaTek mt7915 firmware blobs present (tar member names, not decoded):
+    lib/firmware/mediatek/{mt7915_wa,mt7915_wm,mt7915_rom_patch}.bin
+  - package manifest       : required packages incl. all in-tree PCIe Wi-Fi
+                             drivers+firmware, plus VM guest tools (acpid, qemu-ga)
   - a bootable combined-efi.img artifact exists
 
 Reads expected values from <repo-root>/fleet-secrets.conf (or $FLEET_SECRETS). Never
@@ -21,14 +44,19 @@ import sys
 import tarfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt")
+sys.path.insert(0, os.path.join(SCRIPT_DIR, "..", "fleet-image"))
+from verify_lib import (check_no_placeholders, find_manifest,
+                         parse_secrets, require_packages)
+
+OWRT = os.environ.get("OWRT", "/home/tim/local/gwifi/openwrt-armsr")
 IMAGE_DIR = os.path.join(OWRT, "bin/targets/armsr/armv8")
 FLEET_SECRETS = os.environ.get(
     "FLEET_SECRETS", os.path.join(SCRIPT_DIR, "..", "fleet-secrets.conf"))
 
 REQUIRED_PACKAGES = [
-    "openwisp-config", "openwisp-monitoring", "kmod-batman-adv",
-    "wpad-mesh-mbedtls", "usteer", "batctl-default",
+    "openwisp-config", "openwisp-monitoring",
+    # VM guest tools: ACPI graceful-shutdown handler + qemu guest agent
+    "acpid", "qemu-ga",
     # PCIe Wi-Fi drivers — all in-tree families (any card that may be passed through)
     "kmod-ath9k", "kmod-ath10k", "kmod-ath11k-pci", "kmod-ath12k",
     "kmod-mt76x0e", "kmod-mt76x2", "kmod-mt7615e", "kmod-mt7915e",
@@ -37,70 +65,91 @@ REQUIRED_PACKAGES = [
     "kmod-rtw88-8822be", "kmod-rtw88-8822ce",
     "kmod-rtw89-pci", "kmod-rtw89-8851be", "kmod-rtw89-8852ae",
     "kmod-rtw89-8852be", "kmod-rtw89-8852ce", "kmod-rtw89-8922ae",
-    # Representative firmware (ath explicit; mt76 bundled in kmod; rtw auto per-chip)
+    # Representative firmware (ath explicit; mt76 is split kmod-mtXXXX-firmware
+    # packages below; rtw auto per-chip)
     "ath10k-firmware-qca9377", "ath11k-firmware-qcn9074",
     "ath12k-firmware-qcn9274", "rtl8852ce-firmware",
+    "kmod-mt7615-firmware", "kmod-mt7915-firmware", "kmod-mt7916-firmware",
+    "kmod-mt7921-firmware", "kmod-mt7922-firmware", "kmod-mt7925-firmware",
+    "kmod-mt7996-firmware",
 ]
 OVERLAY_EXEC = [
     "etc/uci-defaults/99-tenwrt-bootstrap",
     "usr/sbin/gwifi-radio-setup",
+]
+# Content we need to inspect (read into memory).
+WANT_CONTENT = (
+    "etc/config/openwisp",
+    "etc/uci-defaults/99-tenwrt-bootstrap",
+    "usr/sbin/gwifi-radio-setup",
+    "etc/config/usteer",
+)
+# Present-only (existence, no content read needed).
+WANT_PRESENCE = (
+    "lib/gwifi/bootstrap.sh",
+)
+# Mesh/backhaul-gate leftovers that must NOT be in a simple-profile rootfs.
+# etc/config/usteer is deliberately NOT here — the usteer package itself
+# ships a stock default (same as gale); it is checked by content below
+# instead, so we can fail on our old mesh-era baked copy specifically
+# without false-failing on the legitimate package default.
+ABSENT = [
+    "etc/config/wireless",
     "usr/sbin/gwifi-backhaul-gate",
     "etc/hotplug.d/net/30-gwifi-backhaul",
 ]
-
-
-def parse_secrets(path):
-    out = {}
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', line)
-            if not m:
-                continue
-            v = m.group(2).strip()
-            if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-                v = v[1:-1]
-            out[m.group(1)] = v
-    return out
+FIRMWARE_BLOBS = [
+    "lib/firmware/mediatek/mt7915_wa.bin",
+    "lib/firmware/mediatek/mt7915_wm.bin",
+    "lib/firmware/mediatek/mt7915_rom_patch.bin",
+]
+# Every path we ever care about the presence of (used to scope the tarball
+# scan / staging-dir lookups without decoding the whole tree).
+CANDIDATE_PATHS = (
+    set(WANT_CONTENT) | set(WANT_PRESENCE) | set(OVERLAY_EXEC)
+    | set(ABSENT) | set(FIRMWARE_BLOBS)
+)
+# The exec-check loop presence-tests each OVERLAY_EXEC entry via `files.get`,
+# which only holds content for WANT_CONTENT paths — so every OVERLAY_EXEC
+# entry must also be read as content, or the presence test silently breaks.
+assert set(OVERLAY_EXEC) <= set(WANT_CONTENT), \
+    "OVERLAY_EXEC entries must be in WANT_CONTENT"
 
 
 def read_rootfs(image_dir):
-    """Return ({relpath: text}, {relpath: mode}, label) from the rootfs tarball
-    (preferred) or the build staging root-* dir (fallback)."""
-    want = tuple(["etc/config/openwisp", "etc/config/wireless",
-                  "etc/uci-defaults/99-tenwrt-bootstrap"] + OVERLAY_EXEC[1:])
+    """Return ({relpath: text}, {relpath: mode}, {relpath present in rootfs}, label)
+    from the rootfs tarball (preferred) or the build staging root-* dir
+    (fallback). The member-name set enables absence checks (mesh/gate
+    leftovers) without decoding file contents."""
     tarballs = glob.glob(os.path.join(image_dir, "*rootfs.tar.gz"))
     if tarballs:
         tarball = max(tarballs, key=os.path.getmtime)   # newest, in case a stale one lingers
-        files, modes = {}, {}
+        files, modes, members = {}, {}, set()
         with tarfile.open(tarball, "r:gz") as tf:
             for m in tf.getmembers():
                 rel = m.name.lstrip("./")
-                if rel in want and m.isfile():
-                    files[rel] = tf.extractfile(m).read().decode(errors="replace")
+                if rel not in CANDIDATE_PATHS or not m.isfile():
+                    continue
+                members.add(rel)
+                if rel in OVERLAY_EXEC:
                     modes[rel] = m.mode
-        return files, modes, "tarball %s" % os.path.basename(tarball)
+                if rel in WANT_CONTENT:
+                    files[rel] = tf.extractfile(m).read().decode(errors="replace")
+        return files, modes, members, "tarball %s" % os.path.basename(tarball)
     roots = glob.glob(os.path.join(OWRT, "build_dir", "target-*", "root-*"))
     if roots:
-        files, modes = {}, {}
-        for rel in want:
+        files, modes, members = {}, {}, set()
+        for rel in CANDIDATE_PATHS:
             p = os.path.join(roots[0], rel)
             if os.path.isfile(p):
-                with open(p, errors="replace") as fh:
-                    files[rel] = fh.read()
-                modes[rel] = os.stat(p).st_mode
-        return files, modes, "staging %s" % roots[0]
-    return None, None, None
-
-
-def find_manifest(image_dir):
-    for name in sorted(os.listdir(image_dir)):
-        if name.endswith(".manifest"):
-            with open(os.path.join(image_dir, name)) as fh:
-                return fh.read()
-    return None
+                members.add(rel)
+                if rel in OVERLAY_EXEC:
+                    modes[rel] = os.stat(p).st_mode
+                if rel in WANT_CONTENT:
+                    with open(p, errors="replace") as fh:
+                        files[rel] = fh.read()
+        return files, modes, members, "staging %s" % roots[0]
+    return None, None, None, None
 
 
 def main():
@@ -111,8 +160,8 @@ def main():
     secrets = parse_secrets(FLEET_SECRETS)
     failures = []
 
-    files, modes, src = read_rootfs(IMAGE_DIR)
-    if not files:
+    files, modes, members, src = read_rootfs(IMAGE_DIR)
+    if src is None:
         sys.exit("ERROR: no rootfs tarball or staging dir found; build with "
                  "CONFIG_TARGET_ROOTFS_TARGZ=y (in tenwrt.config)")
     print("Rootfs source: %s\n" % src)
@@ -127,10 +176,11 @@ def main():
             print("  PASS %s: %s rendered" % (label, key))
 
     def check_no_ph(content, label):
-        ph = re.findall(r'__[A-Z_]+__', content)
-        if ph:
-            failures.append("FAIL %s: placeholders %s" % (label, ph))
-        else:
+        """Thin wrapper over verify_lib's check_no_placeholders (which only
+        appends failures) so the per-check PASS line is preserved."""
+        before = len(failures)
+        check_no_placeholders(content, label, failures)
+        if len(failures) == before:
             print("  PASS %s: no placeholders" % label)
 
     ow = files.get("etc/config/openwisp")
@@ -139,33 +189,53 @@ def main():
     else:
         check_value(ow, "OPENWISP_URL", "openwisp")
         check_value(ow, "OPENWISP_SHARED_SECRET", "openwisp")
-        check_no_ph(ow, "openwisp")
-
-    wl = files.get("etc/config/wireless")
-    if wl is None:
-        failures.append("FAIL wireless: not in rootfs")
-    else:
-        if "mode 'mesh'" in wl or "mode='mesh'" in wl:
-            print("  PASS wireless: mesh mode present")
+        if "management_interface 'br0.4'" in ow:
+            print("  PASS openwisp: management_interface 'br0.4' present")
         else:
-            failures.append("FAIL wireless: mesh mode not found")
-        check_value(wl, "MESH_ID", "wireless")
-        check_value(wl, "MESH_SAE_KEY", "wireless")
-        check_no_ph(wl, "wireless")
+            failures.append("FAIL openwisp: management_interface 'br0.4' not found")
+        if "option mac_interface" in ow:
+            failures.append("FAIL openwisp: option mac_interface present "
+                             "(bootstrap driver must set it, not the shared overlay)")
+        else:
+            print("  PASS openwisp: no option mac_interface (per-image bootstrap sets it)")
+        check_no_ph(ow, "openwisp")
 
     bs = files.get("etc/uci-defaults/99-tenwrt-bootstrap")
     if bs is None:
         failures.append("FAIL bootstrap: not in rootfs")
     else:
-        if "UPLINK=eth0" in bs:
-            print("  PASS bootstrap: eth0 trunk")
+        if "gwifi_create_bridge eth0" in bs:
+            print("  PASS bootstrap: gwifi_create_bridge eth0")
         else:
-            failures.append("FAIL bootstrap: eth0 trunk uplink not found")
-        if "gwifi-backhaul-gate --once" in bs:
-            print("  PASS bootstrap: cron line installed")
+            failures.append("FAIL bootstrap: gwifi_create_bridge eth0 not found")
+        if "TENVM-BOOTSTRAP-COMPLETE" in bs:
+            print("  PASS bootstrap: TENVM-BOOTSTRAP-COMPLETE marker present")
         else:
-            failures.append("FAIL bootstrap: cron-install snippet missing")
+            failures.append("FAIL bootstrap: TENVM-BOOTSTRAP-COMPLETE marker missing")
         check_no_ph(bs, "bootstrap")
+
+    for rel in WANT_PRESENCE:
+        if rel in members:
+            print("  PASS present: %s" % rel)
+        else:
+            failures.append("FAIL present: %s missing from rootfs" % rel)
+
+    rs = files.get("usr/sbin/gwifi-radio-setup")
+    if rs is None:
+        failures.append("FAIL radio-setup: not in rootfs")
+    elif "radio_swap_needed" in rs:
+        print("  PASS radio-setup: radio_swap_needed present")
+    else:
+        failures.append("FAIL radio-setup: radio_swap_needed not found")
+
+    us = files.get("etc/config/usteer")
+    if us is None:
+        failures.append("FAIL usteer: not in rootfs (expected: usteer package default)")
+    elif "ansells" in us or "mesh_rssi" in us or re.search(r'__[A-Z_]+__', us):
+        failures.append("FAIL usteer: looks like the mesh-era baked overlay copy, "
+                         "not the stock package default")
+    else:
+        print("  PASS usteer: stock package default (no baked overlay leftover)")
 
     for rel in OVERLAY_EXEC:
         if rel not in files:
@@ -175,15 +245,27 @@ def main():
         else:
             failures.append("FAIL exec: %s present but not executable" % rel)
 
-    manifest = find_manifest(IMAGE_DIR)
-    if manifest is None:
+    for rel in ABSENT:
+        if rel in members:
+            failures.append("FAIL leftover: %s present (should be absent; "
+                             "mesh/backhaul remnant)" % rel)
+        else:
+            print("  PASS leftover-free: %s" % rel)
+
+    for rel in FIRMWARE_BLOBS:
+        if rel in members:
+            print("  PASS firmware: %s present" % rel)
+        else:
+            failures.append("FAIL firmware: %s missing from rootfs" % rel)
+
+    manifest_path = find_manifest(IMAGE_DIR)
+    if manifest_path is None:
         failures.append("FAIL manifest: none found")
     else:
+        pkgs = require_packages(manifest_path, REQUIRED_PACKAGES, failures)
         for pkg in REQUIRED_PACKAGES:
-            if pkg in manifest:
+            if pkg in pkgs:
                 print("  PASS manifest: '%s'" % pkg)
-            else:
-                failures.append("FAIL manifest: '%s' missing" % pkg)
 
     imgs = glob.glob(os.path.join(IMAGE_DIR, "*combined-efi.img")) \
         + glob.glob(os.path.join(IMAGE_DIR, "*combined-efi.img.gz"))

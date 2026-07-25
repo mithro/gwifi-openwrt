@@ -22,6 +22,10 @@ __pycache__/
 *.pyc
 tmp/
 
+# Build-private artifact dirs (see build-gale-image.sh / build-installer.sh).
+gale-image/out/
+gale-installer/out/
+
 # Exception (must come last to override the broader excludes above): the
 # dev-unit gale's stock SPI backup is committed as a recovery reference.
 # Its VPD (serial / mlb_serial / MAC / region) is for this single dev unit
