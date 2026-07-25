@@ -70,14 +70,32 @@ def test_upstream_from_lldp_dumb_switch_returns_none():
 
 
 def test_missing_wifi_interface_detected():
-    """A puck missing one of the 8 expected wifi interfaces must fail loud."""
+    """A puck missing one of the 6 required AP interfaces must fail loud."""
     from galeflash.livecollect import check_wifi_complete
     macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
     check_wifi_complete("puck12", macs)  # complete — no raise
     incomplete = dict(macs)
-    del incomplete["mesh-5g"]
-    with pytest.raises(ValueError, match="mesh-5g"):
+    del incomplete["wl-main-5g"]
+    with pytest.raises(ValueError, match="wl-main-5g"):
         check_wifi_complete("puck12", incomplete)
+
+
+def test_absent_mesh_interfaces_are_fine():
+    """Mesh is preserved-but-detached: a rebooted puck without mesh ifaces
+    (observed live 2026-07-25: puck07) must pass."""
+    from galeflash.livecollect import check_wifi_complete
+    macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
+    no_mesh = {k: v for k, v in macs.items() if not k.startswith("mesh-")}
+    check_wifi_complete("puck07", no_mesh)  # no raise
+
+
+def test_unknown_interface_still_detected():
+    from galeflash.livecollect import check_wifi_complete
+    macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
+    macs = dict(macs)
+    macs["wl-mystery-6g"] = "aa:bb:cc:dd:ee:ff"
+    with pytest.raises(ValueError, match="wl-mystery-6g"):
+        check_wifi_complete("puck12", macs)
 
 
 from galeflash.livecollect import merge_live_fields
@@ -106,6 +124,20 @@ def test_merge_live_fields_creates_minimal_record(tmp_path):
     assert data["serial_number"] == "SERNEW"
     assert data["name"] == "puck11"
     assert "upstream" not in data                # None → field absent
+
+
+def test_merge_live_fields_keeps_recorded_mesh_when_absent(tmp_path):
+    """A mesh-less collect (detached mesh, post-reboot) must not erase the
+    recorded mesh BSSIDs; non-mesh keys are still replaced wholesale."""
+    inv = tmp_path / "SER001.json"
+    inv.write_text(json.dumps({"serial_number": "SER001",
+                               "wifi_macs": {"mesh-5g": "44:07:0b:01:a2:24",
+                                             "wl-main-2g4": "old:mac"}}))
+    merge_live_fields(tmp_path, "SER001", name="puck07", upstream=None,
+                      wifi_macs={"wl-main-2g4": "44:07:0b:01:a2:28"})
+    data = json.loads(inv.read_text())
+    assert data["wifi_macs"]["mesh-5g"] == "44:07:0b:01:a2:24"  # kept
+    assert data["wifi_macs"]["wl-main-2g4"] == "44:07:0b:01:a2:28"  # replaced
 
 
 def test_merge_live_fields_none_upstream_does_not_erase(tmp_path):

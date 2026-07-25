@@ -11,16 +11,19 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-# The 8 wireless interfaces every production gale puck runs (the
-# openwisp-managed simple profile added wl-iot-5g, first seen live
-# 2026-07-25 on puck03).  A live puck missing one is an error, not a gap
-# to skip.
-EXPECTED_WIFI_IFACES: frozenset[str] = frozenset({
+# The 6 AP interfaces every production gale puck runs (the openwisp-managed
+# simple profile added wl-iot-5g, first seen live 2026-07-25 on puck03).
+# A live puck missing one of these is an error, not a gap to skip.
+REQUIRED_WIFI_IFACES: frozenset[str] = frozenset({
     "wl-main-2g4", "wl-main-5g",
     "wl-guest-2g4", "wl-guest-5g",
     "wl-iot-2g4", "wl-iot-5g",
-    "mesh-2g4", "mesh-5g",
 })
+# Mesh is preserved-but-detached fleet-wide (simple profile): whether the
+# mesh interfaces exist depends on image vintage and reboot state (puck07
+# lost them on its 2026-07-25 reboot; puck03 has them).  Present = record,
+# absent = fine.
+OPTIONAL_WIFI_IFACES: frozenset[str] = frozenset({"mesh-2g4", "mesh-5g"})
 
 
 class PuckReg(NamedTuple):
@@ -84,13 +87,13 @@ def parse_iw_dev(text: str) -> dict[str, str]:
 
 
 def check_wifi_complete(puck: str, macs: dict[str, str]) -> None:
-    """Raise if the wireless interface set differs from the expected 7."""
-    missing = EXPECTED_WIFI_IFACES - set(macs)
+    """Raise if a required AP interface is missing or an unknown one appears."""
+    missing = REQUIRED_WIFI_IFACES - set(macs)
     if missing:
         raise ValueError(
             f"{puck}: missing wifi interface(s): {', '.join(sorted(missing))}"
         )
-    unexpected = set(macs) - EXPECTED_WIFI_IFACES
+    unexpected = set(macs) - REQUIRED_WIFI_IFACES - OPTIONAL_WIFI_IFACES
     if unexpected:
         raise ValueError(
             f"{puck}: unexpected wifi interface(s): {', '.join(sorted(unexpected))}"
@@ -179,6 +182,13 @@ def merge_live_fields(
     if upstream is not None:
         data["upstream"] = upstream
     if wifi_macs:
-        data["wifi_macs"] = dict(sorted(wifi_macs.items()))
+        merged = dict(wifi_macs)
+        for k, v in (data.get("wifi_macs") or {}).items():
+            # Mesh is preserved-but-detached: a collect from a puck whose
+            # reboot dropped the mesh ifaces must not erase the recorded
+            # mesh BSSIDs (absence is not evidence, same as upstream=None).
+            if k in OPTIONAL_WIFI_IFACES and k not in merged:
+                merged[k] = v
+        data["wifi_macs"] = dict(sorted(merged.items()))
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     return path
