@@ -43,3 +43,9 @@ gale-installer/out/
 # Exception: the Renode equivalence harness vendors the option bytes (a copy of
 # the dump above, sha256 cdb247d4…) so the harness is self-contained.
 !gale-ec/renode/data/gale-optionbytes.bin
+
+# Exception: EDN teardown press photos (public article content, carries none
+# of our fleet's per-device identity). See docs/photos/edn-gale-teardown/README.md.
+!docs/photos/
+!docs/photos/edn-gale-teardown/
+!docs/photos/edn-gale-teardown/*
