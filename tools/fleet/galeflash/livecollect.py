@@ -134,6 +134,10 @@ def upstream_from_lldp(doc: dict) -> str | None:
     ``mac``-type port ids) AND it advertises a chassis name.  Returns None
     when no neighbor qualifies (puck behind an unmanaged switch); raises if
     MORE than one qualifies (ambiguous topology).
+
+    Switches advertise their *management* hostname (``manage-<name>``);
+    the sheet records the switch by its plain name, so the prefix is
+    stripped (house style, per the user's manual edits of 2026-07-25/26).
     """
     interfaces = doc.get("lldp", [{}])[0].get("interface", [])
     candidates: list[str] = []
@@ -147,6 +151,7 @@ def upstream_from_lldp(doc: dict) -> str | None:
                 for pid in port.get("id", []):
                     if pid.get("type") == "local" and pid.get("value"):
                         short = names[0].split(".")[0]
+                        short = short.removeprefix("manage-")
                         candidates.append(f"{short} port {pid['value']}")
     if len(candidates) > 1:
         raise ValueError(f"multiple upstream switch candidates: {candidates}")

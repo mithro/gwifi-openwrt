@@ -64,6 +64,15 @@ def test_upstream_from_lldp_managed_switch():
     assert up == "sw-netgear-gsm7252ps-s1 port 1/0/46"
 
 
+def test_upstream_from_lldp_strips_manage_prefix():
+    """Switches advertise their management hostname (manage-<name>); the
+    sheet records the plain name (observed live: puck06 on m4300-s2)."""
+    doc = json.loads((FIXTURES / "puck12_lldp.json").read_text()
+                     .replace("sw-netgear-gsm7252ps-s1.welland",
+                              "manage-sw-netgear-gsm7252ps-s1.welland"))
+    assert upstream_from_lldp(doc) == "sw-netgear-gsm7252ps-s1 port 1/0/46"
+
+
 def test_upstream_from_lldp_dumb_switch_returns_none():
     doc = json.loads((FIXTURES / "puck07_lldp_dumb_switch.json").read_text())
     assert upstream_from_lldp(doc) is None
