@@ -1,7 +1,12 @@
 # Fleet image base + tenwrt VM parity — Design Spec
 
 > Status: implemented on branch tenwrt-vm-parity (2026-07-25). Originally
-> approved 2026-07-24. Supersedes
+> approved 2026-07-24. **Revised 2026-07-26** (template names in this doc are
+> historical): templates renamed gwifi-base→`ansells-aps-base`,
+> gwifi-aps→`ansells-aps-puck`, gwifi-mesh-aps→`ansells-aps-mesh`, and a new
+> `ansells-aps-tenwrt` (three APs, 5 GHz-only, 802.11ax) added after the live
+> card proved hardware-bonded non-DBDC (single phy — MT_HW_BOUND bit 5 clear),
+> so the VM cannot attach the dual-radio puck template. Supersedes
 > `docs/ten64-vm-image-design.md` for the **content** of the ten64 VM image (that
 > spec's mesh-era feature set is preserved in git history and via the detached
 > `gwifi-mesh-aps` template, matching the fleet-wide 2026-07-22 simple-profile

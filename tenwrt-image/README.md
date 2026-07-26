@@ -33,10 +33,12 @@ baked in.
   "Radio story" below),
 - writes `TENVM-BOOTSTRAP-COMPLETE uplink=eth0` to `/dev/console`.
 
-Everything else — SSH keys, the `gwifi-base` template (lldpd + usteer
+Everything else — SSH keys, the `ansells-aps-base` template (lldpd + usteer
 configs, crontab, and the `post-reload-hook` that creates the roam=20 /
-iot=90 / guest=99 bridge-vlans + interfaces), and `gwifi-aps` (radios + six
-APs) — arrives from OpenWISP **after registration**, exactly like a puck.
+iot=90 / guest=99 bridge-vlans + interfaces), and `ansells-aps-tenwrt`
+(single 5 GHz radio + three APs; the MT7915 is hardware-bonded non-DBDC so
+there is no 2.4 GHz radio — see "Radio story") — arrives from OpenWISP
+**after registration**, exactly like a puck.
 `post-reload-hook`'s trunk detection tries `eth-black` → `lan` → **`eth0`**
 (final fallback, added for this VM; pucks always match one of the first two
 names, so ordering is safe — gale's own `eth0` is the DSA conduit and must
@@ -169,16 +171,23 @@ Built in the dedicated `openwrt-armsr` tree, v25.12.4 @ `2b1b3b2266`,
 
 ## Radio story
 
-ten64's card is an MT7915A/D (`14c3:7915`), DBDC (dual-band, dual-concurrent:
-2.4 + 5 GHz on one PCIe function). `gwifi-radio-setup` is driver-agnostic
-(works for whatever card is passed through) and, after `wifi config`
-auto-detects bands, **band-normalizes** the result: if `radio0` comes up as
-the 5/6 GHz phy while `radio1` is 2.4 GHz, it swaps their UCI section names
-so `radio0` is always 2.4 GHz / `radio1` is always 5 GHz — the binding the
-`gwifi-aps` template expects. It is a no-op with no phy attached (image-first
-boot, or this smoke test). **Open question:** DBDC phy enumeration order for
-the MT7915 is only provable with the card physically passed through; the
-normalization step exists precisely because that order is not guaranteed.
+ten64's card is an MT7915 (`14c3:7915`) — and it is **hardware-bonded
+non-DBDC** (proven live 2026-07-26: `MT_HW_BOUND` @ 0x70010020 reads 0x208,
+bit 5 clear → `dbdc_support=false` in mt76; EEPROM 0x190 = 0x24 → 4 TX/4 RX
+paths, band-select DEFAULT). It therefore presents **one phy** (4x4, 2.4 *or*
+5 GHz, one band at a time — `#channels <= 1`), and no software knob can split
+it: DBDC is a silicon bond option, and splitting would cap each band at 2x2
+anyway. So the VM serves 5 GHz only (`ansells-aps-tenwrt`: `radio0`, HE80,
+three SSIDs) and the pucks own 2.4 GHz coverage.
+
+`gwifi-radio-setup` is driver-agnostic and, after `wifi config` auto-detects
+bands, **band-normalizes** the result: if `radio0` comes up as the 5/6 GHz
+phy while `radio1` is 2.4 GHz, it swaps their UCI section names so `radio0`
+is always 2.4 GHz / `radio1` is always 5 GHz — the binding the dual-band
+`ansells-aps-puck` template layout expects. With the current single-phy card
+(and with no phy attached at all — image-first boot, or the smoke test) it
+is a no-op; it stays for a future genuinely-DBDC card, whose phy enumeration
+order is not guaranteed.
 
 ## Deploy runbook (manual — not run by this repo)
 
@@ -192,8 +201,8 @@ normalization step exists precisely because that order is not guaranteed.
    `ten64-host/README.md`.
 4. Watch first boot: the guest DHCPs on VLAN 4 (tagged) and registers with
    OpenWISP as device `tenwrt`.
-5. Re-run `openwisp/build-templates.py` to attach `gwifi-aps` +
-   `gwifi-base` — **this must happen AFTER step 4**: the attach loop skips
+5. Re-run `openwisp/build-templates.py` to attach `ansells-aps-tenwrt` +
+   `ansells-aps-base` — **this must happen AFTER step 4**: the attach loop skips
    device names that don't exist yet on the controller, so a run before
    first registration silently attaches nothing to `tenwrt`.
 6. `virsh shutdown tenwrt` must power the guest off gracefully (acpid ->
