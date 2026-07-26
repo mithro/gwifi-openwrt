@@ -2,8 +2,8 @@
 # 99-tenwrt-bootstrap — first-boot wisp-connectivity for the ten64 Wi-Fi VM
 # (KVM guest 'tenwrt'): exact simple-profile parity with the pucks — bake ONLY
 # what reaches the OpenWISP controller. APs and the client VLAN legs arrive
-# via OpenWISP templates after registration (gwifi-base post-reload-hook keys
-# on the eth0 trunk). Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
+# via OpenWISP templates after registration (ansells-aps-base post-reload-hook
+# keys on the eth0 trunk). Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
 #
 # Uplink: single virtio TRUNK NIC eth0 on ten64's br-raw (floods all tagged
 # frames), so mgmt VLAN 4 rides TAGGED here — pucks get it untagged from
@@ -23,8 +23,9 @@ gwifi_firewall_mgmt
 gwifi_openwisp_mac eth0
 
 # Radios (VFIO passthrough) may already be present at first boot: normalize
-# radio0=2.4GHz / radio1=5GHz so the OpenWISP gwifi-aps template binds.
-# No-op with no phy (pre-passthrough / smoke boot).
+# radio0=2.4GHz / radio1=5GHz in case a dual-band-template (DBDC) card is
+# fitted. No-op with no phy (pre-passthrough / smoke boot) and with the
+# current single-phy MT7915 (5 GHz-only ansells-aps-tenwrt template).
 [ -x /usr/sbin/gwifi-radio-setup ] && /usr/sbin/gwifi-radio-setup || true
 
 # First-boot completion marker. uci-defaults stdout is captured by logd, NOT

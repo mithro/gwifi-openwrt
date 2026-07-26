@@ -22,8 +22,8 @@ or the build staging root-* dir as fallback):
                              same as gale) but must be the STOCK package
                              default, not our mesh-era baked overlay copy —
                              no 'ansells', no 'mesh_rssi', no placeholders.
-                             The wisp gwifi-base template overwrites it after
-                             registration.
+                             The wisp ansells-aps-base template overwrites it
+                             after registration.
   - mesh/gate leftovers ABSENT: /etc/config/wireless (no package ships this
     statically; `wifi config` generates it at runtime),
     /usr/sbin/gwifi-backhaul-gate, /etc/hotplug.d/net/30-gwifi-backhaul

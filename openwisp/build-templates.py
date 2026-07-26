@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Build the OpenWISP AP config templates + attach the active one to the pucks.
+"""Build the OpenWISP AP config templates + attach them to the fleet.
 
-Two profiles exist (2026-07-22 restructure):
+Template family (renamed 2026-07-26 from the gwifi-* names; the script renames
+in place so existing attachments — which reference template ids — ride along):
 
-  simple (ACTIVE, template 'gwifi-aps') — the fleet's current config.
+  ansells-aps-base    (was gwifi-base)     lldpd/usteer/cron + post-reload-hook
+  ansells-aps-puck    (was gwifi-aps)      six-AP dual-band puck layer (ACTIVE)
+  ansells-aps-tenwrt  (new)                three-AP 5 GHz-only VM layer
+  ansells-aps-mesh    (was gwifi-mesh-aps) preserved mesh-era layer, unattached
+
+Two puck profiles exist (2026-07-22 restructure):
+
+  simple (ACTIVE, template 'ansells-aps-puck') — the fleet's current config.
     Six APs, no mesh. The gale image/local config provides the network
     shape (vlan-aware br0 with the WAN jack as uplink trunk: VLAN 4
     untagged/pvid + 20/90/99 tagged; lan disabled; no batman — see
@@ -19,21 +27,25 @@ Two profiles exist (2026-07-22 restructure):
     (netjsonconfig has no usteer schema); it talks over mgmt (the wan
     trunk) and steers only 'ansells'/'ansells-guest'.
 
-  mesh-aps (PRESERVED, template 'gwifi-mesh-aps', attached to nothing) —
+  mesh-aps (PRESERVED, template 'ansells-aps-mesh', attached to nothing) —
     the advanced-mesh-era 5-AP layer (WPA3 + 802.11r fast-roam main, no
     iot-5g). Kept so devices & network can be switched back to the mesh
     architecture later: restore the per-puck network snapshot with
-    puck_profile.py mesh, then attach this template instead of gwifi-aps.
+    puck_profile.py mesh, then attach this template instead of
+    ansells-aps-puck.
 
 Secret handling: the 3 WiFi passphrases are read from ten64's hostapd configs;
 none are ever printed or committed. They go into the templates' default_values
 (OpenWISP DB on wisp, internal) as {{ }} substitutions and are piped to wisp
 over SSH stdin (not argv). The verification render redacts all `option key`.
 
-tenwrt VM parity (fleet-image-base-plan.md Task 13): the ten64 VM (device name
-'tenwrt') attaches to the SAME gwifi-aps + gwifi-base templates as the pucks —
-it has no physical jacks, so gwifi-base's post-reload-hook falls back to the
-virtio trunk eth0 when neither puck jack name (eth-black/lan) exists.
+tenwrt VM parity (fleet-image-base-plan.md Task 13, revised 2026-07-26): the
+ten64 VM (device name 'tenwrt') attaches to ansells-aps-base +
+ansells-aps-tenwrt. Its MT7915 is hardware-bonded non-DBDC (MT_HW_BOUND bit 5
+clear -> ONE phy, 4x4, one band at a time), so the VM serves the three SSIDs
+on 5 GHz only — 2.4 GHz coverage stays with the pucks. It has no physical
+jacks, so the base post-reload-hook falls back to the virtio trunk eth0 when
+neither puck jack name (eth-black/lan) exists.
 """
 import json
 import subprocess
@@ -93,18 +105,21 @@ def _wpa2(key):
     return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
 
 
+# Per-BSS tuning shared by the puck and tenwrt AP templates.
+STEER = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
+IOT = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
+
+
+def _ap(name, radio, ssid, network, key, **extra):
+    return {"name": name, "type": "wireless", "wireless": dict(
+        radio=radio, mode="access_point", ssid=ssid,
+        network=[network], encryption=_wpa2(key), **extra)}
+
+
 def netjson_simple():
     """Six-AP simple profile — must render to the same effective config
     puck_profile.py applies locally (psk2+ccmp everywhere; matching per-BSS
     tuning) so agent applies converge instead of churning."""
-    steer = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
-    iot = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
-
-    def ap(name, radio, ssid, network, key, **extra):
-        return {"name": name, "type": "wireless", "wireless": dict(
-            radio=radio, mode="access_point", ssid=ssid,
-            network=[network], encryption=_wpa2(key), **extra)}
-
     radios = [
         {"name": "radio0", "driver": "mac80211", "protocol": "802.11n",
          "channel": 6, "channel_width": 20},
@@ -112,15 +127,32 @@ def netjson_simple():
          "channel": 36, "channel_width": 80},
     ]
     return {"radios": radios, "interfaces": [
-        ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
-        ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **steer),
-        ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **iot),
-        ap("wl-iot-2g4", "radio0", SSID_IOT, "iot", "{{ iot_key }}",
-           legacy_rates=True, **iot),
-        ap("wl-guest-5g", "radio1", SSID_GUEST, "guest", "{{ guest_key }}",
-           isolate=True, **steer),
-        ap("wl-guest-2g4", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
-           isolate=True, **steer),
+        _ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
+        _ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
+        _ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **IOT),
+        _ap("wl-iot-2g4", "radio0", SSID_IOT, "iot", "{{ iot_key }}",
+            legacy_rates=True, **IOT),
+        _ap("wl-guest-5g", "radio1", SSID_GUEST, "guest", "{{ guest_key }}",
+            isolate=True, **STEER),
+        _ap("wl-guest-2g4", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
+            isolate=True, **STEER),
+    ]}
+
+
+def netjson_tenwrt_aps():
+    """tenwrt VM AP layer: single 5 GHz-only radio (MT7915 bonded non-DBDC),
+    same SSIDs/keys/zones/tuning as the puck template minus the 2.4 GHz BSSes.
+    802.11ax: the VM's mt7915 does HE80 (the pucks' IPQ4019 is ac-only), and
+    channel 36 matches the fleet-wide 5 GHz roaming plan."""
+    radios = [
+        {"name": "radio0", "driver": "mac80211", "protocol": "802.11ax",
+         "channel": 36, "channel_width": 80},
+    ]
+    return {"radios": radios, "interfaces": [
+        _ap("wl-main-5g", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
+        _ap("wl-iot-5g", "radio0", SSID_IOT, "iot", "{{ iot_key }}", **IOT),
+        _ap("wl-guest-5g", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
+            isolate=True, **STEER),
     ]}
 
 
@@ -183,7 +215,7 @@ CRONTAB = """# lldpd snapshots the hostname at start; reassert so renames propag
 """
 
 POST_RELOAD_HOOK = """#!/bin/sh
-# openwisp post-reload-hook (delivered by the gwifi-base template):
+# openwisp post-reload-hook (delivered by the ansells-aps-base template):
 # device state the agent cannot express as plain uci-file templates.
 
 # Client VLANs tagged on the trunk (mgmt VLAN 4 is baked in the image).
@@ -252,6 +284,7 @@ Org = load_model("openwisp_users", "Organization")
 Device = load_model("config", "Device")
 org = Org.objects.get(slug="default")
 ACTIVE = json.loads({active!r})
+TENWRT = json.loads({tenwrt!r})
 PRESERVED = json.loads({preserved!r})
 BASE = json.loads({base!r})
 DEFAULTS = json.loads({defaults!r})
@@ -261,27 +294,56 @@ PUCKS = {pucks!r}
 # tenwrt VM's first successful registration (design spec §4.6).
 DEVICES = PUCKS + ["tenwrt"]
 
+# One-time rename of the pre-2026-07-26 gwifi-* template names. Must run
+# before the upserts: update_or_create keys on name, so without this the new
+# names would CREATE duplicates while the old templates stayed attached.
+# Renaming in place keeps ids, so existing puck attachments ride along.
+RENAMES = [("gwifi-base", "ansells-aps-base"),
+           ("gwifi-aps", "ansells-aps-puck"),
+           ("gwifi-mesh-aps", "ansells-aps-mesh")]
+for old, new in RENAMES:
+    oldq = Template.objects.filter(organization=org, name=old)
+    if not oldq.exists():
+        continue
+    if Template.objects.filter(organization=org, name=new).exists():
+        print("WARNING: both", old, "and", new, "exist; leaving", old,
+              "alone — resolve the duplicate by hand")
+        continue
+    tpl = oldq.get()
+    tpl.name = new
+    tpl.full_clean(); tpl.save()
+    print("renamed template:", old, "->", new)
+
 b, bcreated = Template.objects.update_or_create(
-    organization=org, name="gwifi-base",
+    organization=org, name="ansells-aps-base",
     defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
                   config=BASE, default=False),
 )
 b.full_clean(); b.save()
-print("gwifi-base:", "created" if bcreated else "updated", "id=", b.id)
+print("ansells-aps-base:", "created" if bcreated else "updated", "id=", b.id)
 
-# Active template: 'gwifi-aps' (already attached fleet-wide) now carries the
-# simple six-AP profile.
+# Active puck template: 'ansells-aps-puck' (already attached fleet-wide)
+# carries the simple six-AP dual-band profile.
 t, created = Template.objects.update_or_create(
-    organization=org, name="gwifi-aps",
+    organization=org, name="ansells-aps-puck",
     defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
                   config=ACTIVE, default=False, default_values=DEFAULTS),
 )
 t.full_clean(); t.save()
-print("gwifi-aps:", "created" if created else "updated", "id=", t.id)
+print("ansells-aps-puck:", "created" if created else "updated", "id=", t.id)
 
-# Preserved template: 'gwifi-mesh-aps' exists but is attached to nothing.
+# tenwrt template: three-AP 5 GHz-only layer for the single-phy MT7915 VM.
+tw, twcreated = Template.objects.update_or_create(
+    organization=org, name="ansells-aps-tenwrt",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=TENWRT, default=False, default_values=DEFAULTS),
+)
+tw.full_clean(); tw.save()
+print("ansells-aps-tenwrt:", "created" if twcreated else "updated", "id=", tw.id)
+
+# Preserved template: 'ansells-aps-mesh' exists but is attached to nothing.
 m, mcreated = Template.objects.update_or_create(
-    organization=org, name="gwifi-mesh-aps",
+    organization=org, name="ansells-aps-mesh",
     defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
                   config=PRESERVED, default=False, default_values=DEFAULTS),
 )
@@ -289,7 +351,7 @@ m.full_clean(); m.save()
 detached = 0
 for c in Config.objects.filter(templates=m):
     c.templates.remove(m); detached += 1
-print("gwifi-mesh-aps:", "created" if mcreated else "updated",
+print("ansells-aps-mesh:", "created" if mcreated else "updated",
       "id=", m.id, "detached-from:", detached)
 
 attached = 0
@@ -300,27 +362,38 @@ for name in DEVICES:
     except Device.DoesNotExist:
         missing.append(name); continue
     c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    for tpl in (b, t):
+    want = (b, tw) if name == "tenwrt" else (b, t)
+    for tpl in want:
         if tpl not in c.templates.all():
             c.templates.add(tpl)
+    # the dual-band puck AP template must never ride on the single-phy VM
+    if name == "tenwrt" and t in c.templates.all():
+        c.templates.remove(t)
+        print("detached ansells-aps-puck from tenwrt")
     c.full_clean(); c.save()
     attached += 1
 print("configs attached:", attached, "/", len(DEVICES), "missing:", missing)
 
-# verification render of an online puck, passphrases redacted
-d = Device.objects.get(organization=org, name="puck12")
-rendered = d.config.backend_instance.render()
-rendered = re.sub(r"(option key ').*?(')", r"\g<1><REDACTED>\g<2>", rendered)
-print("=" * 60)
-print("puck12 rendered config (keys redacted):")
-print("=" * 60)
-print(rendered)
+# verification renders, passphrases redacted
+for name in ("puck12", "tenwrt"):
+    try:
+        d = Device.objects.get(organization=org, name=name)
+    except Device.DoesNotExist:
+        print("render skipped (unregistered):", name)
+        continue
+    rendered = d.config.backend_instance.render()
+    rendered = re.sub(r"(option key ').*?(')", r"\g<1><REDACTED>\g<2>", rendered)
+    print("=" * 60)
+    print(name, "rendered config (keys redacted):")
+    print("=" * 60)
+    print(rendered)
 '''
 
 
 def main() -> int:
     vals = read_passphrases()
     script = DJANGO.format(active=json.dumps(netjson_simple()),
+                           tenwrt=json.dumps(netjson_tenwrt_aps()),
                            preserved=json.dumps(netjson_mesh_aps()),
                            base=json.dumps(netjson_base()),
                            defaults=json.dumps(vals), pucks=PUCKS)

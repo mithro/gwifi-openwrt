@@ -5,8 +5,8 @@
 # mesh design (bat0 + BLA, per-VLAN legs, 802.11s backhaul on both bands,
 # guest access jack). Idempotent: fixed UCI section names.
 #
-# The mesh AP layer then comes from the OpenWISP template 'gwifi-mesh-aps'
-# (attach it / detach 'gwifi-aps' in the controller). See also
+# The mesh AP layer then comes from the OpenWISP template 'ansells-aps-mesh'
+# (attach it / detach 'ansells-aps-puck' in the controller). See also
 # tools/fleet/puck_profile.py for fleet-side switching with snapshots.
 VLANS="int=10 roam=20 iot=90 guest=99"
 MGMT_BAT_VID=4
@@ -111,4 +111,4 @@ uci commit firewall
 /etc/init.d/gwifi-topology enable
 
 echo "mesh profile configured — reload with: /etc/init.d/network restart && wifi"
-echo "remember: attach 'gwifi-mesh-aps' (detach 'gwifi-aps') in OpenWISP"
+echo "remember: attach 'ansells-aps-mesh' (detach 'ansells-aps-puck') in OpenWISP"

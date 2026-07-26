@@ -4,7 +4,7 @@
 # /etc/uci-defaults/99-*-bootstrap driver. Everything here is the MINIMUM to
 # reach the OpenWISP controller; APs, client VLAN legs, steering, lldpd and
 # syslog are delivered by OpenWISP templates after the agent registers
-# (gwifi-base post-reload-hook). Idempotent: fixed UCI section names.
+# (ansells-aps-base post-reload-hook). Idempotent: fixed UCI section names.
 # STP stays OFF everywhere: netifd's default bridge priority (0x7FFF)
 # undercuts the switch fabric's 0x8000, so a fleet bridge speaking 802.1D
 # would win STP root of the site L2 (bit the pucks on 2026-07-22).
