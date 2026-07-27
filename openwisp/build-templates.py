@@ -253,6 +253,14 @@ uci set system.@system[0].log_port='6666'
 uci set system.@system[0].log_proto='udp'
 uci commit system
 
+# lldpd announces on the physical jacks (config file from this template);
+# ensure the detected trunk is in the list — no-op on pucks (their jacks are
+# pre-listed), adds the virtio eth0 on the tenwrt VM. Runs after every apply
+# because the template rewrites /etc/config/lldpd each time.
+if ! uci -q get lldpd.config.interface | tr ' ' '\n' | grep -qx "$TRUNK"; then
+	uci add_list lldpd.config.interface="$TRUNK"
+	uci commit lldpd
+fi
 /etc/init.d/lldpd enable
 /etc/init.d/lldpd restart
 /etc/init.d/usteer enable
