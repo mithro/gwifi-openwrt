@@ -45,7 +45,7 @@ changes are required beyond one-time Person↔tracker assignment.
 ## Architecture
 
 ```
-puck03..12 (OpenWrt)                         ha.welland.mithis.com
+registered fleet pucks (OpenWrt)             ha.welland.mithis.com
 ┌─────────────────────────────┐              ┌──────────────────┐
 │ hostapd.wl-* ──ubus events──▶│              │ mosquitto :1883  │
 │ presence-detector (procd)   │──MQTT/IPv4──▶│  user wifi-puckNN│
@@ -137,6 +137,13 @@ assignment per tracked human device.
 - BSSID/interface churn: interfaces are auto-detected at service start; a
   `wifi` reload restarts hostapd objects — procd keeps the service up and the
   sync interval re-registers clients.
+- **Known accepted risk — dead-AP stale `home`**: if a puck dies uncleanly
+  (power loss), its retained per-puck `home` states stay frozen (MQTT
+  device_tracker has no expire_after) and a Person ORing that tracker stays
+  home. Accepted for now (rare, human-noticed; the existing gdoc2netcfg
+  reachability entities show the puck itself down). If it bites, the fix is
+  an HA automation keying off the puck's connectivity entity — not new
+  on-device code.
 
 ## Testing
 
