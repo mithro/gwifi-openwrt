@@ -411,6 +411,13 @@ print("ansells-presence:", "created" if prcreated else "updated", "id=", pr.id)
 
 attached = 0
 missing = []
+# netjsonconfig's evaluate_vars leaves the LITERAL '{{ mqtt_username }}' text
+# in place when a var is absent from Config.context -- it does not raise and
+# does not substitute empty. So a device attached to ansells-presence without
+# both context keys silently ships a settings.json full of placeholders; that
+# can't raise/abort here (attaching is still correct), it just needs a loud
+# warning so the operator runs set_device_vars.py before the config applies.
+context_missing = []
 for name in DEVICES:
     try:
         d = Device.objects.get(organization=org, name=name)
@@ -429,9 +436,17 @@ for name in DEVICES:
     if name == "tenwrt" and pr in c.templates.all():
         c.templates.remove(pr)
         print("detached ansells-presence from tenwrt")
+    elif pr in c.templates.all():
+        ctx = c.context or {{}}
+        if "mqtt_username" not in ctx or "mqtt_password" not in ctx:
+            context_missing.append(name)
     c.full_clean(); c.save()
     attached += 1
 print("configs attached:", attached, "/", len(DEVICES), "missing:", missing)
+if context_missing:
+    print("WARNING: presence attached but mqtt context vars MISSING on:",
+          context_missing,
+          "— run tools/fleet/set_device_vars.py before the config applies")
 
 # verification renders, passphrases redacted
 for name in ("puck12", "tenwrt"):

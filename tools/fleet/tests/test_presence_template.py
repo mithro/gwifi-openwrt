@@ -70,13 +70,37 @@ def test_django_script_upserts_and_attaches_presence():
     assert "PRESENCE" in d
 
 
+def test_django_script_attaches_presence_to_pucks_not_tenwrt():
+    """Regression guard: a change that creates the ansells-presence Template
+    but forgets to wire it into the attach tuple would still pass the two
+    substring checks above while silently disabling the whole feature."""
+    d = _load().DJANGO
+    assert "(b, t, pr)" in d
+    assert "detached ansells-presence from tenwrt" in d
+
+
+def test_django_script_warns_on_missing_mqtt_context():
+    """A device attached to ansells-presence without mqtt_username/password
+    in its Config.context renders literal '{{ mqtt_username }}' placeholders
+    into settings.json (netjsonconfig's evaluate_vars does not raise or
+    substitute empty for missing vars) -- the operator must be warned."""
+    d = _load().DJANGO
+    assert "mqtt_username" in d and "mqtt_password" in d
+    assert "MISSING on:" in d
+    assert "set_device_vars.py" in d
+
+
 def test_django_format_still_works_with_presence_placeholder():
     """Guard against DJANGO's r-string brace-escaping regressing when the
     PRESENCE placeholder / upsert block was added — .format() must not raise
     KeyError/IndexError on stray braces introduced by the new block."""
+    import ast
     mod = _load()
     rendered = mod.DJANGO.format(
         active="{}", tenwrt="{}", preserved="{}", base="{}",
         defaults="{}", pucks=[], presence="{}",
     )
     assert "ansells-presence" in rendered
+    # catch indentation/syntax errors locally instead of on the live wisp shell
+    ast.parse(rendered)
+    compile(rendered, "<djangosnippet>", "exec")
