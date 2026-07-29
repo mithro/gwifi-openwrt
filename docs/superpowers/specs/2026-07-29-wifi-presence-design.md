@@ -2,7 +2,11 @@
 
 Date: 2026-07-29
 Status: approved (design), implementation gated on MQTT credential rollout
-Branch: `wifi-presence` (stacked on `puck-sheet-live-sync`)
+Branch: `wifi-presence` — based on `puck-sheet-live-sync` (for `tools/fleet/`)
+**with `main` merged in** so `openwisp/build-templates.py` is the current
+ansells-aps version. All template work patterns on (and runs) the merged
+copy; the pre-merge `gwifi-puck` build-templates is dead code and must never
+be run against wisp.
 
 ## Goal
 
@@ -77,8 +81,11 @@ assignment per tracked human device.
 ## Components
 
 1. **`ansells-presence` OpenWISP template** (in `openwisp/build-templates.py`,
-   same pattern as the ansells-aps templates), attached to the puck group.
-   Delivers:
+   same pattern as the ansells-aps templates), attached per device via
+   `Config.templates` exactly as the existing templates are (no OpenWISP
+   Group objects). Attach set = every registered fleet-puck device (so
+   future pucks 01/02 pick it up on registration); the deploy/verify tools
+   operate on the *live* pucks from wisp's `pucks.conf` registry. Delivers:
    - `/opt/presence-detector/presence-detector.py` — vendored upstream script,
      pinned commit recorded in the template source.
    - `/etc/presence-detector/settings.json` — rendered per device:
@@ -91,9 +98,16 @@ assignment per tracked human device.
    Credentials live only in per-device OpenWISP configuration variables —
    never in the git-tracked template.
 2. **Device-vars tool** — sets each OpenWISP device's
-   `mqtt_username`/`mqtt_password` config variables, sourcing credentials from
-   the same gdoc2netcfg derivation that `wifi register-broker` uses (single
-   source of truth; secrets never printed).
+   `mqtt_username`/`mqtt_password` config variables. Credential source:
+   gdoc2netcfg's docs state the device side "must be configured out-of-band
+   with the same derived MqttUser/MqttPassword (re-derivable from the same
+   mqtt_secret)" — so a small new `gdoc2netcfg wifi show-login <host>`
+   subcommand (gdoc2netcfg repo; follows the `password --quiet` root-only
+   precedent, reusing `wifi_credentials.build_logins`) emits one host's
+   login. The device-vars script in this repo (`tools/fleet/`) runs it over
+   ssh on ten64 and pushes the values into OpenWISP via the established
+   ow-shell pattern on wisp. Secrets transit ssh pipes only — never disk,
+   git, or logs.
 3. **`tools/fleet/deploy_presence.py`** — per puck (registry from wisp
    `pucks.conf`, as `check_vlan_reach.py` does): `apk add python3
    python3-paho-mqtt`, verify the service starts, then verify a state message
