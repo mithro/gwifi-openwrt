@@ -25,6 +25,14 @@ def test_install_script_contents():
     assert 'echo "RESULT $1 $2 $3"' in s
     for step in ("files", "apk", "service", "mqtt"):
         assert f"result {step} " in s
+    # service check polls instead of a fixed sleep (startup is not instant)
+    assert "while" in s
+    assert "-lt 15" in s
+    # mqtt check requires positive log evidence, not just an absence of errors
+    assert "no-log-evidence" in s
+    assert "errors-in-log" in s
+    assert "log-evidence" in s
+    assert "offline, sleeping" in s
 
 
 def test_parse_results_ok():

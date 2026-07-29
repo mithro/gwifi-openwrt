@@ -32,22 +32,37 @@ else
     result apk FAIL "apk-exit=$?"
 fi
 
-# 3. service enabled + registered with procd
+# 3. service enabled + registered with procd (poll: startup is not instant)
 /etc/init.d/presence-detector enable
 /etc/init.d/presence-detector restart
-sleep 3
-if ubus call service list '{{"name":"presence-detector"}}' | grep -q presence-detector; then
+registered=""
+i=0
+while [ "$i" -lt 15 ]; do
+    if ubus call service list '{{"name":"presence-detector"}}' | grep -q presence-detector; then
+        registered="yes"
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+if [ -n "$registered" ]; then
     result service OK running
 else
     result service FAIL not-registered
 fi
 
-# 4. no fresh presence-detector errors in syslog (MQTT auth/connect failures land here)
-errs=$(logread | grep presence-detector | tail -n 20 | grep -ci error)
-if [ "$errs" = "0" ]; then
-    result mqtt OK no-errors
+# 4. positive-evidence syslog check: absence of "error" is not proof of health
+# if there is no log evidence at all (logread empty/missing, service not yet
+# logging).  The vendored script logs "Starting ubus watchers on interfaces
+# ..." at startup, "MQTT broker seems to be offline, sleeping..." on
+# broker-connect failure, and publish failures as lines containing "Error".
+lines=$(logread | grep presence-detector | tail -n 40)
+if [ -z "$lines" ]; then
+    result mqtt FAIL no-log-evidence
+elif printf '%s\\n' "$lines" | grep -Eqi 'error|offline, sleeping'; then
+    result mqtt FAIL errors-in-log
 else
-    result mqtt FAIL "syslog-errors=$errs"
+    result mqtt OK log-evidence
 fi
 """
 
