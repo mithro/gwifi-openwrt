@@ -134,12 +134,38 @@ def redact(text: str, logins: dict) -> str:
     return text
 
 
+_HEX_RUN_RE = re.compile(r"[0-9a-fA-F]{32,}")
+
+
+def scrub_hex(text: str) -> str:
+    """Fallback scrub for output we cannot redact() against a known logins
+    dict -- e.g. an ssh transport failure before any credentials have been
+    fetched, so there is nothing yet to key redact() off. Production mqtt
+    passwords are 64-char sha256 hex digests (see gdoc2netcfg
+    derivations/mqtt_credentials.py), so blanking any run of 32+ hex
+    characters catches a leaked credential surfacing in a traceback or error
+    message while leaving ordinary error text (short hex-ish tokens, ids)
+    readable.
+    """
+    return _HEX_RUN_RE.sub("<REDACTED-HEX>", text)
+
+
 def list_registered_pucks() -> list[str]:
-    """Ask wisp which puckNN devices are registered (no secrets involved)."""
+    """Ask wisp which puckNN devices are registered (no secrets involved).
+
+    Every registered device name is inspected; anything not shaped like
+    puckNN (e.g. 'tenwrt', a mesh-era name) is deliberately excluded from the
+    default run -- but per house rule "never silently discard data", that
+    exclusion is always printed, so an operator can spot a puck that somehow
+    registered under an unexpected name instead of it just vanishing.
+    """
     p = subprocess.run(SSH_WISP, input=LIST_DEVICES_SCRIPT, text=True,
                        capture_output=True, timeout=60)
     if p.stderr.strip():
-        print(p.stderr, file=sys.stderr)
+        # No `logins` dict exists yet at this point (this call precedes
+        # fetch_logins), so redact() has nothing to key off; scrub_hex() is
+        # the fallback net for the known secret shape.
+        print(scrub_hex(p.stderr), file=sys.stderr)
     if p.returncode != 0:
         raise SystemExit(
             f"failed to list registered devices from wisp (rc={p.returncode})")
@@ -151,7 +177,11 @@ def list_registered_pucks() -> list[str]:
         names = json.loads(line)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"could not parse device-list JSON from wisp: {exc}")
-    return sorted(n for n in names if PUCK_NAME_RE.match(n))
+    pucks = sorted(n for n in names if PUCK_NAME_RE.match(n))
+    skipped = sorted(n for n in names if not PUCK_NAME_RE.match(n))
+    if skipped:
+        print(f"skipping {len(skipped)} non-puck device(s): {', '.join(skipped)}")
+    return pucks
 
 
 def fetch_logins(machines: list[str]) -> dict:
@@ -163,7 +193,11 @@ def fetch_logins(machines: list[str]) -> dict:
     cmd = SSH_TEN64 + ["sudo", GDOC2NETCFG, "wifi", "show-login", "--json", *machines]
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
-        sys.stderr.write(p.stderr)
+        # No `logins` dict exists yet -- this call is what would produce it
+        # -- so redact() has nothing to key off; scrub_hex() is the fallback
+        # net for the known secret shape (sha256-hex mqtt passwords) before
+        # this ever reaches a terminal/log.
+        sys.stderr.write(scrub_hex(p.stderr))
         raise SystemExit(f"wifi show-login failed on ten64 (rc={p.returncode})")
     try:
         return json.loads(p.stdout)

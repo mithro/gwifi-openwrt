@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from set_device_vars import build_django_script, redact, validate_logins
+from set_device_vars import build_django_script, redact, scrub_hex, validate_logins
 
 
 LOGINS = {"puck06": {"username": "wifi-puck06", "password": "s3cret1"},
@@ -40,3 +40,14 @@ def test_django_script_embeds_logins_and_updates_context():
 def test_redact_removes_every_password():
     out = "set puck06 s3cret1 ok; s3cret2 too"
     assert "s3cret" not in redact(out, LOGINS)
+
+
+def test_scrub_hex_redacts_long_hex_but_leaves_short_tokens():
+    digest = "a1b2c3" * 10 + "abcd"  # 64-char sha256-shaped hex digest
+    assert len(digest) == 64
+    text = f"connect failed: password=hash:{digest} rc=1"
+    scrubbed = scrub_hex(text)
+    assert digest not in scrubbed
+    assert "<REDACTED-HEX>" in scrubbed
+    # ordinary short hex-ish tokens must survive untouched
+    assert scrub_hex("commit abc123 failed") == "commit abc123 failed"
