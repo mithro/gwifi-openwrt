@@ -9,8 +9,12 @@
 Flow (secrets travel over ssh **stdin** only — never argv, never disk, never
 an unredacted print):
 
-  1. ``ssh ten64 sudo gdoc2netcfg wifi show-login --json <machine>...``
-     -> ``{machine: {"username": ..., "password": ...}}`` captured in memory.
+  1. ``ssh ten64 sh -c 'cd /opt/gdoc2netcfg && exec sudo gdoc2netcfg wifi
+     show-login --json "$@"' _ <machine>...`` (the cd is required --
+     gdoc2netcfg's config + CSV cache both resolve relative to CWD, and a
+     non-interactive ssh command starts in $HOME, not /opt/gdoc2netcfg; see
+     ``build_show_login_cmd``) -> ``{machine: {"username": ...,
+     "password": ...}}`` captured in memory.
   2. That dict is json-embedded into a small Django snippet (the exact
      secret-safe pattern ``openwisp/build-templates.py`` already uses: a
      script piped to ``manage.py shell`` over ssh stdin, output redacted
@@ -37,6 +41,7 @@ import argparse
 import ast
 import json
 import re
+import shlex
 import subprocess
 import sys
 
@@ -46,7 +51,8 @@ SSH_WISP = [
     "sudo", "/opt/openwisp2/env/bin/python", "/opt/openwisp2/manage.py", "shell",
 ]
 
-GDOC2NETCFG = "/opt/gdoc2netcfg/.venv/bin/gdoc2netcfg"
+GDOC2NETCFG_DIR = "/opt/gdoc2netcfg"
+GDOC2NETCFG = f"{GDOC2NETCFG_DIR}/.venv/bin/gdoc2netcfg"
 
 PUCK_NAME_RE = re.compile(r"^puck\d{2}$")
 
@@ -237,13 +243,39 @@ def list_registered_pucks() -> list[str]:
     return pucks
 
 
+def build_show_login_cmd(machines: list[str]) -> list[str]:
+    """Build the ssh argv for `gdoc2netcfg wifi show-login --json <machines>`.
+
+    A non-interactive `ssh host cmd` starts in the connecting user's HOME,
+    not /opt/gdoc2netcfg -- but gdoc2netcfg's config loading resolves
+    `Path("gdoc2netcfg.toml")` relative to CWD with no env/install-dir
+    fallback (config.py:375-376), and `show-login` runs the full pipeline,
+    which reads its CSV cache from `Path(".cache")` -- also CWD-relative,
+    also no fallback (config.py:24). So the remote command MUST `cd` into
+    /opt/gdoc2netcfg first, exactly like every production invocation
+    documented in gdoc2netcfg's CLAUDE.md. Do not "simplify" this back to a
+    bare command list -- that silently breaks on the very first live run.
+
+    Machine names travel as `sh -c '<script>' _ <machines...>` positional
+    arguments (each individually shlex-quoted), never interpolated into the
+    script text itself, so an odd name can never break out into a second
+    remote command -- even though today's names are always the safe
+    `puckNN` shape.
+    """
+    script = (f"cd {GDOC2NETCFG_DIR} && exec sudo {GDOC2NETCFG} "
+              f'wifi show-login --json "$@"')
+    args = " ".join(shlex.quote(m) for m in machines)
+    remote_cmd = f"sh -c {shlex.quote(script)} _ {args}"
+    return SSH_TEN64 + [remote_cmd]
+
+
 def fetch_logins(machines: list[str]) -> dict:
     """ssh ten64 -> gdoc2netcfg wifi show-login --json <machines...>.
 
     Machine names are not secrets (argv is fine for them); the JSON response
     -- which does contain passwords -- is captured to memory only.
     """
-    cmd = SSH_TEN64 + ["sudo", GDOC2NETCFG, "wifi", "show-login", "--json", *machines]
+    cmd = build_show_login_cmd(machines)
     p = run_ssh(cmd, what="wifi show-login on ten64", timeout=60)
     if p.returncode != 0:
         # No `logins` dict exists yet -- this call is what would produce it

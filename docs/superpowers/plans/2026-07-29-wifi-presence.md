@@ -336,10 +336,16 @@ git commit -m "fleet: deploy_presence CLI (apk install + service + mqtt verify)"
 - Create: `tools/fleet/set_device_vars.py` (mode 0755)
 - Test: `tools/fleet/tests/test_set_device_vars.py`
 
-Flow: `ssh ten64.welland.mithis.com sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg
-wifi show-login --json <machine>...` → `{machine: {"username":…, "password":…}}`
-→ embed into a Django snippet → pipe over `ssh wisp… manage.py shell` stdin
-(the exact secret path build-templates.py already uses) → set each device's
+Flow: `ssh ten64.welland.mithis.com sh -c 'cd /opt/gdoc2netcfg && exec sudo
+/opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login --json "$@"' _
+<machine>...` (the `cd` is required: gdoc2netcfg's config file and CSV cache
+both resolve relative to CWD with no env/install-dir fallback, but a
+non-interactive `ssh host cmd` starts in the connecting user's `$HOME`, not
+`/opt/gdoc2netcfg`; machine names ride as shlex-quoted `sh -c '...' _
+<names>` positional args, never interpolated into the script text) →
+`{machine: {"username":…, "password":…}}` → embed into a Django snippet →
+pipe over `ssh wisp… manage.py shell` stdin (the exact secret path
+build-templates.py already uses) → set each device's
 `Config.context["mqtt_username"/"mqtt_password"]`. Print counts only; pass
 every captured output through a redactor before printing.
 
@@ -717,7 +723,7 @@ register-broker` run (not `--dry-run`), logins verified against the broker —
 and the `wifi show-login` code (Task 7) is deployed to `/opt/gdoc2netcfg` on
 ten64.
 
-- [ ] 0. Preconditions: gate above; `wifi-presence` branch merged or checked out wherever the tools run; spot-check `ssh ten64… sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login puck12` prints one login (do not paste output anywhere).
+- [ ] 0. Preconditions: gate above; `wifi-presence` branch merged or checked out wherever the tools run; spot-check `ssh ten64… sh -c 'cd /opt/gdoc2netcfg && exec sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login puck12'` prints one login (do not paste output anywhere) — the `cd` is required, see Task 4.
 - [ ] 1. `uv run tools/fleet/set_device_vars.py` → `context-set: N/N missing: []`.
 - [ ] 2. `uv run openwisp/build-templates.py` → ansells-presence created + attached to registered pucks, renders OK. **Beacon gotcha**: after agents apply, run the fleet beacon check / `wifi` reload per [[gwifi-openwisp-apply-breaks-beacon]].
       **This run is also puck03's first-ever wireless onboarding, not just a

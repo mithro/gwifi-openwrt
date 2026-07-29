@@ -2,11 +2,16 @@
 """Tests for set_device_vars pure helpers (no ssh)."""
 import ast
 import json
+import shlex
 
 import pytest
 
 from set_device_vars import (
+    GDOC2NETCFG,
+    GDOC2NETCFG_DIR,
+    SSH_TEN64,
     build_django_script,
+    build_show_login_cmd,
     partition_puck_names,
     redact,
     scrub_hex,
@@ -73,3 +78,25 @@ def test_build_django_script_handles_nasty_password_injection_safe():
     tricky = {"puck06": {"username": "wifi-puck06", "password": "s3'cr\"et\\\n x"}}
     script = build_django_script(tricky)
     ast.parse(script)  # must not raise SyntaxError
+
+
+def test_build_show_login_cmd_runs_with_cwd_gdoc2netcfg():
+    cmd = build_show_login_cmd(["puck06", "puck12"])
+    assert cmd[:len(SSH_TEN64)] == SSH_TEN64
+    assert len(cmd) == len(SSH_TEN64) + 1        # one shell-string argument
+    remote = cmd[-1]
+    # the cd is load-bearing (config.toml + .cache both resolve off CWD) --
+    # this assertion is what stops a future edit from "simplifying" it away
+    assert f"cd {GDOC2NETCFG_DIR}" in remote
+    assert GDOC2NETCFG in remote
+    assert '"$@"' in remote                      # names via $@, not interpolated
+    assert remote.endswith("_ puck06 puck12")
+
+
+def test_build_show_login_cmd_quotes_odd_machine_names_safely():
+    odd = "puck06; rm -rf /"
+    remote = build_show_login_cmd([odd])[-1]
+    # Round-trip through a POSIX-style shell tokenizer: the odd name must
+    # survive as exactly one token -- proof it can't break out into a second
+    # command -- even though real machine names are always the puckNN shape.
+    assert shlex.split(remote)[-1] == odd
