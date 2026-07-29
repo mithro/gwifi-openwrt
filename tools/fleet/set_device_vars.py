@@ -64,8 +64,21 @@ print(json.dumps(names))
 
 # {logins!r} is the only substitution: json.dumps(logins) run through repr()
 # so it embeds as a safe single Python string literal (arbitrary characters
-# in a password can never break out of the snippet) -- the same idiom
-# openwisp/build-templates.py uses for its passphrase dict.
+# in a password -- quotes, backslashes, newlines -- can never break out of
+# the snippet) -- the same idiom openwisp/build-templates.py uses for its
+# passphrase dict. Locked in by
+# test_build_django_script_handles_nasty_password_injection_safe.
+#
+# manage.py shell reads this piped script statement-by-statement (like a
+# REPL) and does NOT abort later top-level statements just because one
+# earlier statement raised -- so if any single device's Device.objects.get
+# /Config save could raise uncaught, the for-loop could die partway through
+# and the final print() would still run, reporting a false "clean" count.
+# The per-device try/except below must therefore catch every Exception (not
+# just Device.DoesNotExist) so the loop always finishes len(LOGINS)
+# iterations and `updated + len(missing) + len(failed) == len(LOGINS)`
+# always holds -- set_device_vars.py's local gate re-checks that invariant
+# as a backstop (see main()).
 DJANGO_TEMPLATE = r'''
 import json
 from swapper import load_model
@@ -77,23 +90,28 @@ LOGINS = json.loads({logins!r})
 
 updated = 0
 missing = []
+failed = []
 for name, creds in LOGINS.items():
     try:
         d = Device.objects.get(organization=org, name=name)
     except Device.DoesNotExist:
         missing.append(name)
         continue
-    c, _ = Config.objects.get_or_create(
-        device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    if c.context is None:
-        c.context = {{}}
-    c.context.update(dict(mqtt_username=creds["username"],
-                          mqtt_password=creds["password"]))
-    c.full_clean()
-    c.save()
+    try:
+        c, _ = Config.objects.get_or_create(
+            device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
+        if c.context is None:
+            c.context = {{}}
+        c.context.update(dict(mqtt_username=creds["username"],
+                              mqtt_password=creds["password"]))
+        c.full_clean()
+        c.save()
+    except Exception:
+        failed.append(name)
+        continue
     updated += 1
 print("context-set: " + str(updated) + "/" + str(len(LOGINS)) +
-      " missing: " + str(missing))
+      " missing: " + str(missing) + " failed: " + str(failed))
 '''
 
 
@@ -150,6 +168,42 @@ def scrub_hex(text: str) -> str:
     return _HEX_RUN_RE.sub("<REDACTED-HEX>", text)
 
 
+def partition_puck_names(names: list[str]) -> tuple[list[str], list[str]]:
+    """Split registered device names into (pucks, skipped) by the puckNN
+    shape. Pure and unit-tested on its own -- not just exercised indirectly
+    via a live ssh call -- because the "skipped" half is exactly the set of
+    devices a bare-default run would otherwise drop with no trace (house
+    rule: never silently discard data).
+    """
+    pucks = sorted(n for n in names if PUCK_NAME_RE.match(n))
+    skipped = sorted(n for n in names if not PUCK_NAME_RE.match(n))
+    return pucks, skipped
+
+
+def run_ssh(cmd: list[str], *, what: str, timeout: int,
+            input: str | None = None,
+            logins: dict | None = None) -> subprocess.CompletedProcess:
+    """subprocess.run wrapper shared by every ssh call in this tool.
+
+    Turns a hang into a clear, non-secret-leaking SystemExit instead of a
+    raw traceback (`exc.stdout`/`exc.stderr` are never printed as-is):
+    `what` names the operation for the message, and any partially-captured
+    stderr is redact()ed against `logins` first if the caller already has
+    it, then scrub_hex()ed as the fallback net for the known secret shape
+    (sha256-hex mqtt passwords) before it is ever shown.
+    """
+    try:
+        return subprocess.run(cmd, input=input, text=True,
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stderr = exc.stderr or ""
+        if logins:
+            stderr = redact(stderr, logins)
+        stderr = scrub_hex(stderr).strip()
+        detail = f": {stderr}" if stderr else ""
+        raise SystemExit(f"{what} timed out after {exc.timeout:.0f}s{detail}")
+
+
 def list_registered_pucks() -> list[str]:
     """Ask wisp which puckNN devices are registered (no secrets involved).
 
@@ -159,8 +213,8 @@ def list_registered_pucks() -> list[str]:
     exclusion is always printed, so an operator can spot a puck that somehow
     registered under an unexpected name instead of it just vanishing.
     """
-    p = subprocess.run(SSH_WISP, input=LIST_DEVICES_SCRIPT, text=True,
-                       capture_output=True, timeout=60)
+    p = run_ssh(SSH_WISP, what="listing registered devices from wisp",
+               timeout=60, input=LIST_DEVICES_SCRIPT)
     if p.stderr.strip():
         # No `logins` dict exists yet at this point (this call precedes
         # fetch_logins), so redact() has nothing to key off; scrub_hex() is
@@ -177,8 +231,7 @@ def list_registered_pucks() -> list[str]:
         names = json.loads(line)
     except json.JSONDecodeError as exc:
         raise SystemExit(f"could not parse device-list JSON from wisp: {exc}")
-    pucks = sorted(n for n in names if PUCK_NAME_RE.match(n))
-    skipped = sorted(n for n in names if not PUCK_NAME_RE.match(n))
+    pucks, skipped = partition_puck_names(names)
     if skipped:
         print(f"skipping {len(skipped)} non-puck device(s): {', '.join(skipped)}")
     return pucks
@@ -191,7 +244,7 @@ def fetch_logins(machines: list[str]) -> dict:
     -- which does contain passwords -- is captured to memory only.
     """
     cmd = SSH_TEN64 + ["sudo", GDOC2NETCFG, "wifi", "show-login", "--json", *machines]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    p = run_ssh(cmd, what="wifi show-login on ten64", timeout=60)
     if p.returncode != 0:
         # No `logins` dict exists yet -- this call is what would produce it
         # -- so redact() has nothing to key off; scrub_hex() is the fallback
@@ -227,7 +280,17 @@ def main() -> int:
     print("Fetching logins from ten64 (gdoc2netcfg wifi show-login)...")
     logins = fetch_logins(machines)
 
-    missing_from_ten64 = sorted(set(machines) - set(logins))
+    # Never implicitly trust that ten64's wifi show-login honored its own
+    # argument list -- keep only what was actually requested, and say so if
+    # it returned anything extra (house rule: never silently discard data).
+    machine_set = set(machines)
+    extra = sorted(set(logins) - machine_set)
+    if extra:
+        print(f"Ignoring {len(extra)} login(s) ten64 returned outside the "
+              f"requested set: {', '.join(extra)}")
+    logins = {name: creds for name, creds in logins.items() if name in machine_set}
+
+    missing_from_ten64 = sorted(machine_set - set(logins))
     if missing_from_ten64:
         print(f"ERROR: ten64 did not return logins for: "
               f"{', '.join(missing_from_ten64)}", file=sys.stderr)
@@ -240,26 +303,45 @@ def main() -> int:
         return 1
 
     script = build_django_script(logins)
-    p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
-                       timeout=180)
-    out = redact(p.stdout, logins)
+    p = run_ssh(SSH_WISP, what="setting context on wisp", timeout=180,
+               input=script, logins=logins)
+    out = scrub_hex(redact(p.stdout, logins))
     sys.stdout.write(out)
     if p.stderr.strip():
-        sys.stderr.write("\n--- stderr ---\n" + redact(p.stderr, logins))
+        sys.stderr.write("\n--- stderr ---\n" + scrub_hex(redact(p.stderr, logins)))
 
     if p.returncode != 0:
         return p.returncode
 
-    m = re.search(r"context-set:\s*(\d+)/(\d+)\s*missing:\s*(\[[^\]]*\])", out)
+    m = re.search(
+        r"context-set:\s*(\d+)/(\d+)\s*missing:\s*(\[[^\]]*\])\s*"
+        r"failed:\s*(\[[^\]]*\])", out)
     if not m:
         print("ERROR: could not find context-set summary in wisp output",
               file=sys.stderr)
         return 1
+    updated, total = int(m.group(1)), int(m.group(2))
     missing = ast.literal_eval(m.group(3))
+    failed = ast.literal_eval(m.group(4))
+    # manage.py shell does not abort later piped statements just because an
+    # earlier one raised -- so a mid-loop crash on the remote side could
+    # otherwise print a plausible-looking but incomplete summary (see
+    # DJANGO_TEMPLATE's comment). Recomputing the invariant here is the
+    # local backstop: any accounting mismatch means the remote loop did not
+    # run to completion and this result must not be trusted.
+    if updated + len(missing) + len(failed) != total:
+        print(f"ERROR: context-set accounting mismatch: updated={updated} "
+              f"missing={len(missing)} failed={len(failed)} but total={total} "
+              f"-- the remote loop likely did not finish; do not trust this "
+              f"run", file=sys.stderr)
+        return 1
     if missing:
         print(f"ERROR: devices missing on wisp: {missing}", file=sys.stderr)
         return 1
-    print(f"OK: context set on {m.group(1)}/{m.group(2)} device(s)")
+    if failed:
+        print(f"ERROR: devices failed to update on wisp: {failed}", file=sys.stderr)
+        return 1
+    print(f"OK: context set on {updated}/{total} device(s)")
     return 0
 
 

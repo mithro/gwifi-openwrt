@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for set_device_vars pure helpers (no ssh)."""
+import ast
 import json
 
 import pytest
 
-from set_device_vars import build_django_script, redact, scrub_hex, validate_logins
+from set_device_vars import (
+    build_django_script,
+    partition_puck_names,
+    redact,
+    scrub_hex,
+    validate_logins,
+)
 
 
 LOGINS = {"puck06": {"username": "wifi-puck06", "password": "s3cret1"},
@@ -51,3 +58,18 @@ def test_scrub_hex_redacts_long_hex_but_leaves_short_tokens():
     assert "<REDACTED-HEX>" in scrubbed
     # ordinary short hex-ish tokens must survive untouched
     assert scrub_hex("commit abc123 failed") == "commit abc123 failed"
+
+
+def test_partition_puck_names():
+    pucks, skipped = partition_puck_names(
+        ["puck06", "puck12", "tenwrt", "puck1", "ansells-aps-mesh"])
+    assert pucks == ["puck06", "puck12"]
+    assert skipped == ["ansells-aps-mesh", "puck1", "tenwrt"]
+
+
+def test_build_django_script_handles_nasty_password_injection_safe():
+    # quotes, a backslash, and a newline -- exactly the characters that would
+    # break a naive (non-repr()) string-embedding scheme.
+    tricky = {"puck06": {"username": "wifi-puck06", "password": "s3'cr\"et\\\n x"}}
+    script = build_django_script(tricky)
+    ast.parse(script)  # must not raise SyntaxError
