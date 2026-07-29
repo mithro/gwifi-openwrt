@@ -42,6 +42,12 @@ Claude-Session: https://claude.ai/code/session_01EHZYoaQFrwZ1exgFiyHheo
 
 ## Part A — gwifi-openwrt (worktree `.worktrees/wifi-presence`)
 
+> **Status 2026-07-29: Tasks 1–5 are COMPLETE** (implemented + locally
+> tested; commits d302e60, 1b387bc+33d4b2f, 474c92e+bd5c854+26e6a10,
+> c7644d9+b544859+725f456, 0f1548b+4ec0273). Nothing has been deployed —
+> Part C remains gated. Task 6 (this docs pass) is in progress; Task 7 is
+> Part B, in the `gdoc2netcfg` repo.
+
 ### Task 1: Vendor upstream presence-detector (pinned)
 
 **Files:**
@@ -714,6 +720,16 @@ ten64.
 - [ ] 0. Preconditions: gate above; `wifi-presence` branch merged or checked out wherever the tools run; spot-check `ssh ten64… sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login puck12` prints one login (do not paste output anywhere).
 - [ ] 1. `uv run tools/fleet/set_device_vars.py` → `context-set: N/N missing: []`.
 - [ ] 2. `uv run openwisp/build-templates.py` → ansells-presence created + attached to registered pucks, renders OK. **Beacon gotcha**: after agents apply, run the fleet beacon check / `wifi` reload per [[gwifi-openwisp-apply-breaks-beacon]].
+      **This run is also puck03's first-ever wireless onboarding, not just a
+      presence change**: Task 5 added `puck03` to `PUCKS`, so this is the
+      first `build-templates.py` run that attaches `ansells-aps-base` +
+      `ansells-aps-puck` to puck03 — the same event class as onboarding
+      puck01/02. Treat it with the same care: verify puck03's SSIDs/beacons
+      after the apply, not only the presence pieces.
+      **Watch the output** for `WARNING: presence attached but mqtt context
+      vars MISSING on: [...]`. If it appears, step 1 (`set_device_vars.py`)
+      did not cover those devices — re-run it before letting the config
+      apply reach them.
 - [ ] 3. `uv run tools/fleet/deploy_presence.py` → all-OK matrix (files/apk/service/mqtt per puck). Re-run note: the `mqtt` check greps the last 20 presence-detector syslog lines, so after fixing a failure restart that puck's service (`ssh root@<ip> /etc/init.d/presence-detector restart`) to age out old error lines before re-running.
 - [ ] 4. Broker-side verify (creds from ten64's sensors2mqtt env; never echo them):
       `ssh ten64.welland.mithis.com 'sudo sh -c ". /etc/sensors2mqtt/env; mosquitto_sub -h ha.welland.mithis.com -u $MQTT_USER -P $MQTT_PASSWORD -t \"homeassistant/device_tracker/+/config\" -C 5 -W 30"'`

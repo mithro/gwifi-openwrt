@@ -1,12 +1,29 @@
 # OpenWrt → Home Assistant WiFi Presence Design
 
 Date: 2026-07-29
-Status: approved (design), implementation gated on MQTT credential rollout
+Status: approved (design). Implementation of Tasks 1–5 is **COMPLETE** on
+branch `wifi-presence` (commits d302e60, 1b387bc+33d4b2f,
+474c92e+bd5c854+26e6a10, c7644d9+b544859+725f456, 0f1548b+4ec0273) — code
+written and locally tested only; **nothing has been deployed, no live puck
+or OpenWISP server has been touched.** Task 7 (`gdoc2netcfg wifi
+show-login`) is cross-repo and still pending. DEPLOYMENT remains gated on
+the PR #18 MQTT credential rollout (see Deployment runbook below).
 Branch: `wifi-presence` — based on `puck-sheet-live-sync` (for `tools/fleet/`)
 **with `main` merged in** so `openwisp/build-templates.py` is the current
 ansells-aps version. All template work patterns on (and runs) the merged
 copy; the pre-merge `gwifi-puck` build-templates is dead code and must never
 be run against wisp.
+
+## Implementation deviations from this spec (Tasks 1–5, recorded 2026-07-29)
+
+- **`ap_name`** uses `{{ name }}` — OpenWISP's built-in device-name
+  variable — not `{{hostname}}` as written under Components below;
+  `hostname` is not a default OpenWISP device variable.
+- **Per-puck `mqtt` verification** in `deploy_presence.py` (Component 3) is a
+  puck-side syslog-evidence check: it requires positive log evidence for
+  presence-detector, and empty log output FAILS. It is not a broker-side
+  "state message arrived" check. The on-broker verification happens once,
+  fleet-wide, in runbook step 4.
 
 ## Goal
 
@@ -144,6 +161,23 @@ assignment per tracked human device.
   reachability entities show the puck itself down). If it bites, the fix is
   an HA automation keying off the puck's connectivity entity — not new
   on-device code.
+- **`POST_RELOAD_HOOK` churn**: it now enables+restarts presence-detector on
+  EVERY future config apply once `python3` exists on a puck — the same
+  accepted churn class as the existing lldpd/usteer/cron lines, but worth
+  naming: an unrelated template edit will bounce presence-detector
+  fleet-wide.
+- **`mode 0600` on `/etc/presence-detector/settings.json` is defense-in-depth
+  only, not a security boundary**: pucks have no non-root local users, and
+  puck dropbear still accepts blank-password root login (already flagged
+  out-of-scope below), so anyone who can reach dropbear reads the file
+  regardless of its mode.
+- **netjsonconfig literal-placeholder gotcha**: `evaluate_vars` leaves a
+  LITERAL `{{ mqtt_username }}` in the rendered file when the variable is
+  absent from `Config.context` — it does not raise, and does not blank it.
+  `build-templates.py` therefore prints a `WARNING: presence attached but
+  mqtt context vars MISSING on: [...]` naming any device attached without
+  those context vars. Ordering (`set_device_vars.py` runs BEFORE the config
+  applies) is load-bearing.
 
 ## Testing
 
