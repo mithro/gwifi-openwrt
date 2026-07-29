@@ -14,7 +14,7 @@ ansells-aps version. All template work patterns on (and runs) the merged
 copy; the pre-merge `gwifi-puck` build-templates is dead code and must never
 be run against wisp.
 
-## Implementation deviations from this spec (Tasks 1–5, recorded 2026-07-29)
+## Implementation deviations from this spec (Tasks 1–7, recorded 2026-07-29)
 
 - **`ap_name`** uses `{{ name }}` — OpenWISP's built-in device-name
   variable — not `{{hostname}}` as written under Components below;
@@ -24,6 +24,14 @@ be run against wisp.
   presence-detector, and empty log output FAILS. It is not a broker-side
   "state message arrived" check. The on-broker verification happens once,
   fleet-wide, in runbook step 4.
+- **`gdoc2netcfg wifi show-login` requires `--all`** for the fleet-wide dump
+  (Task 7, commit 7b0511d). The plan said "no positional args → every WiFi
+  host"; that made a bare or typo-truncated invocation print every host's
+  plaintext password, and this is the only command in the tasmota/wifi/wisp
+  family that prints raw secrets at all. Now: named hosts → those hosts;
+  `--all` → every WiFi-sheet host; neither (or both) → usage error, exit 1,
+  nothing printed. `set_device_vars.py` always passes explicit machine names,
+  so the contract with it is unaffected.
 
 ## Goal
 
