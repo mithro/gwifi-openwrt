@@ -67,7 +67,7 @@ Expected: both files download; note the two sha256 values.
 - [ ] **Step 2: Sanity-check the vendored script**
 
 ```bash
-uv run python -m py_compile openwisp/presence/presence-detector.py && echo COMPILES
+(cd tools/fleet && uv run python -m py_compile ../../openwisp/presence/presence-detector.py) && echo COMPILES
 grep -n "add_argument" openwisp/presence/presence-detector.py
 ```
 
@@ -157,9 +157,11 @@ def test_install_script_contents():
     # verification: service registered with procd + recent syslog errors
     assert "service list" in s
     assert "logread" in s
-    # results protocol
+    # results protocol: the script emits via the result() helper, so the
+    # literal text in the script is the lowercase call sites
+    assert 'echo "RESULT $1 $2 $3"' in s
     for step in ("files", "apk", "service", "mqtt"):
-        assert f"RESULT {step} " in s
+        assert f"result {step} " in s
 
 
 def test_parse_results_ok():
@@ -294,12 +296,18 @@ git commit -m "fleet: presence deploy script builder + result parser"
 - Create: `tools/fleet/deploy_presence.py` (mode 0755)
 
 Thin I/O wrapper — copy the structure of `tools/fleet/check_vlan_reach.py`
-(registry via `ssh wisp.welland.mithis.com sudo -n cat
-/etc/dnsmasq.d/gwifi-generated/pucks.conf` parsed with
-`galeflash.livecollect.parse_pucks_conf`; `--puck NN` repeatable; per-puck
-`ssh root@<ip> "sh -s"` with the script on stdin; summary matrix; exit
-non-zero on any failure). No new pure logic here (all tested in Task 2), so
+verbatim: same registry acquisition (its `REGISTRY_HOST = "tim@10.1.4.2"` +
+`sudo -n cat /etc/dnsmasq.d/gwifi-generated/pucks.conf`, parsed with
+`galeflash.livecollect.parse_pucks_conf`), same PEP-723 `# /// script` header
+so `uv run` resolves it identically, `--puck NN` repeatable, per-puck
+`ssh root@<ip> "sh -s"` with the script on stdin, summary matrix, exit
+non-zero on any failure. No new pure logic here (all tested in Task 2), so
 no new tests — same convention as `check_vlan_reach.py`.
+
+**Spec deviation (accepted, recorded in Task 6):** the per-puck `mqtt` verify
+is a syslog-error check on the puck (auth/connect failures surface there);
+the on-broker "state message actually arrived" check happens once fleet-wide
+in runbook step 4 rather than per puck inside this CLI.
 
 - [ ] **Step 1: Implement** — reuse `check_vlan_reach.py`'s `main()`/registry/ssh helpers shape verbatim, substituting `build_install_script()`/`parse_results()` and a `files/apk/service/mqtt` summary table. Docstring must state: "Run AFTER the ansells-presence template is attached and device vars are set (see runbook in the design spec)."
 - [ ] **Step 2: Smoke-check (no puck contact)**
@@ -360,11 +368,13 @@ def test_validate_logins_fails_loud(bad):
 
 def test_django_script_embeds_logins_and_updates_context():
     s = build_django_script(LOGINS)
-    assert json.dumps(LOGINS) in s          # embedded (stdin transit only)
+    blob = json.dumps(LOGINS)
+    assert blob in s                        # embedded (stdin transit only)
     assert "Config" in s and "context" in s
     assert "full_clean" in s
-    # never print values from the django side
-    assert "password" not in s.replace(json.dumps(LOGINS), "")
+    # password VALUES appear only inside the embedded blob, never elsewhere
+    rest = s.replace(blob, "")
+    assert "s3cret1" not in rest and "s3cret2" not in rest
 
 
 def test_redact_removes_every_password():
@@ -393,7 +403,7 @@ stderr before printing, exit non-zero unless `missing` is empty.
 - [ ] **Step 4: Run tests**
 
 Run: `cd tools/fleet && uv run pytest -q`
-Expected: all pass (Task-2 count + 6 new).
+Expected: 130 passed (123 from Task 2 + 7 new: 1+4 parametrized+1+1).
 
 - [ ] **Step 5: Commit**
 
@@ -561,7 +571,7 @@ into `DJANGO.format(...)`.
 - [ ] **Step 4: Run tests**
 
 Run: `cd tools/fleet && uv run pytest -q`
-Expected: all pass (previous count + 6).
+Expected: 136 passed (130 from Task 4 + 6 new).
 
 - [ ] **Step 5: Commit**
 
@@ -576,7 +586,7 @@ git commit -m "openwisp: ansells-presence template + puck03 in PUCKS + hook enab
 - Modify: `openwisp/README.md` (if it documents the template family — add ansells-presence one-liner)
 - Modify: `docs/superpowers/specs/2026-07-29-wifi-presence-design.md` (status line: implementation complete, deployment pending gate)
 
-- [ ] **Step 1: Make both edits** (template list + status). Keep to a few lines each.
+- [ ] **Step 1: Make both edits** (template list + status). Keep to a few lines each. The spec status edit must also record two implementation deviations: (a) the per-puck broker verify is a puck-side syslog check, with the on-broker check done once fleet-wide in the runbook (Task 3 note); (b) `ap_name` uses `{{ name }}` — OpenWISP's built-in device-name variable — not the spec's `{{hostname}}` (which is not a default device variable).
 - [ ] **Step 2: Commit**
 
 ```bash
@@ -663,10 +673,16 @@ def cmd_wifi_show_login(args: argparse.Namespace) -> int:
 ```
 
 (Adjust the import of `username` to wherever `wifi_credentials` actually
-re-exports it from — mirror `build_logins`'s own imports.) Wire argparse next
-to the existing `wifi` subparser: `show-login`, positional `hosts` (`nargs="*"`),
-`--json` flag; `set_defaults(func=cmd_wifi_show_login)` following the file's
-convention. Update `CLAUDE.md`'s command list with one line.
+re-exports it from — mirror `build_logins`'s own imports. Add a local
+`import json` inside the function — `main.py` does not import json at module
+level.) **Wiring — the file does NOT use `set_defaults(func=…)`;** it uses
+explicit dispatch: add a `show-login` parser under the existing
+`wifi_subparsers` (~line 3121, beside `register-broker`) with positional
+`hosts` (`nargs="*"`) and `--json`, then add an
+`elif args.wifi_command == "show-login": return cmd_wifi_show_login(args)`
+branch in the `args.command == "wifi"` dispatch block (~line 3310) — without
+that branch the subcommand parses but silently falls through to
+`wifi_parser.print_help()`. Update `CLAUDE.md`'s command list with one line.
 
 - [ ] **Step 5: Run tests**
 
@@ -696,7 +712,7 @@ ten64.
 - [ ] 0. Preconditions: gate above; `wifi-presence` branch merged or checked out wherever the tools run; spot-check `ssh ten64… sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login puck12` prints one login (do not paste output anywhere).
 - [ ] 1. `uv run tools/fleet/set_device_vars.py` → `context-set: N/N missing: []`.
 - [ ] 2. `uv run openwisp/build-templates.py` → ansells-presence created + attached to registered pucks, renders OK. **Beacon gotcha**: after agents apply, run the fleet beacon check / `wifi` reload per [[gwifi-openwisp-apply-breaks-beacon]].
-- [ ] 3. `uv run tools/fleet/deploy_presence.py` → all-OK matrix (files/apk/service/mqtt per puck).
+- [ ] 3. `uv run tools/fleet/deploy_presence.py` → all-OK matrix (files/apk/service/mqtt per puck). Re-run note: the `mqtt` check greps the last 20 presence-detector syslog lines, so after fixing a failure restart that puck's service (`ssh root@<ip> /etc/init.d/presence-detector restart`) to age out old error lines before re-running.
 - [ ] 4. Broker-side verify (creds from ten64's sensors2mqtt env; never echo them):
       `ssh ten64.welland.mithis.com 'sudo sh -c ". /etc/sensors2mqtt/env; mosquitto_sub -h ha.welland.mithis.com -u $MQTT_USER -P $MQTT_PASSWORD -t \"homeassistant/device_tracker/+/config\" -C 5 -W 30"'`
       Expected: discovery payloads with `puckNN_` slugs. Then flip a known client (toggle wifi on a phone) and watch its state topic go home/not_home.
