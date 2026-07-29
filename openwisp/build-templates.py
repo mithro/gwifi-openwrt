@@ -50,6 +50,9 @@ neither puck jack name (eth-black/lan) exists.
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+PRESENCE_DIR = Path(__file__).resolve().parent / "presence"
 
 SSH_TEN64 = ["ssh", "ten64.welland.mithis.com"]
 SSH_WISP = [
@@ -57,8 +60,8 @@ SSH_WISP = [
     "sudo", "/opt/openwisp2/env/bin/python", "/opt/openwisp2/manage.py", "shell",
 ]
 
-# The pucks (OpenWISP device names). No puck03 exists.
-PUCKS = ["puck01", "puck02", "puck04", "puck05", "puck06",
+# The pucks (OpenWISP device names). puck03 registered 2026-07-25 (fresh install).
+PUCKS = ["puck01", "puck02", "puck03", "puck04", "puck05", "puck06",
          "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"]
 
 SSID_MAIN, SSID_IOT, SSID_GUEST = "ansells", "ansells-iot", "ansells-guest"
@@ -256,6 +259,13 @@ uci commit system
 /etc/init.d/usteer restart
 /etc/init.d/cron enable
 /etc/init.d/cron restart
+
+# presence-detector (ansells-presence template); python3 arrives via
+# tools/fleet/deploy_presence.py — silently skip until both pieces exist.
+if [ -x /etc/init.d/presence-detector ] && [ -x /usr/bin/python3 ]; then
+	/etc/init.d/presence-detector enable
+	/etc/init.d/presence-detector restart
+fi
 exit 0
 """
 
@@ -275,6 +285,40 @@ def netjson_base():
     ]}
 
 
+PRESENCE_SETTINGS = """{
+  "mqtt_host": "ha.welland.mithis.com",
+  "mqtt_port": 1883,
+  "mqtt_username": "{{ mqtt_username }}",
+  "mqtt_password": "{{ mqtt_password }}",
+  "mqtt_retain_state": true,
+  "interfaces": [],
+  "filter_is_denylist": true,
+  "filter": [],
+  "params": {},
+  "ap_name": "{{ name }}",
+  "fallback_sync_interval": 60,
+  "source_type": "router",
+  "debug": false
+}
+"""
+
+
+def netjson_presence():
+    """presence-detector delivery: vendored script + per-device settings + init.
+
+    Credentials arrive per device via Config.context (set_device_vars.py);
+    {{ name }} is OpenWISP's built-in device-name variable, so ap_name gives
+    the per-puck entity prefix (design spec 'Entity model')."""
+    return {"files": [
+        {"path": "/opt/presence-detector/presence-detector.py", "mode": "0755",
+         "contents": (PRESENCE_DIR / "presence-detector.py").read_text()},
+        {"path": "/etc/presence-detector/settings.json", "mode": "0600",
+         "contents": PRESENCE_SETTINGS},
+        {"path": "/etc/init.d/presence-detector", "mode": "0755",
+         "contents": (PRESENCE_DIR / "init.d-presence-detector").read_text()},
+    ]}
+
+
 DJANGO = r'''
 import json, re
 from swapper import load_model
@@ -287,6 +331,7 @@ ACTIVE = json.loads({active!r})
 TENWRT = json.loads({tenwrt!r})
 PRESERVED = json.loads({preserved!r})
 BASE = json.loads({base!r})
+PRESENCE = json.loads({presence!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
 # Devices the templates attach to: the pucks + the ten64 VM. The attach loop
@@ -354,6 +399,16 @@ for c in Config.objects.filter(templates=m):
 print("ansells-aps-mesh:", "created" if mcreated else "updated",
       "id=", m.id, "detached-from:", detached)
 
+# presence-detector template: attaches to the pucks (tenwrt out of scope —
+# design spec §4.6, the VM has no wifi-presence deployment).
+pr, prcreated = Template.objects.update_or_create(
+    organization=org, name="ansells-presence",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=PRESENCE, default=False),
+)
+pr.full_clean(); pr.save()
+print("ansells-presence:", "created" if prcreated else "updated", "id=", pr.id)
+
 attached = 0
 missing = []
 for name in DEVICES:
@@ -362,7 +417,7 @@ for name in DEVICES:
     except Device.DoesNotExist:
         missing.append(name); continue
     c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    want = (b, tw) if name == "tenwrt" else (b, t)
+    want = (b, tw) if name == "tenwrt" else (b, t, pr)
     for tpl in want:
         if tpl not in c.templates.all():
             c.templates.add(tpl)
@@ -370,6 +425,10 @@ for name in DEVICES:
     if name == "tenwrt" and t in c.templates.all():
         c.templates.remove(t)
         print("detached ansells-aps-puck from tenwrt")
+    # presence-detector is out of scope for the tenwrt VM (design spec §4.6)
+    if name == "tenwrt" and pr in c.templates.all():
+        c.templates.remove(pr)
+        print("detached ansells-presence from tenwrt")
     c.full_clean(); c.save()
     attached += 1
 print("configs attached:", attached, "/", len(DEVICES), "missing:", missing)
@@ -396,6 +455,7 @@ def main() -> int:
                            tenwrt=json.dumps(netjson_tenwrt_aps()),
                            preserved=json.dumps(netjson_mesh_aps()),
                            base=json.dumps(netjson_base()),
+                           presence=json.dumps(netjson_presence()),
                            defaults=json.dumps(vals), pucks=PUCKS)
     p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
                        timeout=180)
