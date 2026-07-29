@@ -724,7 +724,7 @@ and the `wifi show-login` code (Task 7) is deployed to `/opt/gdoc2netcfg` on
 ten64.
 
 - [ ] 0. Preconditions: gate above; `wifi-presence` branch merged or checked out wherever the tools run; spot-check `ssh ten64… sh -c 'cd /opt/gdoc2netcfg && exec sudo /opt/gdoc2netcfg/.venv/bin/gdoc2netcfg wifi show-login puck12'` prints one login (do not paste output anywhere) — the `cd` is required, see Task 4.
-- [ ] 1. `uv run tools/fleet/set_device_vars.py` → `context-set: N/N missing: []`.
+- [ ] 1. `uv run tools/fleet/set_device_vars.py` → `context-set: N/N missing: [] failed: []`. The tool itself enforces `updated + missing + failed == N` and exits non-zero on any shortfall, so a clean exit is the real gate; a mismatch means the remote loop did not finish and the run must not be trusted.
 - [ ] 2. `uv run openwisp/build-templates.py` → ansells-presence created + attached to registered pucks, renders OK. **Beacon gotcha**: after agents apply, run the fleet beacon check / `wifi` reload per [[gwifi-openwisp-apply-breaks-beacon]].
       **This run is also puck03's first-ever wireless onboarding, not just a
       presence change**: Task 5 added `puck03` to `PUCKS`, so this is the
