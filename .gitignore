@@ -14,12 +14,17 @@ photos/
 # key): committed overlay files use placeholders; real values live untracked
 # here. See docs/gale-autoprovision-mesh-design.md, "Secrets handling".
 gale-secrets.conf
+fleet-secrets.conf
 *.secret
 
 # Python / OS cruft and scratch.
 __pycache__/
 *.pyc
 tmp/
+
+# Build-private artifact dirs (see build-gale-image.sh / build-installer.sh).
+gale-image/out/
+gale-installer/out/
 
 # Exception (must come last to override the broader excludes above): the
 # dev-unit gale's stock SPI backup is committed as a recovery reference.
@@ -34,3 +39,13 @@ tmp/
 !gale-ec-gale_v1.1.5337-0115719-2026-06-04.bin
 !gale-ec-systemmem-bootloader-2026-06-04.bin
 !gale-ec-optionbytes-2026-06-04.bin
+
+# Exception: the Renode equivalence harness vendors the option bytes (a copy of
+# the dump above, sha256 cdb247d4…) so the harness is self-contained.
+!gale-ec/renode/data/gale-optionbytes.bin
+
+# Exception: EDN teardown press photos (public article content, carries none
+# of our fleet's per-device identity). See docs/photos/edn-gale-teardown/README.md.
+!docs/photos/
+!docs/photos/edn-gale-teardown/
+!docs/photos/edn-gale-teardown/*

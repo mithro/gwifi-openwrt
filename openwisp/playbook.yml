@@ -26,6 +26,27 @@
       delay: 10
       register: result
       until: result is success
+  post_tasks:
+    # netaddr (used by openwisp-monitoring for WifiClient vendor naming)
+    # ships a static IEEE OUI snapshot frozen at its release; recent
+    # allocations (e.g. the Espressif blocks the Tasmota fleet uses) are
+    # missing and vendors come out empty. Refresh the registry in the venv
+    # from IEEE and rebuild netaddr's indexes — on deploy, and monthly via
+    # cron (the script is atomic and self-verifying; see files/).
+    - name: Install netaddr OUI registry updater
+      ansible.builtin.copy:
+        src: files/update-netaddr-oui.sh
+        dest: /usr/local/sbin/update-netaddr-oui
+        mode: "0755"
+    - name: Refresh netaddr OUI registry now
+      ansible.builtin.command: /usr/local/sbin/update-netaddr-oui
+      register: oui_refresh
+      changed_when: "'refreshed OK' in oui_refresh.stdout"
+    - name: Refresh netaddr OUI registry monthly
+      ansible.builtin.cron:
+        name: update-netaddr-oui
+        special_time: monthly
+        job: /usr/local/sbin/update-netaddr-oui >> /var/log/update-netaddr-oui.log 2>&1
   vars:
     # ---- OpenWISP modules -------------------------------------------------
     # Enabled to cover the required feature set:

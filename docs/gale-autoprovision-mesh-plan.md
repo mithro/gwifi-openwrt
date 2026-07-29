@@ -270,7 +270,7 @@ config controller 'http'
     option shared_secret '__OPENWISP_SHARED_SECRET__'
     option interval '120'
     option verify_ssl '1'
-    option management_interface 'br-mgmt'
+    option management_interface 'br0.4'
     option uuid ''
 ```
 

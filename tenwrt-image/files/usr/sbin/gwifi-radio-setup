@@ -1,0 +1,85 @@
+#!/bin/sh
+# gwifi-radio-setup — enable the host's passed-through Wi-Fi radio(s) and
+# band-normalize them, DRIVER-AGNOSTIC: works for whatever PCIe card is
+# passed through (ath9k/ath10k/ath11k/ath12k, mt76, rtw88/rtw89, ...). Bands
+# are auto-detected by `wifi config`. Client APs come from OpenWISP; there is
+# no mesh in the simple profile. No-op when no phy is present (image-first /
+# pre-passthrough). Sourceable for tests via GWIFI_RADIO_SOURCED=1.
+# See docs/ten64-vm-image-design.md §7.3.
+set -u
+LOG_TAG=gwifi-radio-setup
+
+# ---- generic sysfs phy helpers (unit-tested in tests/tenwrt/) ----------------
+# Read GWIFI_RADIO_SYSFS live (not a top-level snapshot) so tests can repoint it.
+# any_phy_present -> "1" if at least one phy exists under the sysfs root, else "".
+any_phy_present() {
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	for _p in "$_sysfs"/phy*; do [ -e "$_p" ] && { echo 1; return 0; }; done
+}
+# bdf_of_phy PHY -> the PCI BDF (basename of the resolved device dir), e.g. 0000:00:02.0.
+bdf_of_phy() {
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	_t=$(readlink -f "$_sysfs/$1/device") || return 0
+	echo "${_t##*/}"
+}
+# wifi_devices -> the uci wifi-device section names, one per line.
+wifi_devices() {
+	uci show wireless | sed -n 's/^wireless\.\([^.]*\)=wifi-device/\1/p'
+}
+
+# radio_swap_needed BAND0 BAND1 -> "1" when radio0 came up 5/6 GHz while
+# radio1 is 2.4 GHz (the dual-band ansells-aps-puck template layout binds
+# radio0=2g4, radio1=5g; the current bonded non-DBDC MT7915 exposes a single
+# phy, so on tenwrt today this is a no-op — kept for a future DBDC card).
+radio_swap_needed() {
+	case "${1:-}:${2:-}" in 5g:2g|6g:2g) echo 1 ;; esac
+}
+
+# gwifi_normalize_radios — normalize radio0=2.4GHz / radio1=5GHz for a
+# dual-band template (DBDC phy order is not guaranteed; paths travel with the
+# renamed sections). Split out so tests can exercise just this rename triple
+# against the uci-stub without going through wifi config/enable.
+gwifi_normalize_radios() {
+	_b0=$(uci -q get wireless.radio0.band); _b1=$(uci -q get wireless.radio1.band)
+	if [ -n "$(radio_swap_needed "$_b0" "$_b1")" ]; then
+		uci rename wireless.radio0=radiotmp
+		uci rename wireless.radio1=radio0
+		uci rename wireless.radiotmp=radio1
+		logger -t "$LOG_TAG" "swapped radio0<->radio1 (radio0 was $_b0)"
+	fi
+}
+
+main() {
+	if [ -z "$(any_phy_present)" ]; then
+		logger -t "$LOG_TAG" "no Wi-Fi phys present; skipping radio setup"
+		return 0
+	fi
+	_sysfs=${GWIFI_RADIO_SYSFS:-/sys/class/ieee80211}
+	for _p in "$_sysfs"/phy*; do
+		[ -e "$_p/device" ] || continue
+		_pn=${_p##*/}
+		if [ -e "$_p/device/driver" ]; then _drv=$(readlink "$_p/device/driver"); _drv=${_drv##*/}; else _drv="(unbound)"; fi
+		logger -t "$LOG_TAG" "present: $_pn driver=$_drv bdf=$(bdf_of_phy "$_pn")"
+	done
+	# Generate radioN sections (+ PCI paths + auto-detected band) for whatever
+	# card(s) are present.
+	wifi config
+	# wifi config emits a default AP (ssid=OpenWrt) for every radio it finds —
+	# never beacon any of them, whatever N a card population reaches.
+	for _d in $(uci show wireless | sed -n 's/^wireless\.\(default_radio[0-9][0-9]*\)=.*/\1/p'); do
+		uci -q delete "wireless.$_d"
+	done
+	for _r in $(wifi_devices); do
+		uci set "wireless.$_r.channel=auto"
+		uci set "wireless.$_r.disabled=0"
+		logger -t "$LOG_TAG" "enabled $_r (band=$(uci -q get "wireless.$_r.band"))"
+	done
+	gwifi_normalize_radios
+	uci commit wireless
+	wifi reload
+}
+
+case "${GWIFI_RADIO_SOURCED:-}" in
+	1) : ;;            # sourced (tests) — do not run
+	*) main "$@" ;;
+esac

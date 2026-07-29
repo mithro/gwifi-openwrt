@@ -1,0 +1,39 @@
+#!/bin/sh
+# 99-tenwrt-bootstrap — first-boot wisp-connectivity for the ten64 Wi-Fi VM
+# (KVM guest 'tenwrt'): exact simple-profile parity with the pucks — bake ONLY
+# what reaches the OpenWISP controller. APs and the client VLAN legs arrive
+# via OpenWISP templates after registration (ansells-aps-base post-reload-hook
+# keys on the eth0 trunk). Shared logic: /lib/gwifi/bootstrap.sh (fleet-image).
+#
+# Uplink: single virtio TRUNK NIC eth0 on ten64's br-raw (floods all tagged
+# frames), so mgmt VLAN 4 rides TAGGED here — pucks get it untagged from
+# their switch port. A QEMU guest matches no armsr board case, so no board
+# network exists: create br0 from scratch (no retry path needed).
+. /lib/gwifi/bootstrap.sh
+
+uci set system.@system[0].hostname='tenwrt'
+uci commit system
+
+gwifi_create_bridge eth0
+gwifi_mgmt_vlan 'eth0:t'
+gwifi_mgmt_iface
+gwifi_dns_dhcp
+gwifi_firewall_mgmt
+# Device identity MAC = the virtio NIC (fixed by the libvirt domain XML).
+gwifi_openwisp_mac eth0
+
+# Radios (VFIO passthrough) may already be present at first boot: normalize
+# radio0=2.4GHz / radio1=5GHz in case a dual-band-template (DBDC) card is
+# fitted. No-op with no phy (pre-passthrough / smoke boot) and with the
+# current single-phy MT7915 (5 GHz-only ansells-aps-tenwrt template).
+[ -x /usr/sbin/gwifi-radio-setup ] && /usr/sbin/gwifi-radio-setup || true
+
+# First-boot completion marker. uci-defaults stdout is captured by logd, NOT
+# shown on the serial console, so write it to /dev/console explicitly —
+# visible to an operator and observable by qemu-smoke-boot.py.
+if [ -w /dev/console ]; then
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=eth0" > /dev/console
+else
+	echo "TENVM-BOOTSTRAP-COMPLETE uplink=eth0"
+fi
+exit 0

@@ -2,6 +2,14 @@
 
 - **Date:** 2026-06-05
 - **Status:** Approved (spec-reviewer + user); all open questions resolved — ready for implementation planning. Committed to `gwifi-openwrt` (branch `gale-autoprovision-mesh`, unpushed).
+- **REVISION 2026-07-12 (wisp-netboot-install D4/D7):** management moved
+  from **tagged VLAN 5** to **untagged VLAN 4 ("wifi")** — `br-mgmt` now
+  bridges BOTH raw wired ports (either may hold the cable) + `bat0.4`; R2
+  becomes "mgmt untagged, client VLANs 10/20/90/99 tagged"; DHCP comes from
+  wisp (10.1.4.2, itself moved to VLAN 4), router/DNS = ten64 (10.1.4.1).
+  Implemented in `gale-image/files/etc/uci-defaults/99-gale-bootstrap`.
+  Client-VLAN trunking remains wan-port-only (refine when trunk ports are
+  provisioned). See `wisp-netboot-install-design.md`.
 - **Target device:** Google Wifi (gale) — OpenWrt **25.12.4**, target `ipq40xx/chromium`, device `google_wifi`
 - **Controller:** OpenWISP (pull mode) at `https://wisp.welland.mithis.com`
 - **Build env:** `/home/tim/local/gwifi/openwrt` (OpenWrt v25.12.4, already builds factory/sysupgrade)

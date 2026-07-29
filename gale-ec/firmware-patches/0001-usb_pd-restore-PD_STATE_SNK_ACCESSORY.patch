@@ -1,0 +1,116 @@
+From 512000371ad8f256a73c6f0c70ebf10b5af98edf Mon Sep 17 00:00:00 2001
+From: Tim 'mithro' Ansell <me@mith.ro>
+Date: Mon, 8 Jun 2026 01:11:02 +0930
+Subject: [PATCH] usb_pd: restore PD_STATE_SNK_ACCESSORY (sink-side CCD
+ trigger) for gale
+
+The captured gale device firmware has a PD_STATE_SNK_ACCESSORY state (pd_state_names[]
+index 4, between SNK_DISCONNECTED_DEBOUNCE and SNK_HARD_RESET_RECOVER) that this
+reconstruction lacked; it is how a sink-only board (gale forces SINK, never sources a
+contract) brings up Case-Closed Debug / USB. The Renode equivalence harness proved the
+divergence: under a Type-C debug accessory the captured reached SNK_ACCESSORY and brought
+USB up (USB_CNTR=0xE400) while the rebuilt could not (CNTR=0x0003 reset default).
+
+Restore it: enum slot + pd_state_names entry at the captured index; in
+SNK_DISCONNECTED_DEBOUNCE, after CC debounce and BEFORE the VBUS gate (a debug accessory
+supplies no VBUS), detect both CC lines pulled (DTS debug accessory presents Rp on both)
+-> ccd_set_mode(ENABLED) + park in SNK_ACCESSORY; the SNK_ACCESSORY handler holds until a
+CC line goes open then disconnects + ccd_set_mode(DISABLED).
+
+VERIFIED: rebuilt now reaches SNK_ACCESSORY and brings USB up under ForceAccessory
+(USB_CNTR=0xE400), matching the captured; normal boot behaviour unchanged (both reach
+SRC_ACCESSORY identically). BUILD_ASSERT(pd_state_names count == PD_STATE_COUNT) holds.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ common/usb_pd_protocol.c | 41 +++++++++++++++++++++++++++++++++++++---
+ include/usb_pd.h         |  7 +++++++
+ 2 files changed, 45 insertions(+), 3 deletions(-)
+
+diff --git a/common/usb_pd_protocol.c b/common/usb_pd_protocol.c
+index 2766987..cce2fe4 100644
+--- a/common/usb_pd_protocol.c
++++ b/common/usb_pd_protocol.c
+@@ -163,6 +163,7 @@ static const char * const pd_state_names[] = {
+ 	"DISABLED", "SUSPENDED",
+ #ifdef CONFIG_USB_PD_DUAL_ROLE
+ 	"SNK_DISCONNECTED", "SNK_DISCONNECTED_DEBOUNCE",
++	"SNK_ACCESSORY",
+ 	"SNK_HARD_RESET_RECOVER",
+ 	"SNK_DISCOVERY", "SNK_REQUESTED", "SNK_TRANSITION", "SNK_READY",
+ 	"SNK_SWAP_INIT", "SNK_SWAP_SNK_DISABLE",
+@@ -2046,9 +2047,30 @@ void pd_task(void)
+ 
+ 			timeout = 20*MSEC;
+ 
+-			/* Wait for CC debounce and VBUS present */
+-			if (get_time().val < pd[port].cc_debounce ||
+-			    !pd_is_vbus_present(port))
++			/* Wait for CC debounce */
++			if (get_time().val < pd[port].cc_debounce)
++				break;
++
++			/*
++			 * Sink-side debug accessory (gale-vintage): a DTS debug accessory presents Rp
++			 * on BOTH CC lines, so while we sink we see both CC pulled (non-open). A normal
++			 * source attach pulls exactly one CC. Detecting both -> enable Case-Closed Debug
++			 * and park in SNK_ACCESSORY (this is how a sink-only board brings up CCD/USB).
++			 * A debug accessory supplies no VBUS, so this is checked BEFORE the VBUS gate.
++			 */
++			if (cc1 != TYPEC_CC_VOLT_OPEN && cc2 != TYPEC_CC_VOLT_OPEN) {
++				pd_set_data_role(port, CONFIG_USB_PD_DEBUG_DR);
++#ifdef CONFIG_CASE_CLOSED_DEBUG
++				ccd_set_mode(system_is_locked() ?
++					     CCD_MODE_PARTIAL : CCD_MODE_ENABLED);
++#endif
++				set_state(port, PD_STATE_SNK_ACCESSORY);
++				timeout = 100*MSEC;
++				break;
++			}
++
++			/* A normal source attach must supply VBUS before we proceed. */
++			if (!pd_is_vbus_present(port))
+ 				break;
+ 
+ 			if (pd_try_src_enable &&
+@@ -2098,6 +2120,19 @@ void pd_task(void)
+ 			hook_call_deferred(&pd_usb_billboard_deferred_data,
+ 					   PD_T_AME);
+ 			break;
++		case PD_STATE_SNK_ACCESSORY:
++			/* Sink-side debug accessory: CCD is enabled; stay until detach. */
++			timeout = 100*MSEC;
++			tcpm_get_cc(port, &cc1, &cc2);
++			/* Detached when a CC line goes open (accessory removed). */
++			if (cc1 == TYPEC_CC_VOLT_OPEN || cc2 == TYPEC_CC_VOLT_OPEN) {
++				set_state(port, PD_STATE_SNK_DISCONNECTED);
++#ifdef CONFIG_CASE_CLOSED_DEBUG
++				ccd_set_mode(CCD_MODE_DISABLED);
++#endif
++				timeout = 10*MSEC;
++			}
++			break;
+ 		case PD_STATE_SNK_HARD_RESET_RECOVER:
+ 			if (pd[port].last_state != pd[port].task_state)
+ 				pd[port].flags |= PD_FLAGS_DATA_SWAPPED;
+diff --git a/include/usb_pd.h b/include/usb_pd.h
+index 7d12505..3f1adb4 100644
+--- a/include/usb_pd.h
++++ b/include/usb_pd.h
+@@ -634,6 +634,13 @@ enum pd_states {
+ #ifdef CONFIG_USB_PD_DUAL_ROLE
+ 	PD_STATE_SNK_DISCONNECTED,
+ 	PD_STATE_SNK_DISCONNECTED_DEBOUNCE,
++	/*
++	 * Sink-side debug/audio accessory (gale-vintage): a sinking DRP that sees BOTH CC lines
++	 * pulled (a DTS debug accessory presents Rp on both) enables Case-Closed Debug here, so a
++	 * sink-only board brings up CCD/USB without ever sourcing. Matches the captured device
++	 * (pd_state_names[] index 4, between SNK_DISCONNECTED_DEBOUNCE and SNK_HARD_RESET_RECOVER).
++	 */
++	PD_STATE_SNK_ACCESSORY,
+ 	PD_STATE_SNK_HARD_RESET_RECOVER,
+ 	PD_STATE_SNK_DISCOVERY,
+ 	PD_STATE_SNK_REQUESTED,
+-- 
+2.47.3
+

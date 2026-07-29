@@ -22,6 +22,7 @@ image name fails loudly here instead of silently never matching on the box.
 
 Exits non-zero on any mismatch.
 """
+import os
 from collections import OrderedDict
 from pathlib import Path
 
@@ -29,7 +30,26 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 PLAYBOOK = HERE / "playbook.yml"
-OPENWRT = HERE.parent / "openwrt"  # the OpenWrt 25.12.2 build tree
+
+
+def _find_openwrt():
+    """Locate the OpenWrt build tree (used only for the optional artifact
+    cross-check). It lives OUTSIDE this repo, so probe a few known spots:
+    the GWIFI_OPENWRT env var, the legacy sibling layout, and the layout where
+    openwisp/ lives inside the gwifi-openwrt repo (build tree two levels up).
+    Returns a best-effort path; the cross-check skips if it isn't found."""
+    probes = []
+    if os.environ.get("GWIFI_OPENWRT"):
+        probes.append(Path(os.environ["GWIFI_OPENWRT"]))
+    probes += [HERE.parent / "openwrt",        # legacy: openwisp/ & openwrt/ siblings
+               HERE.parents[1] / "openwrt"]     # repo layout: gwifi-openwrt/openwisp/
+    for p in probes:
+        if (p / "target/linux/ath79/image/generic.mk").exists():
+            return p
+    return probes[-1]  # default; exists()-guarded cross-check will just skip
+
+
+OPENWRT = _find_openwrt()  # the OpenWrt 25.12.x build tree (outside this repo)
 
 # What each device reports as `.model` -> the sysupgrade image-type key we expect.
 EXPECT = {

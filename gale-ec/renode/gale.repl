@@ -1,0 +1,81 @@
+// gale EC — deterministic peripheral overrides on top of the stock STM32F072.
+// Loaded by base.resc AFTER platforms/cpus/stm32f072.repl, with the stock stub
+// peripherals first removed via `sysbus Unregister` (Renode forbids changing a
+// peripheral's TYPE by redefinition, so the stub is unregistered then replaced).
+// Peripheral C# sources are compiled via `include` in base.resc beforehand.
+
+// Real RCC: oscillator ENABLE bits drive READY bits; RCC_CSR is not forced to 0,
+// so the firmware's `LSION -> wait LSIRDY` handshake in system_pre_init completes.
+rcc: Miscellaneous.GaleRcc @ sysbus 0x40021000
+    size: 0x400
+
+// Real embedded-FLASH interface: WRPR=0xFFFFFFFF (nothing write-protected) + SR.BSY=0,
+// so flash_pre_init's write-protect reconciliation is a no-op (no boot reset loop).
+flashif: Miscellaneous.GaleFlash @ sysbus 0x40022000
+    size: 0x400
+
+// Real DMA1: performs mem<->periph block transfers on CCR.EN, drains CNDTR, sets
+// TCIF. Replaces the stock Python stub that throws on first channel program.
+// (Enables DMA-driven UART console TX output.)
+dma1: Miscellaneous.GaleDma @ sysbus 0x40020000
+    size: 0x400
+    IrqCh1 -> nvic@9
+    IrqCh23 -> nvic@10
+    IrqCh47 -> nvic@11
+
+// STM32F0 12-bit ADC with faithful dynamic USB-PD CC (RM0091). Replaces the stock
+// Analog.STM32F0_ADC so CC1 (AIN1) / CC2 (AIN3) follow the EC's live termination —
+// the per-image cc_pull RAM address is set by the harness via `sysbus.adc CcPullAddress`.
+adc: Miscellaneous.GaleAdc @ sysbus 0x40012400
+    size: 0x400
+
+// W25Q64FV (8 MiB) on the AP-flash bridge — SPI2, chip-select = PB12 (active low,
+// bit-banged by the firmware). Answers JEDEC RDID (EF 40 17) etc. end-to-end: the
+// EC's `spixfer rlen 0 0x1f 3` reads back ef4017 on both images (GaleDma interleaves
+// the full-duplex SPI2 TX/RX DMA). This is the raiden SPI-flash-read path.
+spiflash: Miscellaneous.GaleSpiFlash @ spi2
+
+gpioPortB:
+    12 -> spiflash@0
+
+// STM32F0 USB full-speed DEVICE controller (regs) + its 1 KB packet-memory SRAM (PMA).
+// Lets the firmware run usb_init / enumeration / the USB UART consoles + raiden bridge.
+usb: Miscellaneous.GaleUsb @ sysbus 0x40005C00
+    size: 0x400
+    IRQ -> nvic@31
+usbram: Memory.MappedMemory @ sysbus 0x40006000
+    size: 0x400
+
+// TIM2 is the EC's 32-bit system time base (TIM_CLOCK32=2). The firmware programs
+// PSC = clock_get_freq()/1MHz - 1 = 47 (CPU_CLOCK=48MHz) to tick get_time() at 1 us.
+// Renode's stock timer2 base is 10MHz, so 10MHz/48 ~= 208kHz -> firmware-time runs
+// ~5x slow and PD timing (cc_debounce, DRP toggle) + deferred hooks (board_no_charger)
+// never land correctly. Override to the real 48MHz APB1 timer-input clock so the
+// prescaler yields a true 1MHz tick. (Re-declared with the same type/address/IRQ to
+// change the constructor frequency.)
+timer2: Timers.STM32_Timer @ sysbus 0x40000000
+    frequency: 48000000
+    initialLimit: 0xFFFFFFFF
+    -> nvic@15
+
+// STM32F0 EXTI with a USB-PD COMP-edge injector. Replaces the stock STM32F4_EXTI so a
+// modeled CC partner can play the comparator (COMP1->EXTI21 / COMP2->EXTI22 -> ADC_COMP
+// IRQ 12) via `sysbus.exti FireComp 21`, waking pd_task through the real pd_rx_handler.
+exti: Miscellaneous.GaleExti @ sysbus 0x40010400
+    size: 0x400
+    IRQ -> nvic@12
+    GpioIrq01 -> nvic@5
+    GpioIrq23 -> nvic@6
+    GpioIrq415 -> nvic@7
+
+// STM32F0 I2C1 = the AP host-command slave (OAR1=0x803C/addr 0x3C). GaleI2c emulates the AP
+// master writing a host-command packet via `sysbus.i2c1 HostCmd "<hex>"`, driving the real
+// i2c_event_handler -> i2c_process_command -> host_command_process -> hc_* over IRQ 23.
+i2c1: Miscellaneous.GaleI2c @ sysbus 0x40005400
+    size: 0x400
+    IRQ -> nvic@23
+
+// Option bytes / info block @ 0x1FFFF800 — loaded with the real device values
+// (RDP=0xAA level 0, WRP=0xFF none) in base.resc. read_optb() reads these directly.
+optbytes: Memory.MappedMemory @ sysbus 0x1FFFF800
+    size: 0x400

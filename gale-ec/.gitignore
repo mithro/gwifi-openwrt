@@ -1,0 +1,3 @@
+# Tracked build workspace (build-firmware.sh): pinned platform/ec clone, fetched toolchain,
+# and build outputs. Reproducible from the tracked recipe + patches + board files, so not committed.
+.build/

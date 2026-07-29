@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Classify the branches left uncovered by coverage_full.py into auditable categories,
+so the irreducible remainder of a 100%-branch-coverage goal is JUSTIFIED per-branch
+(not silently dropped). Reads cov_uncovered_{RO,RW}.txt (addr, symbol, reached-state).
+
+Each uncovered branch is binned by its containing function symbol into one of:
+  UNREACHABLE_FAULT   panic / exception / hard-fault / assert handlers — taking both
+                      directions needs a fault that resets the CPU; the not-taken side
+                      is the normal path, so both-in-one-image is structurally excluded.
+  ABSENT_HARDWARE     paths for peripherals gale physically lacks (no keyboard, battery,
+                      charger, motion sensor, lid, backlight, ALS, PWM) — genuinely
+                      unreachable on this board. CORRECTION (2026-06-07): host-command /
+                      hc_* / hostevent / lpc are NO LONGER in this category. They were
+                      wrongly excused as dead code; in fact the captured device enables an
+                      I2C host-command slave (OAR1=0x803C) and the recreation restores it
+                      (CONFIG_HOSTCMD_I2C_SLAVE_ADDR=0x3C), so the GaleI2c harness drives
+                      host_command_process / hc_* for real — they are COVERABLE work, not
+                      an exclusion. See COVERAGE.md.
+  HW_CANT_FAIL        EC_ERROR_* returns for modeled hardware that never errors
+                      (flash never BSY, SPI slave always responds, I2C ack).
+  WATCHDOG_TIMEOUT    watchdog-trip / timeout-expiry guards that never fire deterministically.
+  COVERABLE_GAP       reached in some scenario but only one direction seen, and NOT in any
+                      excluded category — i.e. a real branch we have not yet driven both
+                      ways. These are NOT excusable; they are the work-list to drive down.
+  UNREACHED_OTHER     never reached by any scenario and not in an excluded category.
+
+Prints per-category counts and writes the COVERABLE_GAP + UNREACHED_OTHER work-lists so
+they can be attacked with more scenarios. The honest 100%-coverage claim is:
+  covered / (total - justified_exclusions) == 100%  AND  COVERABLE_GAP == 0.
+
+Usage: uv run python classify.py
+"""
+import os
+import re
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+FAULT = re.compile(r'(panic|exception|hard_?fault|fault_|_fault|assert|software_panic|'
+                   r'reboot|watchdog|wdt|hook_critical|cpu_reset|system_reset|jump_to_image|'
+                   r'exception_panic|report_panic|hibernate)', re.I)
+# ABSENT HARDWARE: peripherals gale physically does not have, so the code is genuinely
+# unreachable on this board (no keyboard / battery / charger / motion sensor / lid / backlight /
+# ALS / PWM). NOTE (2026-06-07): host-command / hc_* / hostevent / lpc were REMOVED from this set —
+# they are NO LONGER dead code. The captured device enables an I2C host-command slave (OAR1=0x803C)
+# and the recreation restores it (CONFIG_HOSTCMD_I2C_SLAVE_ADDR=0x3C); the GaleI2c harness drives
+# host_command_process / hc_* for real, so those branches belong in the COVERABLE work-list, not an
+# exclusion. Excusing them would be a stale dead-code claim that a verifier must reject.
+ABSENT_HW = re.compile(r'(keyboard|kb_|charge_manager|battery|charger|pmu|motion|als|tablet|'
+                       r'backlight|\bpwm|lid_|power_button)', re.I)
+HW_FAIL = re.compile(r'(flash_|spi_|i2c_|adc_|dma_|_read_|_write_|_xfer|_transfer|crc)', re.I)
+WDT = re.compile(r'(watchdog|wdt|timeout|deadline|timer_|hwtimer)', re.I)
+
+
+def classify(sym, state):
+    # A branch that was REACHED (one direction) is by definition reachable, so it belongs
+    # in the honest work-list (COVERABLE_GAP) regardless of its symbol name — we must NOT
+    # excuse a reachable branch as "structurally unreachable". The structural-exclusion
+    # categories apply ONLY to branches no scenario reached at all.
+    if state == "reached-one-dir":
+        return "COVERABLE_GAP"
+    if FAULT.search(sym):
+        return "UNREACHABLE_FAULT"
+    if ABSENT_HW.search(sym):
+        return "ABSENT_HARDWARE"
+    if WDT.search(sym):
+        return "WATCHDOG_TIMEOUT"
+    if HW_FAIL.search(sym):
+        return "HW_CANT_FAIL"
+    return "UNREACHED_OTHER"
+
+
+def main():
+    for img in ("RO", "RW"):
+        path = os.path.join(HERE, "cov_uncovered_%s.txt" % img)
+        if not os.path.exists(path):
+            print("%s: %s missing — run coverage_full.py first" % (img, os.path.basename(path)))
+            continue
+        cats = {}
+        gap, other = [], []
+        with open(path) as f:
+            for ln in f:
+                p = ln.split()
+                if len(p) < 3:
+                    continue
+                addr, sym, state = p[0], p[1], p[2]
+                c = classify(sym, state)
+                cats.setdefault(c, []).append((addr, sym))
+                if c == "COVERABLE_GAP":
+                    gap.append((addr, sym))
+                elif c == "UNREACHED_OTHER":
+                    other.append((addr, sym))
+        total_uncov = sum(len(v) for v in cats.values())
+        print("\n=== %s: %d uncovered branches ===" % (img, total_uncov))
+        for c in sorted(cats, key=lambda k: -len(cats[k])):
+            print("  %-20s %4d" % (c, len(cats[c])))
+        for nm, lst in (("gap", gap), ("other", other)):
+            outp = os.path.join(HERE, "tmp", "worklist_%s_%s.txt" % (img, nm))
+            os.makedirs(os.path.dirname(outp), exist_ok=True)
+            with open(outp, "w") as f:
+                for a, s in lst:
+                    f.write("%s %s\n" % (a, s))
+
+
+if __name__ == "__main__":
+    main()

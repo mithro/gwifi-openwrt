@@ -1,0 +1,79 @@
+ipq40xx: chromium: enable the ChromeOS EC (cros_ec) driver family as modules
+
+The gale EC is an I2C slave to the AP at 0x1e on blsp1_i2c4 (see patch 0002
+for the DT node). Enable the whole cros_ec driver family so it can be reached
+in-band. Everything is built =m and shipped via the kmod-cros-ec package
+(package/kernel/linux/modules/cros-ec.mk, patch 0004); the drivers whose
+subsystems the gale hardware lacks (IIO sensors, HWMON, INPUT, PWM, MEDIA/CEC,
+DRM, LEDS-keyboard) are pinned =n.
+
+These symbols cannot be set from the buildroot .config: `make defconfig`
+strips unregistered CONFIG_KERNEL_*, and none of the cros_ec symbols are
+OpenWrt kmod packages by default. OpenWrt assembles the kernel .config by
+concatenating the config files, and the kernel's syncconfig errors on any
+newly-visible symbol left unpinned — so every symbol the cros_ec/TYPEC menus
+expose (found via olddefconfig on OpenWrt's real assembled config) is listed
+explicitly here. CROS_EC_PROTO resolves =y (a built-in helper library that the
+=m drivers link against). This lives in config-6.12 (the target config, which
+`make target/linux/refresh` manages) rather than chromium/config-default.
+
+Validated on puck12 2026-07-18: all 22 modules load, cros-ec-i2c binds the
+ec@1e node, /dev/cros_ec present, /sys/class/chromeos/cros_ec/version reads
+gale_v1.1.5337-0115719 from the EC over I2C.
+
+Tested against: OpenWrt v25.12.4 (r32933-4ccb782af7).
+
+diff --git a/target/linux/ipq40xx/config-6.12 b/target/linux/ipq40xx/config-6.12
+index aca3af0f50..dcd0894553 100644
+--- a/target/linux/ipq40xx/config-6.12
++++ b/target/linux/ipq40xx/config-6.12
+@@ -536,3 +536,49 @@ CONFIG_ZLIB_INFLATE=y
+ CONFIG_ZSTD_COMMON=y
+ CONFIG_ZSTD_COMPRESS=y
+ CONFIG_ZSTD_DECOMPRESS=y
++# CONFIG_HISI_HIKEY_USB is not set
++CONFIG_I2C_CROS_EC_TUNNEL=m
++CONFIG_GPIO_CROS_EC=m
++CONFIG_CHARGER_CROS_USBPD=m
++CONFIG_CHARGER_CROS_PCHG=m
++# CONFIG_CROS_EC_WATCHDOG is not set
++CONFIG_MFD_CORE=m
++CONFIG_MFD_CROS_EC_DEV=m
++CONFIG_REGULATOR_CROS_EC=m
++CONFIG_TYPEC=m
++# CONFIG_TYPEC_TCPM is not set
++# CONFIG_TYPEC_UCSI is not set
++# CONFIG_TYPEC_TPS6598X is not set
++# CONFIG_TYPEC_ANX7411 is not set
++# CONFIG_TYPEC_RT1719 is not set
++# CONFIG_TYPEC_HD3SS3220 is not set
++# CONFIG_TYPEC_STUSB160X is not set
++# CONFIG_TYPEC_WUSB3801 is not set
++# CONFIG_TYPEC_MUX_FSA4480 is not set
++# CONFIG_TYPEC_MUX_GPIO_SBU is not set
++# CONFIG_TYPEC_MUX_PI3USB30532 is not set
++# CONFIG_TYPEC_MUX_IT5205 is not set
++# CONFIG_TYPEC_MUX_NB7VPQ904M is not set
++# CONFIG_TYPEC_MUX_PTN36502 is not set
++# CONFIG_TYPEC_MUX_WCD939X_USBSS is not set
++CONFIG_USB_ROLE_SWITCH=m
++CONFIG_LEDS_CROS_EC=m
++CONFIG_RTC_DRV_CROS_EC=m
++CONFIG_CHROME_PLATFORMS=y
++CONFIG_CROS_EC=m
++CONFIG_CROS_EC_I2C=m
++CONFIG_CROS_EC_SPI=m
++CONFIG_CROS_EC_PROTO=y
++# CONFIG_CROS_KBD_LED_BACKLIGHT is not set
++CONFIG_CROS_EC_CHARDEV=m
++CONFIG_CROS_EC_LIGHTBAR=m
++CONFIG_CROS_EC_VBC=m
++CONFIG_CROS_EC_DEBUGFS=m
++CONFIG_CROS_EC_SENSORHUB=m
++CONFIG_CROS_EC_SYSFS=m
++CONFIG_CROS_EC_TYPEC=m
++CONFIG_CROS_USBPD_LOGGER=m
++CONFIG_CROS_USBPD_NOTIFY=m
++CONFIG_EXTCON_USBC_CROS_EC=m
++# CONFIG_EXTCON_USBC_TUSB320 is not set
++# CONFIG_SENSORS_CROS_EC is not set

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Minimal ubus stand-in for the harness. `list` prints FAKE_HOSTAPD_OBJS (newline-sep);
+# `call <obj> get_status` returns AP mode; `call <obj> enable|disable` appends to FAKE_UBUS_LOG.
+case "$1" in
+  list) printf '%s\n' ${FAKE_HOSTAPD_OBJS:-} ;;
+  call)
+    case "$3" in
+      get_status) echo '{"mode":"ap"}' ;;
+      enable|disable) echo "$2 $3" >> "${FAKE_UBUS_LOG:-/dev/null}" ;;
+    esac ;;
+esac
+exit 0

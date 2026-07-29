@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# gwifi-topology-push — emit the whole-mesh alfred-vis JSON and POST it to
+# the OpenWISP batman-adv topology receiver on wisp.
+#
+# alfred (over bat0) floods every node's local vis data mesh-wide, so once it
+# converges `batadv-vis -f jsondoc` on ANY puck yields the WHOLE-mesh graph
+# (primary + neighbours + client TT for all nodes). Convergence requires the
+# firewall to trust bat0 — batman's control plane (alfred UDP 16962 + IPv6
+# NDP) is untagged on the un-zoned raw mesh iface and fw4's `policy drop`
+# INPUT chain was eating it; the bootstrap now adds bat0 to the trusted zone.
+# Even so, all pucks push on the 60s cadence and OpenWISP's receive strategy
+# is ADDITIVE (netdiff unions edges from every pusher, expiring a link only
+# when absent from all pushes past expiration_time), so the topology stays
+# complete and self-healing if one node's view lags. netdiff's BatmanParser
+# consumes this format verbatim (top-level "source_version" +
+# "vis":[{primary,neighbors:[{neighbor,metric}],clients}...]).
+# See docs/wisp-netboot-install-design.md (mesh topology reporting).
+
+URL='__TOPOLOGY_RECEIVE_URL__'
+BAT='bat0'
+TMP='/tmp/gwifi-topology.json'
+# stderr goes to a log, NEVER /dev/null — a silent push failure is invisible.
+ERRLOG='/tmp/gwifi-topology.err'
+
+[ -n "$URL" ] || { echo "gwifi-topology: no receive URL configured" >&2; exit 0; }
+[ -x /usr/sbin/batadv-vis ] || { echo "gwifi-topology: batadv-vis missing" >&2; exit 0; }
+[ -e "/sys/class/net/$BAT" ] || { echo "gwifi-topology: $BAT not present yet" >&2; exit 0; }
+
+# batadv-vis writes the JSON document to stdout; keep its diagnostics in the
+# log so a malformed/empty run leaves a trail instead of a corrupted body.
+if ! /usr/sbin/batadv-vis -i "$BAT" -f jsondoc >"$TMP" 2>>"$ERRLOG"; then
+	echo "gwifi-topology: batadv-vis failed (see $ERRLOG)" >&2
+	exit 1
+fi
+[ -s "$TMP" ] || { echo "gwifi-topology: empty vis output (alfred not converged?)" >&2; exit 0; }
+
+if uclient-fetch -q -O - --timeout=15 \
+	--header='Content-Type: text/plain' \
+	--post-file="$TMP" "$URL" >>"$ERRLOG" 2>&1; then
+	echo "gwifi-topology: pushed $(wc -c <"$TMP") bytes"
+else
+	echo "gwifi-topology: POST failed (see $ERRLOG)" >&2
+	exit 1
+fi
