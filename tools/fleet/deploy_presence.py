@@ -103,41 +103,56 @@ def main() -> None:
     print(f"Registry: {len(regs)} puck(s): {', '.join(sorted(regs))}")
 
     table: dict[str, dict[str, tuple[bool, str]] | None] = {}
-    for name in sorted(regs):
-        reg = regs[name]
-        print(f"Deploying to {name} ({reg.ip}) …", flush=True)
-        try:
-            table[name] = deploy_one(name, reg.ip, verbose=args.verbose)
-        except (subprocess.TimeoutExpired, SshTransportError, ValueError) as exc:
-            print(f"  {name}: FAILED ({exc})", file=sys.stderr)
-            table[name] = None
-            continue
-        row = table[name]
-        summary = "  ".join(
-            f"{s}={'OK' if row[s][0] else 'FAIL'}" for s in STEPS)
-        print(f"  {name}: {summary}")
-
-    print("\n=== Summary (files / apk / service / mqtt) ===")
-    hdr = "puck    " + "".join(f"{s:<10}" for s in STEPS)
-    print(hdr)
+    not_attempted: set[str] = set(regs)
     failures = 0
-    for name in sorted(table):
-        row = table[name]
-        if row is None:
-            print(f"{name:<8}" + "FAILED (ssh/parse error, see above)")
-            failures += 1
-            continue
-        cells = []
-        for s in STEPS:
-            ok, _ = row[s]
-            cells.append(f"{'OK' if ok else 'FAIL':<10}")
-            if not ok:
+    try:
+        for name in sorted(regs):
+            not_attempted.discard(name)
+            reg = regs[name]
+            print(f"Deploying to {name} ({reg.ip}) …", flush=True)
+            try:
+                table[name] = deploy_one(name, reg.ip, verbose=args.verbose)
+            except (subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
+                # RuntimeError also catches SshTransportError (its subclass)
+                # and the "odd remote exit" case (e.g. apk OOM-killed mid-run,
+                # rc=137) — isolate it to this puck, never abort the fleet run.
+                print(f"  {name}: FAILED ({exc})", file=sys.stderr)
+                table[name] = None
+                continue
+            row = table[name]
+            summary = "  ".join(
+                f"{s}={'OK' if row[s][0] else 'FAIL'}" for s in STEPS)
+            print(f"  {name}: {summary}")
+    finally:
+        # Print whatever was collected no matter how the loop above ends —
+        # including a truly unexpected exception escaping the per-puck
+        # try/except above: this still shows partial results (fail loud,
+        # never silently swallowed) before that exception keeps propagating.
+        print("\n=== Summary (files / apk / service / mqtt) ===")
+        hdr = "puck    " + "".join(f"{s:<10}" for s in STEPS)
+        print(hdr)
+        for name in sorted(regs):
+            if name in not_attempted:
+                print(f"{name:<8}" + "NOT ATTEMPTED (run aborted early)")
                 failures += 1
-        print(f"{name:<8}" + "".join(cells))
-        for s in STEPS:
-            ok, detail = row[s]
-            if not ok:
-                print(f"        {s}: {detail}")
+                continue
+            row = table[name]
+            if row is None:
+                print(f"{name:<8}" + "FAILED (ssh/parse error, see above)")
+                failures += 1
+                continue
+            cells = []
+            for s in STEPS:
+                ok, _ = row[s]
+                cells.append(f"{'OK' if ok else 'FAIL':<10}")
+                if not ok:
+                    failures += 1
+            print(f"{name:<8}" + "".join(cells))
+            for s in STEPS:
+                ok, detail = row[s]
+                if not ok:
+                    print(f"        {s}: {detail}")
+
     if failures:
         sys.exit(f"\n{failures} step(s)/puck(s) FAILED")
 
