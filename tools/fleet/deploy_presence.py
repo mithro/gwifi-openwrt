@@ -108,6 +108,13 @@ def main() -> None:
     try:
         for name in sorted(regs):
             not_attempted.discard(name)
+            # Seed a lookup-safe entry before the risky call: if some OTHER
+            # exception type escapes deploy_one() (e.g. FileNotFoundError/
+            # OSError from subprocess), the finally-block summary must still
+            # find table[name] rather than KeyError mid-print. The except
+            # clause below overwrites this with None again — redundant but
+            # harmless.
+            table[name] = None
             reg = regs[name]
             print(f"Deploying to {name} ({reg.ip}) …", flush=True)
             try:
