@@ -117,6 +117,8 @@ Commit: a81e6642ed86e53ffed691b91af9e661829ecd53 (main, 2026-07-26)
 presence-detector.py: <sha256 from Step 1> (byte-exact)
 init.d-presence-detector: upstream init.d/presence-detector (sha256 <from Step 1>) + local path adaptations (see file footer)
 Update procedure: re-fetch at a new pin, re-apply the documented init diff, update this file.
+Known upstream behavior: interface auto-detect shells `ubus list hostapd.*` with
+check=True at startup — a start racing a `wifi` reload can raise; procd respawn covers it.
 ```
 
 - [ ] **Step 5: Commit**
