@@ -24,6 +24,17 @@ be run against wisp.
   presence-detector, and empty log output FAILS. It is not a broker-side
   "state message arrived" check. The on-broker verification happens once,
   fleet-wide, in runbook step 4.
+- **Discovery configs are NOT retained** (verified in the vendored script at
+  the pinned commit: `_ha_seen` publishes `.../config` with the default
+  `retain=False`, while state is published with `retain=mqtt_retain_state`).
+  This still satisfies "HA rediscovers entities on restart", by a different
+  mechanism than assumed: `_do_full_sync()` **clears `_registered_clients`**,
+  so every device is re-announced on the next sync — and a full sync runs both
+  on HA's `homeassistant/status` = `online` birth message and on every
+  `fallback_sync_interval` (60 s here). Worst case after an HA restart is 60 s,
+  typically immediate. Consequence when observing: a short `mosquitto_sub`
+  window sees only the pucks whose sync cycle fell inside it, so a puck showing
+  0 configs in a 45 s sample is not evidence of a problem.
 - **`gdoc2netcfg wifi show-login` requires `--all`** for the fleet-wide dump
   (Task 7, commit 7b0511d). The plan said "no positional args → every WiFi
   host"; that made a bare or typo-truncated invocation print every host's
