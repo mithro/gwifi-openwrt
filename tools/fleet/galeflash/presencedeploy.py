@@ -56,7 +56,19 @@ fi
 # logging).  The vendored script logs "Starting ubus watchers on interfaces
 # ..." at startup, "MQTT broker seems to be offline, sleeping..." on
 # broker-connect failure, and publish failures as lines containing "Error".
-lines=$(logread | grep presence-detector | tail -n 40)
+#
+# POLL rather than sample once: the daemon connects to the broker and runs its
+# first station sync AFTER procd reports it registered, so a single immediate
+# read races startup and reports a healthy deploy as no-log-evidence (observed
+# on all six pucks during the 2026-07-30 rollout).
+i=0
+lines=""
+while [ "$i" -lt 20 ]; do
+    lines=$(logread | grep presence-detector | tail -n 40)
+    [ -n "$lines" ] && break
+    i=$((i + 1))
+    sleep 1
+done
 if [ -z "$lines" ]; then
     result mqtt FAIL no-log-evidence
 elif printf '%s\\n' "$lines" | grep -Eqi 'error|offline, sleeping'; then

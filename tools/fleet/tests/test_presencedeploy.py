@@ -33,6 +33,10 @@ def test_install_script_contents():
     assert "errors-in-log" in s
     assert "log-evidence" in s
     assert "offline, sleeping" in s
+    # ...and POLLS for it: the daemon logs only after procd reports it
+    # registered, so sampling once races startup and calls a healthy deploy
+    # no-log-evidence (observed fleet-wide on 2026-07-30).
+    assert "-lt 20" in s
 
 
 def test_parse_results_ok():
