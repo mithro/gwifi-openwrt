@@ -30,9 +30,15 @@ def test_install_script_contents():
     assert "-lt 15" in s
     # mqtt check requires positive log evidence, not just an absence of errors
     assert "no-log-evidence" in s
-    assert "errors-in-log" in s
+    assert "errors-after-last-success" in s
+    assert "no-success-evidence" in s
     assert "log-evidence" in s
     assert "offline, sleeping" in s
+    # ...and judges by RECENCY: "broker seems to be offline" is logged at
+    # startup before the connection completes, so a puck that hiccupped and
+    # then connected is healthy (observed on puck03/06/07, 2026-07-30).
+    assert "last_err" in s and "last_ok" in s
+    assert "is now at home" in s
     # ...and POLLS for it: the daemon logs only after procd reports it
     # registered, so sampling once races startup and calls a healthy deploy
     # no-log-evidence (observed fleet-wide on 2026-07-30).

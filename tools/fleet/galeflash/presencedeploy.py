@@ -69,10 +69,21 @@ while [ "$i" -lt 20 ]; do
     i=$((i + 1))
     sleep 1
 done
+# Judge by RECENCY, not mere presence: "MQTT broker seems to be offline,
+# sleeping..." is logged at startup before the broker connection completes, so
+# a puck that hiccupped once and then connected is healthy.  Only an error
+# NEWER than the most recent success means it is currently broken.
+last_err=$(printf '%s\\n' "$lines" | grep -nEi 'error|offline, sleeping' \\
+           | tail -n 1 | cut -d: -f1)
+last_ok=$(printf '%s\\n' "$lines" \\
+          | grep -nEi 'is now at home|is now away|Starting ubus watchers' \\
+          | tail -n 1 | cut -d: -f1)
 if [ -z "$lines" ]; then
     result mqtt FAIL no-log-evidence
-elif printf '%s\\n' "$lines" | grep -Eqi 'error|offline, sleeping'; then
-    result mqtt FAIL errors-in-log
+elif [ -n "$last_err" ] && {{ [ -z "$last_ok" ] || [ "$last_err" -gt "$last_ok" ]; }}; then
+    result mqtt FAIL "errors-after-last-success"
+elif [ -z "$last_ok" ]; then
+    result mqtt FAIL no-success-evidence
 else
     result mqtt OK log-evidence
 fi
