@@ -1,0 +1,80 @@
+phy#1
+	Interface mesh-5g
+		ifindex 36
+		wdev 0x100000008
+		addr 44:07:0b:01:a2:24
+		type mesh point
+		channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz
+		txpower 23.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	219800	125	0	0	0	48551309		223678
+	Interface wl-main-5g
+		ifindex 34
+		wdev 0x100000007
+		addr 42:07:0b:01:a2:24
+		ssid test
+		type AP
+		channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz
+		txpower 23.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+	Interface wl-guest-5g
+		ifindex 25
+		wdev 0x100000004
+		addr 46:07:0b:01:a2:24
+		ssid test-guest
+		type AP
+		channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz
+		txpower 23.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+phy#1
+	Interface wl-iot-5g
+		ifindex 38
+		wdev 0x10
+		addr 4e:07:0b:01:a2:24
+		type AP
+phy#0
+	Interface wl-iot-2g4
+		ifindex 37
+		wdev 0xd
+		addr 42:07:0b:01:a2:28
+		type AP
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+	Interface mesh-2g4
+		ifindex 35
+		wdev 0xc
+		addr 4e:07:0b:01:a2:28
+		type mesh point
+		channel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz
+		txpower 30.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	156467	11867	0	0	0	38406341		182620
+	Interface wl-guest-2g4
+		ifindex 32
+		wdev 0xa
+		addr 46:07:0b:01:a2:28
+		ssid test-guest
+		type AP
+		channel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz
+		txpower 30.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+	Interface wl-main-2g4
+		ifindex 27
+		wdev 0x6
+		addr 44:07:0b:01:a2:28
+		ssid test
+		type AP
+		channel 6 (2437 MHz), width: 20 MHz, center1: 2437 MHz
+		txpower 30.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0

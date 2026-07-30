@@ -1,0 +1,111 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+# Validating the netboot reboot-retry loop (gale)
+
+The dev-key netboot firmware is meant to **self-heal**: try TFTP netboot first,
+fall back to the eMMC OS, and if **both** fail, **reboot and retry** — never
+stranding a headless puck on a recovery screen. That behavior is the vboot patch
+`patches/vboot_reference-netboot-reboot-retry.patch` in the
+[`depthcharge-ipq4019`](https://github.com/mithro/depthcharge-ipq4019) firmware
+tree. This is the one procedure that confirms the *loop* actually runs on
+hardware.
+
+## Why not on the SuzyQ rig
+
+`cold_reboot()` de-asserts the AP's `PS_HOLD`, telling the PMIC to re-boot the
+SoC. That needs **autonomous power sequencing**. The USB-A SuzyQ bench powers the
+AP only when the EC is *told* (`gale power on`) and does no USB-C PD negotiation,
+so after the `PS_HOLD` drop the AP just stays down — and the reset bounces the
+shared USB-SPI rail, wedging the bench (an EC-reboot un-park can't recover it; it
+needs a full PoE cold-boot). This limits the **pre-existing** `cold_reboot` path
+too, so the SuzyQ rig cannot demonstrate reboot-looping with *any* firmware. The
+whole blocker is autonomous power — give the gale that and it works.
+
+## Setup
+
+1. **Flash** the reboot-retry firmware via the SuzyQ (the normal fleet flow), and
+   leave the **eMMC blank / with no bootable OS**. Both netboot *and* eMMC must
+   fail for the reboot-retry path to trigger.
+2. **Unplug the SuzyQ** from the gale's USB-C and plug in the **stock USB-C PD
+   adapter**. The gale now boots on normal power (the EC auto-boots the AP;
+   `cold_reboot` reboots cleanly).
+3. Leave the gale's **WAN RJ45 cabled to the rig's `eth-gwan`** (that's a
+   separate cable from the USB-C, so it stays put).
+4. Ensure there is **no netboot/DHCP server** on that WAN segment (stop dnsmasq;
+   remove the `192.168.50.1` provisioning IP) — netboot must fail every cycle.
+
+## Prerequisite: confirm the AP actually boots on PD
+
+A gale that was last driven over CCD (SuzyQ) can be left **parked** — the EC runs
+but the AP is held off, and a plain AC power-cycle does **not** un-park it (an EC
+reboot over CCD does). A parked, PD-only gale draws only ~2 W (EC + WAN PHY) and
+never netboots. Before a validator run, confirm the AP powers up:
+
+```sh
+tools/netboot-verify/plug_power_probe.py 10.1.91.18 60 150
+```
+
+- **≥4 W peak** → AP booting → proceed.
+- **~2 W peak** → AP OFF/parked. A plain PD adapter can't clear this (single
+  USB-C port can't do CCD + PD at once). Use a **PD-capable servo** (CCD to issue
+  the EC un-park, PD to keep it powered) — see the console section below.
+
+## Run
+
+On the rig (or any host with the gale's WAN cabled):
+
+```sh
+# passive (gale already booting on PD):
+tools/netboot-verify/reboot_loop_validate.sh eth-gwan 300
+# or auto power-cycle first, via the Tasmota plug host (4th arg):
+tools/netboot-verify/reboot_loop_validate.sh eth-gwan 240 44:07:0b 10.1.91.18
+```
+
+It sniffs the WAN, prints a live status line every 30 s, and counts the puck's
+DHCP-discover **bursts**. With no plug arg it never touches power; with one it
+power-cycles the gale (off 5 s, on) for a clean fresh boot first.
+
+## Pass / fail
+
+| Result | Meaning |
+|--------|---------|
+| **PASS** — ≥3 evenly-spaced bursts (~20–45 s apart) | `netboot → eMMC → reboot → netboot` self-heals ✓ |
+| **FAIL** — one burst then silence | Booted once, did not reboot: pre-fix behavior, or not on PD power (still on SuzyQ) |
+| **FAIL** — no frames at all | Puck never DHCP'd: not booting, WAN not cabled/carrier-down, or not PD-powered |
+
+## Two more checks worth doing in the same session
+
+- **eMMC fallback (the common deployed case):** netboot-install OpenWrt to eMMC
+  (see [`gale-openwrt-netboot-install.md`](gale-openwrt-netboot-install.md)), then
+  with no server confirm it does `netboot-fail → boot eMMC OpenWrt` — one boot
+  into the installed OS, no loop.
+- **Manual recovery still works:** hold the recovery button **>16 s** at power-on
+  and confirm it waits for USB recovery media (the untouched `REC_SWITCH_ON`
+  path) instead of reboot-looping.
+
+## Seeing the console messages (optional)
+
+To watch the actual `netboot: trying TFTP… → no kernel → rebooting to retry
+netboot → [reboot]` cycle text, use a **PD-capable servo** (servo v4, or a
+Type-C CCD/SuzyQ that passes PD) instead of the USB-A SuzyQ — it provides
+autonomous power **and** the AP console + flashing at once.
+
+## How it was actually validated (2026-07-08)
+
+The plain-PD path above did **not** work on our bench: with just a USB-C PD
+adapter the gale stays **parked** (AP off, ~2 W) — un-parking needs an EC
+`sysjump RW` over CCD, which a plain adapter can't do. So validation was done
+over **CCD (SuzyQ)** instead, standing in for the AP restart that production
+PD/PMIC gives for free:
+
+```sh
+# EC in RW via sysjump; per cycle: gale power off/on (restart) + capture/count
+tools/netboot-verify/loop_demo.py 3 45
+```
+
+Result (2831): **3/3 cycles were normal RW boots** (coreboot `9ff56ab`), each
+`VbSetRecoveryRequest(0)` + cold_reboot, **0 RO-recovery boots** (`60d1b1c`),
+**0 "waiting for manual recovery"**. That confirms the fix's per-boot behaviour
+end-to-end. (On this bench `cold_reboot` resets the SoC but the EC holds the
+rails without cycling, so the loop can't self-sustain unaided — hence loop_demo
+supplies the `gale power off/on` restart. A PD-capable servo would let it run
+autonomously.)

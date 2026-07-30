@@ -1,0 +1,2 @@
+# Un-ignore Python package __init__.py files (parent tools/.gitignore has _* which would catch them)
+!**/__init__.py

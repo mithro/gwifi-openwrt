@@ -1,0 +1,1647 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""flash_puck_usb.py -- fast, reliable, libusb-ONLY gale puck (re)flash + boot verify.
+
+Self-contained single file. Dependencies: pyusb only (plus futility/cbfstool
+binaries and the dev keys for the build step, added in a later phase). It talks
+to the Google Wifi ("gale") debug device 18d1:500f entirely over libusb:
+
+    interface 0 = EC command console   (park the AP, sysinfo, reboot)
+    interface 1 = AP console           (boot-log capture + watchdog)
+    interface 3 = usb_spi V1 bridge     (SPI-NOR read/erase/program)
+
+There is NO pyserial and NO /dev/ttyUSB dependency: all three interfaces are
+driven from one shared libusb device handle in one process.
+
+Design rules (non-negotiable):
+  * FAIL LOUD, NO RETRIES. Every USB transfer / SPI status / verify is checked;
+    any anomaly raises FatalError immediately with full diagnostics. The
+    hardware is reliable -- a fault here is a bug in this code, never "flaky
+    hardware", so we surface it instead of papering over it.
+  * The AP shares the SPI bus, so it MUST be parked before any bridge op, and an
+    independent watchdog kills the process on ANY AP byte during SPI work.
+  * Writes are dry-run by default; --commit is required to erase/program.
+
+This phase implements the libusb core (console + SPI bridge + park/session) and
+a non-destructive `shakedown` that proves, on real hardware, the two riskiest
+new things before any real flash:
+    1. concurrency: EC+AP+SPI held simultaneously on one libusb handle while the
+       AP-reader thread loops and SPI streams;
+    2. the write path: RW_LEGACY (0x700000, above the RO guard) block+sector
+       erase -> program -> verify -> restore byte-identical.
+"""
+import argparse
+import hashlib
+import os
+import struct
+import sys
+import time
+
+import usb.core
+import usb.util
+
+# --------------------------------------------------------------------------- #
+# Constants
+# --------------------------------------------------------------------------- #
+USB_VID, USB_PID = 0x18D1, 0x500F
+IF_EC, IF_AP, IF_SPI = 0, 1, 3
+SPI_EP_OUT, SPI_EP_IN = 0x03, 0x83
+IFACE_CLASS, IFACE_SUBCLASS_GOOGLE_SPI, IFACE_PROTOCOL_V1 = 0xFF, 0x51, 0x01
+
+MAX_WRITE = MAX_READ = 62            # usb_spi V1 payload ceiling
+READ_CHUNK = MAX_READ
+PROGRAM_CHUNK = MAX_WRITE - 4        # 58: opcode + 3 addr + <=58 data
+USB_TIMEOUT_MS = 2000               # > EC 800 ms SPI ceiling & 1600 ms watchdog
+
+FLASH_SIZE = 8 * 1024 * 1024
+PAGE_SIZE = 256
+SECTOR_SIZE = 0x1000                 # 4 KiB
+BLOCK_SIZE = 0x10000                 # 64 KiB
+RO_GUARD_LIMIT = 0x400000
+RDID_EXPECT = bytes.fromhex("ef4017")
+
+FMAP_SIGNATURE = b"__FMAP__"
+FMAP_EXPECTED_OFFSET = 0x300000
+# RO-LAST order: program the AP RW slots first, then the RO/GBB region last, so an
+# interrupted flash never leaves a valid RO block pointing at a half-written RW
+# slot (which would recovery-loop). GBB is below RO_GUARD_LIMIT -> needs --allow-ro.
+FLASH_ORDER = ("RW_SECTION_A", "RW_SECTION_B", "GBB")
+
+OP_READ, OP_WREN = 0x03, 0x06
+OP_SECTOR_ERASE, OP_BLOCK_ERASE, OP_PAGE_PROGRAM = 0x20, 0xD8, 0x02
+OP_RDID, OP_RDSR1, OP_RDSR2 = 0x9F, 0x05, 0x35
+OP_WRSR = 0x01
+SR1_WIP, SR1_WEL, SR1_BP, SR1_TB, SR1_SRP0 = 0x01, 0x02, 0x1C, 0x20, 0x80
+SR2_CMP = 0x40  # complement-protect: inverts the BP range (protects ALL when BP=0)
+
+SECTOR_ERASE_DEADLINE_S = 3.0        # W25Q64 4K: typ 45 ms, max 400 ms
+BLOCK_ERASE_DEADLINE_S = 4.0         # W25Q64 64K: typ 150 ms, max 2000 ms
+PROGRAM_DEADLINE_S = 1.0             # page program: typ 0.7 ms, max 3 ms
+EC_CMD_DEADLINE_S = 5.0
+PARK_DEADLINE_S = 3.0
+POST_PARK_QUIET_S = 2.0
+POST_PARK_MAX_S = 20.0
+SETTLE_AFTER_ENABLE_S = 5.0  # idle out the rail-bounce event windows before any
+#                              real SPI traffic: Z zeros-event @ rails-up+0.47s,
+#                              H starvation storm @ +1.9..3.3s (EC-USB-SPI-BUG.md)
+
+EC_PROMPT = b"> "
+
+STATUS_NAMES = {
+    0x0000: "SUCCESS", 0x0001: "SPI_TIMEOUT", 0x0002: "BUSY",
+    0x0003: "WRITE_COUNT_INVALID", 0x0004: "READ_COUNT_INVALID",
+    0x0005: "BRIDGE_DISABLED",
+}
+
+
+class FatalError(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------- #
+# Small helpers
+# --------------------------------------------------------------------------- #
+def status_name(status):
+    if status in STATUS_NAMES:
+        return STATUS_NAMES[status]
+    if status & 0x8000:
+        return "EC_ERROR(0x%04x)" % (status & 0x7FFF)
+    return "UNKNOWN(0x%04x)" % status
+
+
+def is_usb_timeout(e):
+    if isinstance(getattr(e, "errno", None), int) and e.errno == 110:
+        return True
+    s = str(e).lower()
+    return "timeout" in s or "timed out" in s
+
+
+def is_usb_nodev(e):
+    if isinstance(getattr(e, "errno", None), int) and e.errno == 19:
+        return True
+    s = str(e).lower()
+    return "no such device" in s or "no device" in s
+
+
+def hexs(data):
+    return " ".join("%02x" % b for b in data)
+
+
+def addr3(addr):
+    return bytes([(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF])
+
+
+def info(msg):
+    print(msg, flush=True)
+
+
+class Log:
+    def __init__(self, path):
+        self.f = open(os.path.expanduser(path), "a") if path else None
+        self.t0 = time.monotonic()
+        if self.f:
+            self.log("LOG", "opened pid %d argv %r" % (os.getpid(), sys.argv))
+
+    def log(self, tag, msg):
+        if not self.f:
+            return
+        rel = time.monotonic() - self.t0
+        for line in str(msg).split("\n"):
+            self.f.write("%+11.4f %-10s %s\n" % (rel, tag, line))
+        self.f.flush()
+
+    def close(self):
+        if self.f:
+            self.log("LOG", "closed")
+            self.f.close()
+            self.f = None
+
+
+# --------------------------------------------------------------------------- #
+# Shared libusb device
+# --------------------------------------------------------------------------- #
+def open_device(log):
+    """Find and return the one shared 18d1:500f handle. Never set_configuration
+    (leave the kernel's config intact); interfaces are claimed individually."""
+    dev = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+    if dev is None:
+        raise FatalError("USB device %04x:%04x not found (SuzyQ attached?)"
+                         % (USB_VID, USB_PID))
+    log.log("USB", "device bus %d addr %d" % (dev.bus, dev.address))
+    return dev
+
+
+def _detach_and_claim(dev, ifnum, log):
+    try:
+        if dev.is_kernel_driver_active(ifnum):
+            dev.detach_kernel_driver(ifnum)
+            log.log("USB", "detached kernel driver from if%d" % ifnum)
+    except NotImplementedError:
+        pass
+    usb.util.claim_interface(dev, ifnum)
+    log.log("USB", "claimed if%d" % ifnum)
+
+
+def _bulk_endpoints(intf):
+    ep_in = ep_out = None
+    for ep in intf:
+        if usb.util.endpoint_type(ep.bmAttributes) != usb.util.ENDPOINT_TYPE_BULK:
+            continue
+        if usb.util.endpoint_direction(ep.bEndpointAddress) == usb.util.ENDPOINT_IN:
+            ep_in = ep_in or ep
+        else:
+            ep_out = ep_out or ep
+    return ep_in, ep_out
+
+
+# --------------------------------------------------------------------------- #
+# EC / AP console over libusb (raw bulk streams; no baud/DTR)
+# --------------------------------------------------------------------------- #
+class Console:
+    """One gale debug console (EC=if0 or AP=if1) over libusb bulk transfers."""
+
+    def __init__(self, dev, which, log):
+        self.dev = dev
+        self.which = which
+        self.ifnum = IF_EC if which == "ec" else IF_AP
+        self.log = log
+        cfg = dev.get_active_configuration()
+        intf = usb.util.find_descriptor(
+            cfg, custom_match=lambda i: i.bInterfaceNumber == self.ifnum
+            and i.bAlternateSetting == 0)
+        if intf is None:
+            raise FatalError("interface %d (%s console) not present" % (self.ifnum, which))
+        self.ep_in, self.ep_out = _bulk_endpoints(intf)
+        if self.ep_in is None or self.ep_out is None:
+            raise FatalError("interface %d has no bulk IN+OUT pair" % self.ifnum)
+        _detach_and_claim(dev, self.ifnum, log)
+        # Reset the bulk-endpoint DATA0/DATA1 toggle: re-claiming an interface
+        # whose kernel driver was NOT just detached (a repeated run) leaves a
+        # stale toggle, so the device's prompt bytes get silently dropped and the
+        # console desyncs. clear_halt resyncs it to a known state.
+        for ep in (self.ep_in, self.ep_out):
+            try:
+                dev.clear_halt(ep.bEndpointAddress)
+            except usb.core.USBError as e:
+                self.log.log("USB", "clear_halt if%d ep 0x%02x: %s (continuing)"
+                             % (self.ifnum, ep.bEndpointAddress, e))
+        # Flush any bytes the device buffered from a prior session.
+        self.drain(idle_ms=50, max_ms=500)
+        self.log.log("EC" if which == "ec" else "AP",
+                     "%s console: bulk IN 0x%02x OUT 0x%02x on if%d"
+                     % (which, self.ep_in.bEndpointAddress,
+                        self.ep_out.bEndpointAddress, self.ifnum))
+
+    def read(self, timeout_ms=200, size=64):
+        try:
+            data = self.ep_in.read(size, timeout=max(1, int(timeout_ms)))
+        except usb.core.USBError as e:
+            if is_usb_timeout(e):
+                return b""
+            raise
+        return bytes(data)
+
+    def write(self, data):
+        n = self.ep_out.write(bytes(data), timeout=USB_TIMEOUT_MS)
+        if n != len(data):
+            raise FatalError("short console write: %d of %d" % (n, len(data)))
+
+    def drain(self, idle_ms=30, max_ms=800):
+        end = time.monotonic() + max_ms / 1000.0
+        got = bytearray()
+        while time.monotonic() < end:
+            chunk = self.read(idle_ms)
+            if not chunk:
+                break
+            got += chunk
+        return bytes(got)
+
+    def sync(self):
+        """Send a newline and read to a clean, quiet '> ' prompt, clearing any
+        stale/desynced bytes (from a prior session, or a kernel-driver probe
+        after we detach/re-claim the interface). Fails loud if no prompt."""
+        self.write(b"\r\n")
+        end = time.monotonic() + EC_CMD_DEADLINE_S
+        buf = bytearray()
+        last = time.monotonic()
+        while time.monotonic() < end:
+            chunk = self.read(200)
+            if chunk:
+                buf += chunk
+                last = time.monotonic()
+            elif EC_PROMPT in buf and time.monotonic() - last > 0.2:
+                self.log.log("EC", "sync -> %r" % bytes(buf))
+                return
+        raise FatalError("EC console sync: no quiet prompt within %.1fs; got %r"
+                         % (EC_CMD_DEADLINE_S, bytes(buf)))
+
+    def cmd(self, command, until=None, deadline_s=EC_CMD_DEADLINE_S, require=True):
+        """Send `command` exactly ONCE, then read its response (never re-send).
+
+        Completion: with `until` (a predicate on the accumulated decoded text)
+        the read is retried until the predicate holds; otherwise the '> ' prompt
+        has appeared and the stream has gone quiet. Fails loud if `require` and
+        the response never completes -- no silent short reads."""
+        self.drain()
+        self.write(command.encode() + b"\r\n")
+        buf = bytearray()
+        matched = False
+        end = time.monotonic() + deadline_s
+        while time.monotonic() < end:
+            chunk = self.read(200)
+            if chunk:
+                buf += chunk
+            text = buf.decode("latin1", "replace")
+            if until is not None:
+                if until(text):
+                    matched = True
+                    break
+            elif not chunk and EC_PROMPT in buf:
+                matched = True
+                break
+        text = buf.decode("latin1", "replace")
+        self.log.log("EC", "cmd %r -> matched=%s %r" % (command, matched, text))
+        if require and not matched:
+            raise FatalError("EC console: no complete response to %r within %.1fs; got %r"
+                             % (command, deadline_s, text))
+        return text
+
+    def release(self):
+        try:
+            usb.util.release_interface(self.dev, self.ifnum)
+        except usb.core.USBError:
+            pass
+
+
+def has_flags_line(text):
+    i = text.find("Flags:")
+    return i >= 0 and "\n" in text[i:]
+
+
+def has_ok_line(text):
+    return any(line.strip() == "OK" for line in text.splitlines())
+
+
+def parse_flags_line(text):
+    for line in text.splitlines():
+        if line.strip().startswith("Flags:"):
+            return line.strip()
+    raise FatalError("EC sysinfo has no Flags line: %r" % text)
+
+
+# NOTE: there is deliberately NO AP watchdog THREAD. The AP console (if1) and
+# the SPI bridge (if3) share ONE libusb context; a concurrent reader thread
+# doing blocking bulk-reads on if1 serializes on libusb's event loop and
+# intermittently stalls SPI transactions to their full 2000 ms timeout (a hard
+# failure) and even desyncs the EC console -- measured on real hardware
+# 2026-07-06. Reliable design: the AP is guarded INLINE from the SPI thread
+# (SpiBridge.abort_check, wired to Session._ap_abort_check): every abort_every
+# transactions the same thread polls if1 once; any byte aborts loud. Single-
+# threaded => zero context contention => reliable, and an AP wake is still caught
+# within abort_every txns (~0.1 s).
+
+
+# --------------------------------------------------------------------------- #
+# SPI bridge (usb_spi V1) over libusb -- fail loud, no retries
+# --------------------------------------------------------------------------- #
+class SpiBridge:
+    def __init__(self, dev, log):
+        self.dev = dev
+        self.log = log
+        self.txn = 0
+        self.rtts = []
+        self.abort_check = None      # callable(txn); polled inline every abort_every
+        self.abort_every = 512
+        cfg = dev.get_active_configuration()
+        intf = usb.util.find_descriptor(
+            cfg, custom_match=lambda i: i.bInterfaceNumber == IF_SPI
+            and i.bAlternateSetting == 0)
+        if intf is None:
+            raise FatalError("usb_spi interface %d not present" % IF_SPI)
+        if (intf.bInterfaceClass, intf.bInterfaceSubClass, intf.bInterfaceProtocol) \
+                != (IFACE_CLASS, IFACE_SUBCLASS_GOOGLE_SPI, IFACE_PROTOCOL_V1):
+            raise FatalError("if%d is not a V1 Google usb_spi interface" % IF_SPI)
+        eps = sorted(ep.bEndpointAddress for ep in intf)
+        if eps != [SPI_EP_OUT, SPI_EP_IN]:
+            raise FatalError("unexpected usb_spi endpoints %s" % ["0x%02x" % e for e in eps])
+        _detach_and_claim(dev, IF_SPI, log)
+
+    def _ctrl(self, brequest, name, tolerate=False):
+        self.log.log("CTRL", "bReq=%d (%s) wValue=0 wIndex=%d" % (brequest, name, IF_SPI))
+        try:
+            self.dev.ctrl_transfer(0x41, brequest, 0x0000, IF_SPI, b"", USB_TIMEOUT_MS)
+        except usb.core.USBError as e:
+            if tolerate:
+                self.log.log("CTRL", "%s tolerated: %s" % (name, e))
+                return
+            raise FatalError("%s control transfer failed: %s" % (name, e))
+
+    def _drain(self):
+        for _ in range(50):
+            try:
+                self.dev.read(SPI_EP_IN, 64, timeout=20)
+            except usb.core.USBError:
+                break
+
+    def enable(self):
+        self._ctrl(1, "DISABLE(self-heal)", tolerate=True)  # clear any wedged prior enable
+        self._ctrl(0, "ENABLE")
+        # usb_spi_board_enable raises SYS_PWR_EN + the 3.3V flash rail; give it a
+        # moment to settle and drain any stale IN data before trusting RDID --
+        # otherwise a not-yet-stable rail reads back as RDID 000000.
+        time.sleep(0.1)
+        self._drain()
+
+    def disable(self):
+        self._ctrl(1, "DISABLE")
+
+    def emergency_disable(self):
+        try:
+            self.dev.ctrl_transfer(0x41, 1, 0x0000, IF_SPI, b"", 500)
+        except Exception:  # noqa: BLE001 - best effort from watchdog
+            pass
+
+    def reinit(self):
+        """In-process recovery for the EP3 CTR-race wedge: DISABLE then ENABLE
+        re-inits EP3 from scratch (STAT_RX back to VALID, CTR/DTOG cleared) and
+        resets SPI2 -- per the EC firmware, exactly what a bus reset does, but via
+        EP0 control transfers (no re-enumeration). Lightweight: the rail is already
+        up, so no settle sleep, just a drain of any stale IN bytes."""
+        self._ctrl(1, "DISABLE(reinit)", tolerate=True)
+        self._ctrl(0, "ENABLE(reinit)")
+        self._drain()
+
+    def _bulk_fail(self, e, direction, txn, ctx, pkt):
+        errno = getattr(e, "errno", None)
+        if is_usb_nodev(e):
+            kind = "ENODEV (device vanished -- EC watchdog MCU reset?)"
+        elif is_usb_timeout(e):
+            kind = "TIMEOUT (EC did not answer in %d ms and did not reboot)" % USB_TIMEOUT_MS
+        else:
+            kind = "STALL/pipe/other USB error"
+        return FatalError("bulk %s FAILED at txn #%d (%s): %s [errno=%r] -- %s; "
+                          "NOT retried. sent [%s]"
+                          % (direction, txn, ctx, e, errno, kind, hexs(pkt)))
+
+    def transact(self, wdata, rcount, context=""):
+        """One usb_spi V1 transaction. Returns exactly `rcount` payload bytes.
+        Fails loud on every abnormal outcome; no retries anywhere."""
+        if not (0 <= len(wdata) <= MAX_WRITE) or not (0 <= rcount <= MAX_READ):
+            raise FatalError("transaction size out of range wc=%d rc=%d (%s)"
+                             % (len(wdata), rcount, context))
+        self.txn += 1
+        txn = self.txn
+        if self.abort_check is not None and txn % self.abort_every == 0:
+            self.abort_check(txn)   # inline AP guard (same thread, between txns)
+        pkt = bytes([len(wdata), rcount]) + bytes(wdata)
+        t0 = time.perf_counter()
+        try:
+            n = self.dev.write(SPI_EP_OUT, pkt, USB_TIMEOUT_MS)
+        except usb.core.USBError as e:
+            raise self._bulk_fail(e, "OUT", txn, context, pkt)
+        if n != len(pkt):
+            raise FatalError("short bulk OUT #%d (%s): %d/%d" % (txn, context, n, len(pkt)))
+        try:
+            resp = bytes(self.dev.read(SPI_EP_IN, 64, USB_TIMEOUT_MS))
+        except usb.core.USBError as e:
+            raise self._bulk_fail(e, "IN", txn, context, pkt)
+        self.rtts.append(time.perf_counter() - t0)
+        if len(resp) < 2:
+            raise FatalError("bulk IN too short #%d (%s): %d bytes [%s]"
+                             % (txn, context, len(resp), hexs(resp)))
+        status = resp[0] | (resp[1] << 8)
+        if status != 0:
+            raise FatalError("usb_spi status %s at txn #%d (%s): sent [%s] resp [%s]"
+                             % (status_name(status), txn, context, hexs(pkt), hexs(resp)))
+        if len(resp) != 2 + rcount:
+            raise FatalError("bulk IN length mismatch #%d (%s): got %d want %d"
+                             % (txn, context, len(resp), 2 + rcount))
+        return resp[2:]
+
+    def release(self):
+        try:
+            usb.util.release_interface(self.dev, IF_SPI)
+        except usb.core.USBError:
+            pass
+
+    def rtt_ms(self):
+        if not self.rtts:
+            return "no txns"
+        r = sorted(self.rtts)
+        return ("%d txns rtt min/med/p99/max = %.3f/%.3f/%.3f/%.3f ms"
+                % (len(r), r[0]*1e3, r[len(r)//2]*1e3,
+                   r[min(len(r)-1, int(len(r)*0.99))]*1e3, r[-1]*1e3))
+
+
+def check_rdid(bridge):
+    got = bridge.transact([OP_RDID], 3, context="RDID")
+    if got != RDID_EXPECT:
+        raise FatalError("RDID %s != %s (bridge not ready / wrong chip / framing)"
+                         % (got.hex(), RDID_EXPECT.hex()))
+    return got
+
+
+def read_sr(bridge):
+    sr1 = bridge.transact([OP_RDSR1], 1, context="RDSR1")[0]
+    sr2 = bridge.transact([OP_RDSR2], 1, context="RDSR2")[0]
+    return sr1, sr2
+
+
+# --------------------------------------------------------------------------- #
+# Flash read / erase / program
+# --------------------------------------------------------------------------- #
+def read_region(bridge, offset, length, label="read", progress=True):
+    out = bytearray()
+    addr, end = offset, offset + length
+    t0 = last = time.monotonic()
+    while addr < end:
+        n = min(READ_CHUNK, end - addr)
+        out += bridge.transact([OP_READ] + list(addr3(addr)), n,
+                               context="%s@0x%06x" % (label, addr))
+        addr += n
+        now = time.monotonic()
+        if progress and (now - last >= 1.0 or addr >= end):
+            done = addr - offset
+            info("%s: 0x%06x/0x%06x %5.1f%%  %.3f MiB/s  txn=%d"
+                 % (label, addr, end, 100.0*done/length,
+                    done/max(now-t0, 1e-9)/(1024*1024), bridge.txn))
+            last = now
+    return bytes(out)
+
+
+def erase_plan(offset, length, use_block=False):
+    """List of (addr, size, opcode). Default = 4 KiB SECTOR-erase only (0x20):
+    a 64 KiB block-erase (0xD8) draws far more current and, on a marginal
+    supply, browns out the flash rail (RDID 000000) mid-write. use_block=True
+    re-enables block-erase for speed on a healthy rig. Requires 4 KiB alignment."""
+    if offset % SECTOR_SIZE or length % SECTOR_SIZE:
+        raise FatalError("erase range not 4 KiB aligned: 0x%x+0x%x" % (offset, length))
+    plan = []
+    addr, end = offset, offset + length
+    while addr < end:
+        if use_block and addr % BLOCK_SIZE == 0 and end - addr >= BLOCK_SIZE:
+            plan.append((addr, BLOCK_SIZE, OP_BLOCK_ERASE))
+            addr += BLOCK_SIZE
+        else:
+            plan.append((addr, SECTOR_SIZE, OP_SECTOR_ERASE))
+            addr += SECTOR_SIZE
+    return plan
+
+
+def iter_program_chunks(offset, data):
+    i = 0
+    while i < len(data):
+        addr = offset + i
+        n = min(PROGRAM_CHUNK, PAGE_SIZE - (addr % PAGE_SIZE), len(data) - i)
+        yield addr, data[i:i + n]
+        i += n
+
+
+def wait_wip_clear(bridge, deadline_s, context):
+    end = time.monotonic() + deadline_s
+    polls = 0
+    while True:
+        sr1 = bridge.transact([OP_RDSR1], 1, context="RDSR1 %s" % context)[0]
+        polls += 1
+        if not (sr1 & SR1_WIP):
+            return polls
+        if time.monotonic() > end:
+            raise FatalError("WIP still set %.1fs after %s (%d polls, SR1=0x%02x)"
+                             % (deadline_s, context, polls, sr1))
+
+
+def write_region(bridge, offset, data, log, verify=True):
+    """Erase (64 KiB blocks + 4 KiB tail) -> program (page-bounded) -> read-back
+    verify vs source. Every step fails loud; the block/sector erase is spot-
+    checked for the 0xff transition so a blocked (no-op) erase can't slip by."""
+    length = len(data)
+    sr1, sr2 = read_sr(bridge)
+    if sr1 & (SR1_BP | SR1_TB):
+        raise FatalError("refusing to write: block-protect set SR1=0x%02x" % sr1)
+
+    plan = erase_plan(offset, length)
+    nblk = sum(1 for _, s, _ in plan if s == BLOCK_SIZE)
+    nsec = len(plan) - nblk
+    info("erase: %d x 64K blocks + %d x 4K sectors (0x%06x..0x%06x)"
+         % (nblk, nsec, offset, offset + length))
+    t0 = time.monotonic()
+    for addr, size, op in plan:
+        deadline = BLOCK_ERASE_DEADLINE_S if size == BLOCK_SIZE else SECTOR_ERASE_DEADLINE_S
+        kind = "block" if size == BLOCK_SIZE else "sector"
+        bridge.transact([OP_WREN], 0, context="WREN erase@0x%06x" % addr)
+        wel = read_sr(bridge)[0]
+        if not (wel & SR1_WEL):
+            raise FatalError("WREN did not latch WEL before %s erase@0x%06x "
+                             "(SR1=0x%02x) -- erase would no-op" % (kind, addr, wel))
+        bridge.transact([op] + list(addr3(addr)), 0, context="ERASE@0x%06x" % addr)
+        wait_wip_clear(bridge, deadline, "erase@0x%06x" % addr)
+        head = bridge.transact([OP_READ] + list(addr3(addr)), READ_CHUNK,
+                               context="erasecheck@0x%06x" % addr)
+        if any(b != 0xFF for b in head):
+            # Distinguish a genuine no-op from AP-bus contention: re-probe RDID
+            # and re-read. RDID != ef4017 or a 0x00 re-read => the flash is not
+            # responding to US (AP woke and is driving the bus); RDID ok with the
+            # head unchanged => the erase truly no-op'd (protect/WEL).
+            rdid = bridge.transact([OP_RDID], 3, context="diag-rdid@0x%06x" % addr)
+            sr1d, sr2d = read_sr(bridge)
+            head2 = bridge.transact([OP_READ] + list(addr3(addr)), READ_CHUNK,
+                                    context="diag-reread@0x%06x" % addr)
+            if rdid != RDID_EXPECT:
+                cause = ("flash UNRESPONSIVE (RDID=%s != ef4017) -- AP woke and is "
+                         "contending the SPI bus" % rdid.hex())
+            else:
+                cause = ("flash RESPONDS (RDID ok) -- erase truly no-op'd (protect/WEL)")
+            raise FatalError("ERASE NO-OP at 0x%06x (%s): head[0]=0x%02x reread[0]=0x%02x "
+                             "SR1=0x%02x(WEL=%d) SR2=0x%02x; %s"
+                             % (addr, kind, head[0], head2[0], sr1d,
+                                (sr1d >> 1) & 1, sr2d, cause))
+    erase_s = time.monotonic() - t0
+    info("erase: done %.1fs" % erase_s)
+
+    chunks = list(iter_program_chunks(offset, data))
+    info("program: %d bytes in %d chunks" % (length, len(chunks)))
+    t0 = time.monotonic()
+    for addr, chunk in chunks:
+        bridge.transact([OP_WREN], 0, context="WREN pp@0x%06x" % addr)
+        bridge.transact([OP_PAGE_PROGRAM] + list(addr3(addr)) + list(chunk), 0,
+                        context="PP@0x%06x" % addr)
+        wait_wip_clear(bridge, PROGRAM_DEADLINE_S, "pp@0x%06x" % addr)
+    program_s = time.monotonic() - t0
+    info("program: done %.1fs" % program_s)
+
+    timings = {"erase_s": erase_s, "program_s": program_s}
+    if not verify:
+        return timings
+    t0 = time.monotonic()
+    readback = read_region(bridge, offset, length, label="verify")
+    timings["verify_s"] = time.monotonic() - t0
+    if readback != data:
+        for i, (a, b) in enumerate(zip(readback, data)):
+            if a != b:
+                raise FatalError("VERIFY FAILED at 0x%06x: source 0x%02x flash 0x%02x"
+                                 % (offset + i, b, a))
+        raise FatalError("VERIFY FAILED: length mismatch %d vs %d" % (len(readback), length))
+    info("verify: read-back matches source")
+    return timings
+
+
+# --------------------------------------------------------------------------- #
+# Sessioned read/write -- the bridge silently no-ops operations past a per-
+# ENABLE-session transaction budget (WREN stops latching WEL; reads return
+# 0x00). Measured on this rig 2026-07-06: ~1330 txns, and VARIABLE day to day.
+# A fresh in-process session (teardown + bring_up) resets it (proven: WREN
+# latches again at txn 4 after a reopen). So every multi-KiB operation is split
+# into fresh-session pieces sized to stay well under the budget.
+# --------------------------------------------------------------------------- #
+READ_PIECE = 0x40000    # 256 KiB/read-session; large on a healthy rig, few sessions
+WRITE_PIECE = 0x180000  # start BIG: a healthy session streams 100k+ txns (clean-
+#                         room proved 135302), so a whole ~1.5 MiB RW slot fits ONE
+#                         session -> a full flash is a handful of sessions, <5 min.
+#                         flash_region ADAPTIVELY DOWNSHIFTS a piece that hits a
+#                         DEGRADED session's smaller budget. The ~1330-txn budget
+#                         seen this session is a degraded-rig artifact, not a limit.
+WRITE_PIECE_MIN = 0x1000  # 4 KiB downshift floor
+
+
+def read_region_sessioned(new_session, offset, length, log, piece=READ_PIECE,
+                          label="read"):
+    out = bytearray()
+    done = 0
+    for po in range(offset, offset + length, piece):
+        plen = min(piece, offset + length - po)
+        sess = new_session()
+        try:
+            out += read_region(sess.bridge, po, plen, label=label, progress=False)
+        finally:
+            sess.teardown()
+        done += plen
+        info("%s: 0x%06x/0x%06x %3.0f%%" % (label, po + plen, offset + length,
+                                            100.0 * done / length))
+    return bytes(out)
+
+
+def flash_region(new_session, offset, data, log):
+    """Erase+program+VERIFY `data` at `offset`, one fresh session per piece,
+    starting with WRITE_PIECE-sized pieces (large -> fast/few sessions on a
+    healthy rig). A piece that FAILS (WEL not latched / verify mismatch = the
+    session budget was hit, or contention) is split in half (4 KiB-aligned) and
+    each half retried in a fresh session, down to WRITE_PIECE_MIN. Fails LOUD
+    only when a minimum-size piece cannot be written and verified."""
+    if offset % SECTOR_SIZE or len(data) % SECTOR_SIZE:
+        raise FatalError("flash_region 0x%x+0x%x not 4 KiB aligned"
+                         % (offset, len(data)))
+
+    def do(po, pdata):
+        try:
+            sess = new_session()
+            try:
+                write_region(sess.bridge, po, pdata, log, verify=True)
+            finally:
+                sess.teardown()
+            info("flash: 0x%06x..0x%06x  OK (%d B verified)"
+                 % (po, po + len(pdata), len(pdata)))
+        except FatalError as e:
+            if len(pdata) <= WRITE_PIECE_MIN:
+                raise FatalError("flash 0x%06x (%d B, min piece) failed: %s"
+                                 % (po, len(pdata), e))
+            half = (len(pdata) // 2 + SECTOR_SIZE - 1) // SECTOR_SIZE * SECTOR_SIZE
+            info("flash: 0x%06x (%d B) failed (%s) -> downshift to <=%d B"
+                 % (po, len(pdata), e, half))
+            do(po, pdata[:half])
+            do(po + half, pdata[half:])
+
+    for po in range(offset, offset + len(data), WRITE_PIECE):
+        plen = min(WRITE_PIECE, offset + len(data) - po)
+        do(po, data[po - offset:po - offset + plen])
+
+
+def parse_fmap(data):
+    """Minimal coreboot FMAP parse -> {area_name: (offset, size)}, or None.
+
+    Scans ALL __FMAP__ signatures and keeps only a structurally-sane one
+    (printable name, bounded area count), preferring the conventional offset --
+    a spurious 8-byte match can precede the real FMAP (measured on gale)."""
+    best = None
+    start = 0
+    while True:
+        i = data.find(FMAP_SIGNATURE, start)
+        if i < 0:
+            break
+        start = i + 1
+        off = i + len(FMAP_SIGNATURE)
+        try:
+            total = struct.unpack_from("<I", data, off + 10)[0]      # after ver(2)+base(8)
+            name = data[off + 14:off + 46].split(b"\0")[0]
+            nareas = struct.unpack_from("<H", data, off + 46)[0]
+        except struct.error:
+            continue
+        if not name or any(b < 0x20 or b > 0x7E for b in name):
+            continue
+        if not (1 <= nareas <= 255) or not (0 < total <= 0x10000000):
+            continue
+        areas = {}
+        o = off + 48
+        ok = True
+        for _ in range(nareas):
+            try:
+                a_off, a_size = struct.unpack_from("<II", data, o)
+                a_name = data[o + 8:o + 40].split(b"\0")[0].decode("ascii", "replace")
+                o += 42
+            except struct.error:
+                ok = False
+                break
+            areas[a_name] = (a_off, a_size)
+        if not ok or any(ao + asz > total for ao, asz in areas.values()):
+            continue
+        if i == FMAP_EXPECTED_OFFSET:
+            return areas
+        best = best or areas
+    return best
+
+
+# --------------------------------------------------------------------------- #
+# Boot verification -- classification (pure); the EC-reboot + AP capture that
+# feeds it is added with the flash orchestration and validated on hardware.
+# Markers are from real 2712HW0072Z boot captures:
+# a GOOD normal-mode dev-key boot reaches depthcharge + netboot; EVERY boot
+# prints "recovery" in a GPIO/vboot line, so a bare "recovery" is NOT a failure.
+# --------------------------------------------------------------------------- #
+BOOT_DEV_SIGNED = "This is developer signed firmware"
+BOOT_GOOD_MARKERS = ("Starting depthcharge", "Sending DHCP discover", "TFTP")
+BOOT_BAD_MARKERS = ("VB2:vb2_fail", "Need recovery", "Recovery requested",
+                    "Entering recovery mode")
+
+
+def boot_markers(text):
+    return ([m for m in BOOT_GOOD_MARKERS if m in text],
+            [m for m in BOOT_BAD_MARKERS if m in text])
+
+
+def boot_decisive(text):
+    good, bad = boot_markers(text)
+    return bool(good or bad)
+
+
+def boot_slot(text):
+    last = None
+    for name in ("A", "B"):
+        idx = text.rfind("FW_MAIN_%s found" % name)
+        if idx >= 0 and (last is None or idx > last[1]):
+            last = (name, idx)
+    return last[0] if last else None
+
+
+def boot_classify(text):
+    """Verdict GOOD|BAD|UNDECIDED. Any BAD marker wins (a recovery boot can still
+    print a depthcharge banner)."""
+    good, bad = boot_markers(text)
+    verdict = "BAD" if bad else ("GOOD" if good else "UNDECIDED")
+    return {"verdict": verdict, "good": good, "bad": bad,
+            "dev_signed": BOOT_DEV_SIGNED in text, "slot": boot_slot(text)}
+
+
+def _wait_device(present, deadline_s, what):
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if (usb.core.find(idVendor=USB_VID, idProduct=USB_PID) is not None) == present:
+            return usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        time.sleep(0.2)
+    raise FatalError("%s: device did not %s within %.0fs"
+                     % (what, "appear" if present else "disappear", deadline_s))
+
+
+def verify_boot(log, timeout_s=120.0, observe_s=5.0):
+    """EC `reboot` + `sysjump RW` over libusb, power-cycle the AP, capture the log.
+
+    The AP power sequencing lives in the EC's RW firmware. A cold-booted EC comes
+    up PARKED in RO, where `gale power on` is refused/no-op -- a silent no-boot
+    that reads as a 0-byte "no console" capture. So un-park with `reboot`, jump to
+    RW with `sysjump RW`, re-open, then power-cycle the AP off->on explicitly (no
+    PD auto-power on a USB-A SuzyQ rig) and capture on a fresh handle. Returns
+    boot_classify."""
+    dev = open_device(log)
+    ec = Console(dev, "ec", log)
+    ec.sync()
+    try:
+        info("EC pre-sysjump: %s"
+             % parse_flags_line(ec.cmd("sysinfo", until=has_flags_line)))
+    except FatalError:
+        info("EC pre-sysjump: sysinfo unavailable (EC may be wedged; jumping anyway)")
+    # A cold-booted EC comes up PARKED in RO: `gale power on` is refused (no OK)
+    # and the AP power sequencing lives in RW. Un-park + reach RW in two steps:
+    # `reboot` (a clean MCU reset that un-parks and reliably drops+re-enumerates
+    # from any state -> RO), then `sysjump RW` (RO->RW). A bare `gale power on`
+    # from RO/parked is a silent no-boot -> a 0-byte "no console" capture.
+    info("sending EC reboot (un-park; device re-enumerates -> RO)...")
+    try:
+        ec.drain()
+        ec.write(b"reboot\r\n")
+        ec.release()
+        usb.util.dispose_resources(dev)
+    except Exception:                          # noqa: BLE001 - device drops mid-reset
+        pass
+    info("waiting for EC re-enumeration after reboot (disappear-then-reappear)...")
+    dev = None
+    seen_gone = False
+    end = time.monotonic() + 40
+    while time.monotonic() < end:
+        cand = usb.core.find(idVendor=USB_VID, idProduct=USB_PID)
+        if cand is None:
+            seen_gone = True
+        elif seen_gone:
+            dev = cand
+            break
+        time.sleep(0.05)
+    if dev is None:
+        raise FatalError("EC did not drop+re-enumerate within 40s of reboot")
+    info("re-enumerated after reboot (RO): bus %d addr %d" % (dev.bus, dev.address))
+
+    # Now jump to RW (the AP power sequencing lives there). sysjump from RO
+    # re-enumerates; send it, settle, then re-open.
+    info("sending EC 'sysjump RW' (AP power-on only raises the rails from RW)...")
+    try:
+        ecj = Console(dev, "ec", log)
+        ecj.sync()
+        ecj.drain()
+        ecj.write(b"sysjump RW\r\n")
+        ecj.release()
+        usb.util.dispose_resources(dev)
+    except Exception:                          # noqa: BLE001 - device may drop mid-jump
+        pass
+    time.sleep(4)                              # let the sysjump + any re-enum settle
+
+    # Re-open the (possibly re-enumerated) device and confirm we're in RW.
+    dev = open_device(log)
+    ecq = Console(dev, "ec", log)
+    ecq.sync()
+    try:
+        info("EC post-sysjump: %s"
+             % parse_flags_line(ecq.cmd("sysinfo", until=has_flags_line)))
+    except FatalError:
+        info("EC post-sysjump: sysinfo unavailable")
+
+    # Power-cycle the AP off->on for a clean, known-state boot (from RO/partial
+    # rails a bare power-on is acked but never starts the SoC -> 0-byte capture).
+    try:
+        pw = ecq.cmd("gale power")
+        info("power-cycling the AP off->on for a fresh boot (was %s)"
+             % " ".join(pw.split()))
+        ecq.cmd("gale power off", until=has_ok_line,
+                deadline_s=PARK_DEADLINE_S, require=False)
+        time.sleep(2.0)
+        r = ecq.cmd("gale power on", until=has_ok_line,
+                    deadline_s=PARK_DEADLINE_S, require=False)
+        if not has_ok_line(r):
+            info("'gale power on' NOT acknowledged (EC locked?): %r"
+                 % " ".join(r.split()))
+        else:
+            info("AP power-on acknowledged (OK)")
+        ecq.release()
+        usb.util.dispose_resources(dev)
+    except FatalError as e:
+        info("EC power-cycle failed (continuing): %s" % e)
+
+    # Open a FRESH handle AFTER power-on (matches the proven capture path) and
+    # claim if1 (the AP console) to read the boot log from the start of the boot.
+    dev = open_device(log)
+    ap = Console(dev, "ap", log)
+    info("capturing AP boot log (up to %.0fs)..." % timeout_s)
+
+    buf = bytearray()
+    end = time.monotonic() + timeout_s
+    decisive = False
+    while time.monotonic() < end:
+        d = ap.read(500, size=4096)
+        if d:
+            buf += d
+        if boot_decisive(bytes(buf).replace(b"\x00", b"").decode("latin1", "replace")):
+            decisive = True
+            break
+    ctx_end = time.monotonic() + observe_s     # a little context after the marker
+    while time.monotonic() < ctx_end:
+        d = ap.read(500, size=4096)
+        if d:
+            buf += d
+    ap.release()
+    usb.util.dispose_resources(dev)
+
+    text = bytes(buf).replace(b"\x00", b"").decode("latin1", "replace")
+    r = boot_classify(text)
+    info("\n===== boot verdict: %s (%s) ====="
+         % (r["verdict"], "decisive marker seen" if decisive else "deadline/no marker"))
+    info("  dev_signed : %s" % r["dev_signed"])
+    info("  slot       : %s" % r["slot"])
+    info("  good       : %s" % r["good"])
+    info("  bad        : %s" % r["bad"])
+    info("  captured   : %d bytes" % len(buf))
+    if len(buf) == 0:
+        # Hard-won 2026-07-08: 0 bytes is NEVER "no console". A fresh gale boot
+        # ALWAYS emits ~11-12 KB of coreboot console on if1 (proven 4/4). 0 bytes
+        # means the AP never left reset -- a bench wedge (rig USB + AP stuck after
+        # heavy churn). Do NOT re-flash, blame the unit/power, or conclude the
+        # console/serial routing is unavailable.
+        info("  NOTE: 0 bytes == the AP NEVER BOOTED (bench wedge), NOT 'no")
+        info("        console'. PoE COLD-BOOT the whole bench and retry; a fresh")
+        info("        boot always emits ~11-12KB. (memory: gale-verify-boot-wedged-bench)")
+    r["capture"] = text
+    return r
+
+
+# --------------------------------------------------------------------------- #
+# Session: park the AP over libusb, enable the bridge
+# --------------------------------------------------------------------------- #
+class Session:
+    def __init__(self, log):
+        self.log = log
+        self.dev = None
+        self.ec = None
+        self.ap = None
+        self.bridge = None
+
+    def _ap_abort_check(self, txn):
+        """Inline AP guard: one tiny if1 read; any byte means the AP woke and can
+        contend the SPI bus, so abort loud (after a best-effort bridge DISABLE)."""
+        d = self.ap.read(2)
+        if d:
+            if self.bridge:
+                self.bridge.emergency_disable()
+            raise FatalError("AP EMITTED %d bytes during SPI at txn #%d -- the AP "
+                             "woke and can contend the bus; aborting: %s"
+                             % (len(d), txn, hexs(d[:32])))
+
+    def bring_up(self, park=True, settle_s=None):
+        """Bring the session up. settle_s=None -> SETTLE_AFTER_ENABLE_S.
+
+        The park->ENABLE rail bounce plants two one-shot events on the shared
+        flash bus (measured, tools/EC-USB-SPI-BUG.md): Z (bus dies to zeros)
+        at rails-up +0.47s if small SPI frames are in flight, and H (an EC
+        task-starvation storm) at +1.9..3.3s that kills in-flight transactions.
+        Both pass harmlessly when the bus is idle -- so after ENABLE we wait
+        out the windows before any real traffic (validated: 2x4000 + 4000 +
+        3849 consecutive clean small reads post-settle vs 7/9 wedges without).
+        """
+        if settle_s is None:
+            settle_s = SETTLE_AFTER_ENABLE_S
+        log = self.log
+        self.dev = open_device(log)
+        self.ec = Console(self.dev, "ec", log)
+        self.ap = Console(self.dev, "ap", log)
+
+        self.ec.sync()   # clean prompt baseline before the first command
+        flags = parse_flags_line(self.ec.cmd("sysinfo", until=has_flags_line))
+        info("EC state: %s" % flags)
+        if "unlocked" not in flags:
+            raise FatalError("EC is %r, not unlocked -- park needs an unlocked EC; "
+                             "reboot the EC first" % flags)
+
+        if not park:
+            # Rail-bounce discriminator: assume the AP is already parked and the
+            # flash rail is already up (left up by a previous session's ENABLE;
+            # usb_spi_board_disable never lowers rails). Skipping 'gale power
+            # off' means this session never toggles SYS_PWR/VDD_3P3.
+            info("no-park bring-up: skipping 'gale power off' (rails untouched)")
+        else:
+            park_out = self.ec.cmd("gale power off", until=has_ok_line,
+                                   deadline_s=PARK_DEADLINE_S, require=False)
+            if not has_ok_line(park_out):
+                raise FatalError("park not acknowledged: 'gale power off' produced no OK "
+                                 "within %.1fs: %r" % (PARK_DEADLINE_S, park_out))
+            info("parked: 'gale power off' acknowledged with OK")
+
+            # A parked AP must fall silent; capture any power-down tail.
+            end = time.monotonic() + POST_PARK_MAX_S
+            last = time.monotonic()
+            tail = bytearray()
+            while time.monotonic() < end:
+                d = self.ap.read(200)
+                if d:
+                    tail += d
+                    last = time.monotonic()
+                elif time.monotonic() - last >= POST_PARK_QUIET_S:
+                    break
+            else:
+                raise FatalError("AP still emitting %.0fs after park (%d bytes) -- not parked"
+                                 % (POST_PARK_MAX_S, len(tail)))
+            info("AP quiet after park (%d bytes tail)" % len(tail))
+
+        self.bridge = SpiBridge(self.dev, log)
+        self.bridge.enable()
+        rdid = check_rdid(self.bridge)
+        self.bridge.abort_check = self._ap_abort_check   # single-threaded AP guard
+        info("bridge enabled; RDID %s (inline AP guard every %d txns)"
+             % (rdid.hex(), self.bridge.abort_every))
+        if settle_s:
+            info("post-ENABLE settle: %.1fs idle (rail-bounce event windows "
+                 "pass with the bus quiet)" % settle_s)
+            time.sleep(settle_s)
+            rdid2 = check_rdid(self.bridge)   # canary: bus must still be alive
+            info("post-settle RDID %s" % rdid2.hex())
+        return self
+
+    def teardown(self):
+        # Fail-SAFE: teardown must never raise, or it masks the real error that
+        # brought us here (a raising bridge.disable() would replace e.g. a
+        # VERIFY FAILED with a generic "DISABLE failed"). Best-effort only.
+        try:
+            if self.bridge:
+                self.bridge.emergency_disable()   # 500 ms, swallows errors
+                self.bridge.release()
+        finally:
+            for c in (self.ec, self.ap):
+                if c:
+                    c.release()
+            if self.dev:
+                # Deliberately do NOT reattach the console kernel drivers: a
+                # reattached ttyUSB gets probed by ModemManager/getty, which
+                # desyncs the EC console before the next run re-claims it. The
+                # real flow re-enumerates via the final EC reboot, which restores
+                # the tty nodes cleanly.
+                usb.util.dispose_resources(self.dev)
+
+
+# --------------------------------------------------------------------------- #
+# shakedown: non-destructive hardware validation of concurrency + write path
+# --------------------------------------------------------------------------- #
+SESSION_SETTLE_S = 1.0   # let the EC/USB settle between fresh ENABLE sessions;
+#                          disposing the device then immediately re-opening +
+#                          re-ENABLE races the EC (control-transfer timeout).
+
+
+def make_session_factory(log, abort_every):
+    """Return a callable that yields a fresh, brought-up Session -- each fresh
+    ENABLE resets the bridge's per-session transaction budget."""
+    state = {"first": True}
+
+    def new_session():
+        if not state["first"]:
+            time.sleep(SESSION_SETTLE_S)
+        state["first"] = False
+        s = Session(log)
+        try:
+            s.bring_up()
+        except BaseException:
+            s.teardown()
+            raise
+        s.bridge.abort_every = abort_every
+        return s
+    return new_session
+
+
+def cmd_shakedown(args, log):
+    new_session = make_session_factory(log, args.abort_every)
+    ok = False
+    try:
+        # 1) bring-up + SPI reliability in one fresh session
+        info("== 1/2 reliability: %d SPI reads, single-threaded, inline AP guard =="
+             % args.spins)
+        s = new_session()
+        try:
+            t0 = time.monotonic()
+            for _ in range(args.spins):
+                check_rdid(s.bridge)
+            info("SPI stream OK: %d RDID in %.1fs, %s"
+                 % (args.spins, time.monotonic() - t0, s.bridge.rtt_ms()))
+        finally:
+            s.teardown()
+
+        off, ln = args.offset, args.length
+        if off < RO_GUARD_LIMIT:
+            raise FatalError("shakedown scratch 0x%06x is below the RO guard 0x%06x"
+                             % (off, RO_GUARD_LIMIT))
+        info("\n== 2/2 write path (fresh session per %d B): 0x%06x..0x%06x =="
+             % (WRITE_PIECE, off, off + ln))
+        orig = read_region_sessioned(new_session, off, ln, log, label="save-orig")
+        info("saved original (%d bytes, %s)"
+             % (len(orig), "all-0xff" if orig == b"\xff" * ln else "non-blank -> restore"))
+        if not args.commit:
+            info("DRY-RUN: would erase/program a test pattern then restore, one fresh "
+                 "session per %d B. Pass --commit to exercise the write path." % WRITE_PIECE)
+            ok = True
+            return 0
+
+        t0 = time.monotonic()
+        pattern = bytes((0xA5 ^ (i & 0xFF)) for i in range(ln))
+        info("-- programming test pattern --")
+        flash_region(new_session, off, pattern, log)      # per-piece erase+program+verify
+        info("-- restoring original --")
+        flash_region(new_session, off, orig, log)
+        info("-- independent read-back confirm --")
+        confirm = read_region_sessioned(new_session, off, ln, log, label="confirm")
+        if confirm != orig:
+            raise FatalError("RESTORE FAILED: region not byte-identical to original")
+        info("\nWRITE PATH OK on real hardware: erase+program+verify across fresh "
+             "sessions, region restored byte-identical (%.1fs)." % (time.monotonic() - t0))
+        ok = True
+        return 0
+    finally:
+        if not ok:
+            info("shakedown ABORTED (fail-loud).")
+
+
+def flash_plan(image):
+    """[(name, offset, size), ...] in RO-last FLASH_ORDER; raises on any problem.
+    Pure -- offline-testable."""
+    if len(image) != FLASH_SIZE:
+        raise FatalError("image is %d bytes, expected %d" % (len(image), FLASH_SIZE))
+    areas = parse_fmap(image)
+    if not areas:
+        raise FatalError("no valid FMAP found in the image")
+    plan = []
+    for name in FLASH_ORDER:
+        if name not in areas:
+            raise FatalError("region %s not in the image FMAP (have: %s)"
+                             % (name, ", ".join(sorted(areas))))
+        off, size = areas[name]
+        # Round to the 4 KiB erase granularity. The extra bytes come from the
+        # SOURCE image (correct content), so a neighbour sharing GBB's last
+        # sector (RO_FRID) is preserved as-is. GBB itself is not sector-aligned.
+        a_off = off & ~(SECTOR_SIZE - 1)
+        a_end = (off + size + SECTOR_SIZE - 1) & ~(SECTOR_SIZE - 1)
+        plan.append((name, a_off, a_end - a_off))
+    # Refuse overlapping rounded spans (would double-flash / mis-order).
+    plan.sort(key=lambda e: e[1])
+    for (_, o1, s1), (n2, o2, _) in zip(plan, plan[1:]):
+        if o1 + s1 > o2:
+            raise FatalError("rounded flash spans overlap at 0x%06x (%s)" % (o2, n2))
+    # Restore the RO-last program order.
+    order = {n: k for k, n in enumerate(FLASH_ORDER)}
+    plan.sort(key=lambda e: order[e[0]])
+    return plan
+
+
+def cmd_flash(args, log):
+    image = open(os.path.expanduser(args.image), "rb").read()
+    plan = flash_plan(image)
+    info("flash plan (RO-last order):")
+    for name, off, size in plan:
+        ro = "  [RO region -- needs --allow-ro]" if off < RO_GUARD_LIMIT else ""
+        info("  %-16s 0x%06x..0x%06x  %7d B%s" % (name, off, off + size, size, ro))
+    if not args.commit:
+        info("\nDRY-RUN: nothing written. Pass --commit to flash.")
+        return 0
+    for name, off, size in plan:
+        if off < RO_GUARD_LIMIT and not args.allow_ro:
+            raise FatalError("%s is in the RO/bottom-4MiB region (0x%06x); refusing "
+                             "without --allow-ro (bricking risk)" % (name, off))
+    new_session = make_session_factory(log, args.abort_every)
+    t0 = time.monotonic()
+    for name, off, size in plan:
+        info("\n== flashing %s (0x%06x, %d B) ==" % (name, off, size))
+        flash_region(new_session, off, image[off:off + size], log)
+    info("\nALL REGIONS FLASHED + VERIFIED in %.0fs (RO-last)" % (time.monotonic() - t0))
+    if args.verify_boot:
+        info("\n== boot verification ==")
+        r = verify_boot(log)
+        return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
+    return 0
+
+
+def cmd_unprotect(args, log):
+    """Clear the SPI software write-protection (SR1 BP/TB/SRP0; SR2 CMP).
+
+    Some stock units ship with block-protect latched (first seen 2026-07-12:
+    2125HW00PL3, SR1=0xb8 = SRP0|TB|BP2|BP1), which makes write_region refuse
+    and every erase a guaranteed no-op.  With the EC freshly booted the WP
+    pin is deasserted (SYS_PWR_EN defaults high), so the status register is
+    writable even with SRP0 set.  Every other SR2 bit (notably QE) is
+    preserved.  Dry-run by default; --commit writes.
+    """
+    sess = Session(log)
+    try:
+        sess.bring_up()
+        b = sess.bridge
+        sr1, sr2 = read_sr(b)
+        info("SR1=0x%02x SR2=0x%02x" % (sr1, sr2))
+        if not (sr1 & (SR1_BP | SR1_TB | SR1_SRP0)) and not (sr2 & SR2_CMP):
+            info("no software protection set -- nothing to do")
+            return 0
+        want_sr2 = sr2 & ~SR2_CMP
+        if not args.commit:
+            info("would write SR1=0x00 SR2=0x%02x (dry-run; pass --commit)"
+                 % want_sr2)
+            return 0
+        b.transact([OP_WREN], 0, context="WREN wrsr")
+        wel = read_sr(b)[0]
+        if not (wel & SR1_WEL):
+            raise FatalError("WREN did not latch WEL (SR1=0x%02x)" % wel)
+        b.transact([OP_WRSR, 0x00, want_sr2], 0, context="WRSR")
+        wait_wip_clear(b, 1.0, "wrsr")
+        sr1b, sr2b = read_sr(b)
+        info("after: SR1=0x%02x SR2=0x%02x" % (sr1b, sr2b))
+        if (sr1b & (SR1_BP | SR1_TB | SR1_SRP0)) or (sr2b & SR2_CMP):
+            raise FatalError(
+                "protection still set after WRSR (SR1=0x%02x SR2=0x%02x) -- "
+                "hardware WP asserted?  A fresh EC cold-boot restores "
+                "SYS_PWR_EN=high (WP deasserted); see gale-ec-power-locked."
+                % (sr1b, sr2b))
+        info("software write-protection CLEARED")
+        return 0
+    finally:
+        sess.teardown()
+
+
+def cmd_read(args, log):
+    """Read [offset, offset+length) of the SPI flash to a file.
+
+    Runs inside a parked + settled session (the SOP that survived 365k
+    transactions). Default is a DOUBLE read -- the second pass must match the
+    first byte-for-byte or we fail loud without writing output; identity
+    extraction and pre-flash backups depend on faithful reads.
+    """
+    offset, length = args.offset, args.length
+    sess = Session(log)
+    try:
+        sess.bring_up()
+        data = read_region(sess.bridge, offset, length, label="read")
+        if not args.single_read:
+            again = read_region(sess.bridge, offset, length, label="confirm")
+            if again != data:
+                raise FatalError(
+                    "double-read mismatch: two reads of 0x%06x+0x%06x differ "
+                    "-- unreliable session, NOT writing output" % (offset, length))
+        out = os.path.expanduser(args.out)
+        with open(out, "wb") as f:
+            f.write(data)
+        info("wrote %d bytes to %s\n  sha256=%s"
+             % (len(data), out, hashlib.sha256(data).hexdigest()))
+        return 0
+    finally:
+        sess.teardown()
+
+
+def cmd_ec(args, log):
+    """Run EC console command(s) over libusb (no kernel tty needed) and print
+    each response. Read-until-quiet per command; sends nothing on its own."""
+    dev = open_device(log)
+    ec = Console(dev, "ec", log)
+    try:
+        ec.sync()
+        for c in args.cmd:
+            ec.drain()
+            ec.write((c + "\r\n").encode())
+            raw = bytearray()
+            start = last = time.monotonic()
+            while time.monotonic() - start < args.deadline:
+                d = ec.read(200)
+                if d:
+                    raw += d
+                    last = time.monotonic()
+                elif raw and time.monotonic() - last > 0.4:
+                    break
+            print("===== EC <- %r =====" % c, flush=True)
+            print(bytes(raw).decode("ascii", "replace"), flush=True)
+        return 0
+    finally:
+        ec.release()
+        usb.util.dispose_resources(dev)
+
+
+def cmd_budgetprobe(args, log):
+    """Characterize the small-transfer wall: burn self-checking SMALL transactions
+    (each verified against a known value, so the EXACT trip is detected without
+    extra probe traffic), optionally interleaving a BIG read every --ilv smalls
+    and/or sleeping --delay-us between transactions. Read-only.
+
+    --burn rdid      : RDID (3B resp), healthy=ef4017, wall=000000 (fixed cmd)
+    --burn sread     : 4B read at a FIXED addr, compared to a reference
+    --burn sread-seq : 4B read at INCREMENTING addrs, compared to a reference block
+    """
+    cap = args.cap
+    delay = args.delay_us / 1e6
+    FM = 0x300000
+    sess = Session(log)
+    try:
+        # Experiments measure the raw phenomena: no settle (--pre-sleep covers it).
+        sess.bring_up(park=not args.no_park, settle_s=0.0)
+        t_up = time.monotonic()   # bridge ENABLE + RDID just completed in bring_up
+        b = sess.bridge
+        if args.no_guard:
+            b.abort_check = None
+
+        rc = args.rc
+        ref32 = bytes(b.transact([OP_READ] + list(addr3(FM)), 32, "ref"))
+        refblk = b""
+        if args.burn == "sread-seq":
+            for off in range(0, 0x2000, 32):     # 8 KiB reference (big reads: free)
+                refblk += bytes(b.transact([OP_READ] + list(addr3(FM + off)), 32, "refblk"))
+        info("burn=%s rc=%d ilv=%d delay_us=%d cap=%d ; ref@0x300000=%s (setup txn=%d)"
+             % (args.burn, rc, args.ilv, args.delay_us, cap, ref32[:6].hex(), b.txn))
+
+        def one_small():
+            """Do one small transaction; return (got, expected)."""
+            if args.burn == "rdid":
+                return bytes(b.transact([OP_RDID], 3, "s")), RDID_EXPECT
+            if args.burn == "sread":
+                return bytes(b.transact([OP_READ] + list(addr3(FM)), rc, "s")), ref32[:rc]
+            if args.burn == "eshape":
+                # erase-shaped cycle: WREN(short) + a 4-SPI-byte rc=0 op (same shape
+                # as SECTOR/BLOCK erase: opcode+3addr, no read -- harmless here) +
+                # --k large reads. Tests the WREN+ERASE short pair.
+                b.transact([OP_WREN], 0, "wren")
+                b.transact([OP_READ] + list(addr3(FM)), 0, "eshape")   # 4 SPI bytes, rc=0
+                for _ in range(args.k):
+                    big = bytes(b.transact([OP_READ] + list(addr3(FM)), 32, "wip"))
+                    if big != ref32:
+                        return big, ref32
+                return ref32[:4], ref32[:4]
+            if args.burn == "wpp":
+                # program-shaped cycle: WREN(short) + a LONG (rc=32) op standing in
+                # for a full-payload PP + --k large WIP reads. The real safe shape.
+                b.transact([OP_WREN], 0, "wren")
+                b.transact([OP_RDSR1], 32, "pp-long")     # long stand-in for full PP
+                for _ in range(args.k):
+                    big = bytes(b.transact([OP_READ] + list(addr3(FM)), 32, "wip"))
+                    if big != ref32:
+                        return big, ref32
+                return ref32[:4], ref32[:4]
+            if args.burn == "wren32":
+                # padded WREN: clock the 0x06 opcode + 32 dummy read bytes so the
+                # transaction is long-SPI (candidate immune). Then read SR (large)
+                # and require WEL latched -> proves the padding didn't break WREN.
+                b.transact([OP_WREN], 32, "wren32")
+                sr = bytes(b.transact([OP_RDSR1], 32, "sr32"))
+                if not any(sr):
+                    return sr, b"\xff"          # all-zero SR => wedged
+                return bytes([sr[0] & SR1_WEL]), bytes([SR1_WEL])   # require WEL
+            if args.burn == "wren0":
+                # baseline: bare WREN (rc=0) then a large SR read to detect wedge
+                b.transact([OP_WREN], 0, "wren0")
+                sr = bytes(b.transact([OP_RDSR1], 32, "sr32"))
+                return (b"\x00" if not any(sr) else bytes([sr[0] & SR1_WEL])), bytes([SR1_WEL])
+            if args.burn == "prog":
+                # page-program-shaped cycle: 2 small ops (WREN + a small read
+                # standing in for the PP status), then --k LARGE (rc=32) reads
+                # standing in for large WIP polls. Any zeroed read => wedge.
+                b.transact([OP_WREN], 0, "wren")                    # small
+                s = bytes(b.transact([OP_READ] + list(addr3(FM)), 4, "ppst"))  # small
+                if s != ref32[:4]:
+                    return s, ref32[:4]
+                for _ in range(args.k):
+                    big = bytes(b.transact([OP_READ] + list(addr3(FM)), 32, "wip"))
+                    if big != ref32:
+                        return big, ref32
+                return ref32[:4], ref32[:4]
+            off = (one_small.seq * rc) % (0x2000 - rc)
+            one_small.seq += 1
+            got = bytes(b.transact([OP_READ] + list(addr3(FM + off)), rc, "s"))
+            return got, refblk[off:off + rc]
+        one_small.seq = 0
+
+        for c in args.pre_ec:
+            sess.ec.drain()
+            sess.ec.write((c + "\r\n").encode())
+            raw = bytearray()
+            end = time.monotonic() + 2
+            while time.monotonic() < end:
+                d = sess.ec.read(300)
+                if d:
+                    raw += d
+            info("  [pre-ec] %r -> %s" % (c, bytes(raw).decode("ascii", "replace").strip()))
+        if args.pre_ec:
+            rd = bytes(b.transact([OP_RDID], 3, "post-pre")).hex()
+            info("  [pre-ec] RDID after pre-ec = %s (expect ef4017)" % rd)
+
+        if args.watch_addr:
+            vals = {}
+            for _ in range(args.watch_n):
+                sess.ec.drain()
+                sess.ec.write(("rw %s\r\n" % args.watch_addr).encode())
+                raw = bytearray()
+                end = time.monotonic() + 0.25
+                while time.monotonic() < end:
+                    d = sess.ec.read(80)
+                    if d:
+                        raw += d
+                    elif raw:
+                        break
+                toks = [t for t in bytes(raw).decode("ascii", "replace").split()
+                        if t.startswith("0x") and len(t) > 6]
+                v = toks[-1] if toks else "?"
+                vals[v] = vals.get(v, 0) + 1
+            info("  [watch] %s x%d -> distinct values seen: %s"
+                 % (args.watch_addr, args.watch_n, vals))
+            return 0
+
+        if args.pre_sleep:
+            # One-shot-event discriminator: pure idle between bring-up and burn.
+            # If the wedge trigger is a one-shot ~350ms after bring-up, it fires
+            # harmlessly during this sleep and the burn should NEVER wedge.
+            info("  [pre-sleep] %.2fs pure idle before burn" % args.pre_sleep)
+            time.sleep(args.pre_sleep)
+        t_burn = time.monotonic()
+
+        small_n = 0
+        first_bad = None
+        while b.txn < cap:
+            got, exp = one_small()
+            small_n += 1
+            if got != exp:
+                first_bad = small_n
+                now = time.monotonic()
+                info("  first mismatch at small#%d: got=%s exp=%s"
+                     % (small_n, got.hex(), exp.hex()))
+                info("  [t] wedge at +%.3fs after bridge-up, +%.3fs after burn-start"
+                     % (now - t_up, now - t_burn))
+                # FIRST: harvest the EC console backlog WITHOUT draining -- if
+                # the EC decided to power the AP (or PD printed anything) since
+                # bring-up, the evidence is queued right here.
+                backlog = bytearray()
+                end = time.monotonic() + 1.0
+                while time.monotonic() < end:
+                    d = sess.ec.read(300)
+                    if d:
+                        backlog += d
+                info("  [t] EC console backlog since bring-up (%d bytes): %r"
+                     % (len(backlog), bytes(backlog).decode("ascii", "replace")))
+                apb = bytearray()
+                end = time.monotonic() + 0.5
+                while time.monotonic() < end:
+                    d = sess.ap.read(300)
+                    if d:
+                        apb += d
+                info("  [t] AP console backlog (%d bytes): %r"
+                     % (len(apb), bytes(apb[:256]).decode("ascii", "replace")))
+                # Post-wedge triage (diagnostic only, still fatal). Each step is
+                # individually tolerant: the post-wedge EC is bimodal (answers-
+                # with-zeros vs hard-hang), and a hang in step 1 must not rob us
+                # of the reinit discriminator.
+                def t_try(label, fn):
+                    try:
+                        info("  [t] %s: %s" % (label, fn()))
+                    except (FatalError, usb.core.USBError) as e:
+                        info("  [t] %s: RAISED %s" % (label, e))
+
+                for i in range(3):
+                    t_try("retry small #%d (exp %s)" % (i + 1, ref32[:rc].hex()),
+                          lambda: bytes(b.transact([OP_READ] + list(addr3(FM)),
+                                                   rc, "re-s")).hex())
+                t_try("big read now (exp %s...)" % ref32[:8].hex(),
+                      lambda: bytes(b.transact([OP_READ] + list(addr3(FM)),
+                                               32, "re-big"))[:8].hex())
+                t_try("RDID now (expect ef4017)",
+                      lambda: bytes(b.transact([OP_RDID], 3, "re-id")).hex())
+                if args.probe_reinit:
+                    # Decisive discriminator (diagnostic only, run still fails):
+                    # a host-side DISABLE+ENABLE re-runs usb_spi_board_enable
+                    # (rails, gpio_config_module, SPI2 clock + reset). If that
+                    # revives the bus, the wedge is lost board-enable state
+                    # (firmware-side teardown); if not, it's external
+                    # bus/flash-level state.
+                    t_try("REINIT", lambda: b.reinit() or "controls OK")
+                    t_try("after REINIT: RDID (expect ef4017)",
+                          lambda: bytes(b.transact([OP_RDID], 3, "post-ri")).hex())
+                    t_try("after REINIT: small (exp %s)" % ref32[:rc].hex(),
+                          lambda: bytes(b.transact([OP_READ] + list(addr3(FM)),
+                                                   rc, "post-ri")).hex())
+                break
+            for _ in range(args.drain):
+                # extra IN read(s) after the response: an IN transaction (never an
+                # OUT) that NAKs, so usb_spi_tx has provably run before the next OUT
+                # -> IN/OUT completions cannot co-pend. Tests strict serialization.
+                try:
+                    b.dev.read(SPI_EP_IN, 64, 3)
+                except usb.core.USBError:
+                    pass
+            if delay:
+                time.sleep(delay)
+            if args.ilv and small_n % args.ilv == 0:
+                big = bytes(b.transact([OP_READ] + list(addr3(FM)), 32, "big"))
+                if not any(big):                 # big read zeroed too -> already walled
+                    first_bad = small_n
+                    info("  (big read at small#%d also ZEROS)" % small_n)
+                    break
+                if delay:
+                    time.sleep(delay)
+        t_end = time.monotonic()
+        info("\nRESULT burn=%s ilv=%d delay_us=%d pre_sleep=%.1f: first bad at "
+             "SMALL#=%s (total txn=%d, cap %d, burn_dt=%.3fs, up_dt=%.3fs)"
+             % (args.burn, args.ilv, args.delay_us, args.pre_sleep,
+                first_bad, b.txn, cap, t_end - t_burn, t_end - t_up))
+        if first_bad is not None and args.probe_ec:
+            # VALIDATE: is the flash bus wedged, or only the USB-bridge path?
+            rdid_usb = bytes(b.transact([OP_RDID], 3, "usb")).hex()
+            info("  [validate] USB-bridge RDID now = %s (expect ef4017)" % rdid_usb)
+            for c in args.probe_ec:
+                sess.ec.drain()
+                sess.ec.write((c + "\r\n").encode())
+                raw = bytearray()
+                end = time.monotonic() + 3
+                while time.monotonic() < end:
+                    d = sess.ec.read(300)
+                    if d:
+                        raw += d
+                info("  [validate] EC console %r raw output:\n%s"
+                     % (c, bytes(raw).decode("ascii", "replace")))
+            rdid2 = bytes(b.transact([OP_RDID], 3, "usb")).hex()
+            info("  [validate] USB-bridge RDID after EC cmds = %s" % rdid2)
+        return 0
+    finally:
+        sess.teardown()
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--log", metavar="FILE", help="append a full operation log")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sd = sub.add_parser("shakedown", help="non-destructive libusb concurrency + write-path test")
+    sd.add_argument("--spins", type=int, default=2000, help="SPI reads during concurrency test")
+    sd.add_argument("--offset", type=lambda s: int(s, 0), default=0x700000,
+                    help="scratch region offset (RW_LEGACY, above the RO guard)")
+    sd.add_argument("--length", type=lambda s: int(s, 0), default=0x11000,
+                    help="scratch length (default 0x11000 = 1 block + 1 sector)")
+    sd.add_argument("--commit", action="store_true",
+                    help="actually erase/program/restore the scratch region")
+    sd.add_argument("--abort-every", type=int, default=512,
+                    help="inline AP-guard poll interval, in SPI transactions")
+
+    vb = sub.add_parser("verify-boot", help="EC reboot over libusb, capture the "
+                        "AP boot log, classify GOOD/BAD/UNDECIDED")
+    vb.add_argument("--timeout", type=float, default=120.0,
+                    help="max seconds to wait for a decisive boot marker")
+    vb.add_argument("--boot-log", metavar="FILE",
+                    help="write the captured AP boot log to this file")
+
+    rd = sub.add_parser("read", help="read flash to a file (parked + settled "
+                        "session; double-read confirmed by default)")
+    rd.add_argument("out", help="output file for the read bytes")
+    rd.add_argument("--offset", type=lambda s: int(s, 0), default=0x0,
+                    help="start offset (default 0x0)")
+    rd.add_argument("--length", type=lambda s: int(s, 0), default=0x800000,
+                    help="bytes to read (default 0x800000 = full 8 MiB)")
+    rd.add_argument("--single-read", action="store_true",
+                    help="skip the confirming second pass (faster, less safe)")
+
+    ecp = sub.add_parser("ec", help="run EC console command(s) over libusb "
+                         "and print each response")
+    ecp.add_argument("cmd", nargs="+", help="EC console command(s) to run")
+    ecp.add_argument("--deadline", type=float, default=3.0,
+                     help="max seconds to wait per command (default 3.0)")
+
+    fl = sub.add_parser("flash", help="flash RW_SECTION_A/B + GBB (RO-last) from a "
+                        "built image, one fresh session per piece; dry-run by default")
+    fl.add_argument("image", help="8 MiB built image (must contain a valid FMAP)")
+    fl.add_argument("--commit", action="store_true", help="actually erase/program")
+    fl.add_argument("--allow-ro", action="store_true",
+                    help="permit the GBB write below 0x400000 (bricking risk)")
+    fl.add_argument("--verify-boot", action="store_true",
+                    help="EC-reboot boot-verify after flashing (exit 0/2/3)")
+    fl.add_argument("--abort-every", type=int, default=512,
+                    help="inline AP-guard poll interval, in SPI transactions")
+
+    up = sub.add_parser("unprotect", help="clear SPI software write-protect "
+                        "(SR1 BP/TB/SRP0 + SR2 CMP; QE preserved); dry-run by "
+                        "default")
+    up.add_argument("--commit", action="store_true",
+                    help="actually write the status registers")
+
+    bp = sub.add_parser("budgetprobe", help="characterize the small-transfer wall; "
+                        "read-only")
+    bp.add_argument("--burn", default="rdid",
+                    choices=("rdid", "sread", "sread-seq", "prog", "wren32", "wren0",
+                             "eshape", "wpp"),
+                    help="self-checking transaction pattern")
+    bp.add_argument("--k", type=int, default=4,
+                    help="for --burn prog: large reads per 2-small cycle")
+    bp.add_argument("--rc", type=int, default=4,
+                    help="read_count (bytes) for the sread/sread-seq patterns")
+    bp.add_argument("--ilv", type=int, default=0,
+                    help="interleave one BIG (32B) read every N small txns (0=never)")
+    bp.add_argument("--delay-us", type=int, default=0,
+                    help="sleep this many microseconds between transactions")
+    bp.add_argument("--drain", type=int, default=0,
+                    help="extra NAKing IN reads after each response (serialize)")
+    bp.add_argument("--pre-sleep", type=float, default=0.0,
+                    help="pure idle seconds between bring-up and burn (one-shot-"
+                    "event discriminator: event fires during sleep -> burn clean)")
+    bp.add_argument("--probe-reinit", action="store_true",
+                    help="after a wedge, try a DISABLE+ENABLE reinit and re-read "
+                    "(diagnostic: lost board-enable state vs external bus state)")
+    bp.add_argument("--no-park", action="store_true",
+                    help="skip 'gale power off' (AP already parked, rails already "
+                    "up from a prior session: rail-bounce discriminator)")
+    bp.add_argument("--probe-ec", action="append", default=[],
+                    help="after a wedge, run this EC console command (repeatable) "
+                    "to compare the EC's own direct flash read vs the USB bridge")
+    bp.add_argument("--pre-ec", action="append", default=[],
+                    help="run this EC console command BEFORE the burn (repeatable), "
+                    "e.g. 'gpioset SYS_PWR_EN 0' to test the AP-contention model")
+    bp.add_argument("--watch-addr",
+                    help="rapidly re-read this addr via EC 'rw' (e.g. GPIOB IDR "
+                    "0x48000410) and report distinct values (bus-activity monitor)")
+    bp.add_argument("--watch-n", type=int, default=60, help="watch-addr sample count")
+    bp.add_argument("--cap", type=int, default=40000, help="stop after this many txns")
+    bp.add_argument("--no-guard", action="store_true",
+                    help="disable the AP abort-check (no if1 reads during SPI)")
+
+    args = p.parse_args(argv)
+    log = Log(args.log)
+    try:
+        if args.command == "budgetprobe":
+            return cmd_budgetprobe(args, log)
+        if args.command == "verify-boot":
+            r = verify_boot(log, timeout_s=args.timeout)
+            if args.boot_log:
+                with open(os.path.expanduser(args.boot_log), "w") as f:
+                    f.write(r["capture"])
+                info("boot log written to %s" % args.boot_log)
+            return {"GOOD": 0, "BAD": 2, "UNDECIDED": 3}[r["verdict"]]
+        if args.command == "read":
+            return cmd_read(args, log)
+        if args.command == "ec":
+            return cmd_ec(args, log)
+        if args.command == "flash":
+            return cmd_flash(args, log)
+        if args.command == "unprotect":
+            return cmd_unprotect(args, log)
+        return cmd_shakedown(args, log)
+    except FatalError as e:
+        log.log("FATAL", str(e))
+        print("FATAL: %s" % e, file=sys.stderr, flush=True)
+        return 1
+    finally:
+        log.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
