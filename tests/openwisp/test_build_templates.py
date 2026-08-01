@@ -17,6 +17,14 @@ def test_hook_no_longer_hardcodes_wisp_syslog_target():
     assert "log_port='6666'" not in SRC
 
 
+def test_hook_restarts_logd_after_committing_the_target():
+    # logd reads log_ip only at start; committing without a restart leaves
+    # the new target unused until reboot.
+    commit = SRC.index("uci commit system")
+    restart = SRC.index("/etc/init.d/log restart")
+    assert restart > commit, "log restart must follow the system commit"
+
+
 def test_defaults_carry_the_syslog_ip_context():
     # the default MUST live in the same default_values the base template
     # uses, or devices render the literal {{ syslog_ip }} string
