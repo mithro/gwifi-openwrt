@@ -256,6 +256,10 @@ uci set system.@system[0].log_ip='{{ syslog_ip }}'
 uci set system.@system[0].log_port='514'
 uci set system.@system[0].log_proto='udp'
 uci commit system
+# logd reads log_ip/log_port only at start — without this restart the
+# committed target sits unused until the next reboot (proven live on
+# puck07 2026-08-01: nothing reached the ten64 leg until `log` restarted).
+/etc/init.d/log restart
 
 # lldpd announces on the physical jacks (config file from this template);
 # ensure the detected trunk is in the list — no-op on pucks (their jacks are
