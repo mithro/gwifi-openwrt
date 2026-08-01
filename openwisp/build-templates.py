@@ -247,9 +247,13 @@ uci -q delete wireless.default_radio0
 uci -q delete wireless.default_radio1
 uci -q commit wireless
 
-# Remote syslog to wisp.
-uci set system.@system[0].log_ip='10.1.4.2'
-uci set system.@system[0].log_port='6666'
+# Remote syslog to the site router's wifi leg (per-net remote syslog
+# design, gdoc2netcfg 2026-07-30): /var/log/wifi/<hostname>.log on ten64.
+# {{ syslog_ip }} comes from the template default_values (site default
+# 10.1.4.1; override per device/group for other sites). Kernel netconsole
+# to wisp:6666 is separate and unchanged.
+uci set system.@system[0].log_ip='{{ syslog_ip }}'
+uci set system.@system[0].log_port='514'
 uci set system.@system[0].log_proto='udp'
 uci commit system
 
@@ -479,7 +483,9 @@ def main() -> int:
                            preserved=json.dumps(netjson_mesh_aps()),
                            base=json.dumps(netjson_base()),
                            presence=json.dumps(netjson_presence()),
-                           defaults=json.dumps(vals), pucks=PUCKS)
+                           defaults=json.dumps(
+                               {**vals, "syslog_ip": "10.1.4.1"}),
+                           pucks=PUCKS)
     p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
                        timeout=180)
     # safety: redact any stray key values from the captured output before printing
