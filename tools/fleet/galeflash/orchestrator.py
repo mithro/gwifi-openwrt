@@ -16,7 +16,17 @@ from galeflash import identity
 # The documented full procedure, in order.  "verify" is the operator boot-check
 # (watching the serial console for the §7 exit criteria) and so comes AFTER
 # "poweron"; the offline futility-verify is internal to imagebuild.build().
-STEPS: list[str] = ["backup", "extract", "build", "flash", "poweron", "verify", "sheet"]
+#
+# "unprotect" clears the SPI software write-protection.  Every stock unit
+# measured so far ships with block-protect latched (SR1=0xb8 =
+# SRP0|TB|BP2|BP1 — 2125HW00PL3 2026-07-12, then 3719HW0037B/0037U/004FU on
+# 2026-08-01), which makes write_region refuse and every erase a no-op; the
+# flash step then walks its chunk size down to no purpose.  It sits AFTER
+# "backup" on purpose: it is the first step that writes anything to the
+# device (the status register), so the irreplaceable capture must exist
+# first.  It is a no-op on an already-unprotected puck.
+STEPS: list[str] = ["backup", "extract", "build", "unprotect", "flash",
+                    "poweron", "verify", "sheet"]
 
 
 @dataclass(frozen=True)

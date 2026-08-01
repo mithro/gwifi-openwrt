@@ -38,7 +38,7 @@ _COMMON_ARGV = [
 
 
 def _patch_hw(monkeypatch, tmp_path, verify_calls=None, sheet_calls=None,
-              archive_calls=None):
+              archive_calls=None, unprotect_calls=None):
     """Patch all hardware/build/network seams; return (build_calls, flash_calls)."""
     build_calls = []
     flash_calls = []
@@ -47,6 +47,9 @@ def _patch_hw(monkeypatch, tmp_path, verify_calls=None, sheet_calls=None,
     # _backup_spi must create the capture file — bookkeeping now hashes it.
     monkeypatch.setattr(flash_one_puck, "_backup_spi",
                         lambda backup: backup.write_bytes(b"fake-capture-bytes"))
+    monkeypatch.setattr(
+        flash_one_puck, "_unprotect_spi",
+        lambda: None if unprotect_calls is None else unprotect_calls.append("unprotect"))
     monkeypatch.setattr(
         flash_one_puck, "_verify_boot",
         lambda log_path: None if verify_calls is None else verify_calls.append(log_path))
@@ -345,3 +348,63 @@ def test_sheet_synced_after_inventory_written(tmp_path, monkeypatch):
     flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
 
     assert seen_status["status"] == "flashed+boot-verified"
+
+
+# ---------------------------------------------------------------------------
+# Unprotect pre-flight (stock units ship with block-protect latched)
+# ---------------------------------------------------------------------------
+
+def test_unprotect_called_before_flash(tmp_path, monkeypatch):
+    """Every stock puck so far shipped SR1=0xb8, which makes write_region
+    refuse and the flash step walk its chunk size down pointlessly.  The
+    unprotect must therefore run before the flash, unconditionally."""
+    order = []
+    _patch_hw(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(flash_one_puck, "_unprotect_spi",
+                        lambda: order.append("unprotect"))
+    monkeypatch.setattr(flash_one_puck, "_flash_image",
+                        lambda img, serial: order.append("flash"))
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert "unprotect" in order, f"unprotect never ran: {order}"
+    assert order.index("unprotect") < order.index("flash"), order
+
+
+def test_unprotect_called_after_backup(tmp_path, monkeypatch):
+    """unprotect WRITES the status register, so it must not happen until the
+    irreplaceable capture exists."""
+    order = []
+    _patch_hw(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(
+        flash_one_puck, "_backup_spi",
+        lambda backup: (backup.write_bytes(b"fake-capture-bytes"),
+                        order.append("backup")))
+    monkeypatch.setattr(flash_one_puck, "_unprotect_spi",
+                        lambda: order.append("unprotect"))
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--rekeyed-ok"])
+
+    assert order.index("backup") < order.index("unprotect"), order
+
+
+def test_unprotect_skipped_on_dry_run(tmp_path, monkeypatch):
+    """--dry-run must not touch hardware, the status register included."""
+    unprotect_calls = []
+    _patch_hw(monkeypatch, tmp_path, unprotect_calls=unprotect_calls)
+
+    flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path), "--dry-run"])
+
+    assert unprotect_calls == []
+
+
+def test_unprotect_not_called_when_plan_refuses(tmp_path, monkeypatch):
+    """A refused plan (dev-keyed puck without --rekeyed-ok) must not write to
+    the device at all — not even the status register."""
+    unprotect_calls = []
+    _patch_hw(monkeypatch, tmp_path, unprotect_calls=unprotect_calls)
+
+    with pytest.raises(SystemExit):
+        flash_one_puck.main(_COMMON_ARGV + ["--out-dir", str(tmp_path)])
+
+    assert unprotect_calls == []

@@ -51,6 +51,22 @@ python3 tools/flash_puck_usb.py read gale-backup.bin           # full 8 MiB
 python3 tools/flash_puck_usb.py read vpd.bin --offset 0x3e0000 --length 0x4000
 ```
 
+**Unprotect** — stock units ship with SPI block-protect latched:
+```
+python3 tools/flash_puck_usb.py unprotect            # dry-run: prints SR1/SR2
+python3 tools/flash_puck_usb.py unprotect --commit   # clears it
+```
+Every stock puck measured so far reads **`SR1=0xb8`** (`SRP0|TB|BP2|BP1`):
+2125HW00PL3 (2026-07-12), then 3719HW0037B / 3719HW0037U / 3719HW004FU
+(2026-08-01). Left set, `write_region` **refuses** and the flash walks its
+chunk size down (1.4 MB → 720 K → … → 12 K) looking for a size that cannot
+exist — the refusal precedes any erase, so nothing is written and the run is
+simply lost. `unprotect` preserves every other SR2 bit (notably QE) and is a
+no-op when nothing is set, so it is safe to run unconditionally.
+**`fleet/flash_one_puck.py` now does this automatically** (step 3.5, after the
+backup, before the flash); you only need it by hand when driving
+`flash_puck_usb.py` directly.
+
 **Flash** — dry-run first (no writes; prints the RO-last plan):
 ```
 python3 tools/flash_puck_usb.py flash out.bin

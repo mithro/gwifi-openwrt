@@ -80,6 +80,26 @@ def _backup_spi(backup: Path) -> None:  # pragma: no cover
     )
 
 
+def _unprotect_spi() -> None:  # pragma: no cover
+    """Clear the SPI software write-protection before flashing.
+
+    Stock units ship with block-protect latched — SR1=0xb8
+    (SRP0|TB|BP2|BP1), seen on every stock puck measured so far.  Left set,
+    ``write_region`` refuses and the flash step downshifts its chunk size to
+    no purpose (the refusal precedes any erase, so nothing is written — the
+    run simply fails after wasting a full backup+build cycle).
+
+    ``unprotect`` is idempotent: on a puck with no protection set it reports
+    "nothing to do" and exits 0, so this runs unconditionally rather than
+    trying to predict which units need it.
+    """
+    _run_hw(
+        [const.SYSTEM_PYTHON, str(TOOLS / "flash_puck_usb.py"),
+         "unprotect", "--commit"],
+        "unprotect SPI (clear block-protect)",
+    )
+
+
 def _flash_image(image_path: Path, serial: str) -> None:  # pragma: no cover
     """Step 4: flash the built image; flash_gale_fleet.py's serial-guard runs here."""
     _run_hw(
@@ -292,6 +312,11 @@ def main(argv=None) -> None:
     print("\n===== build =====", flush=True)
     imagebuild.build(backup, p.image_path)
     print(f"  image: {p.image_path}", flush=True)
+
+    # Step 3.5: clear SPI block-protect (hardware).  After the refuse gate and
+    # the capture archive — this is the first write to the device — and before
+    # the flash it exists to enable.  A no-op on an unprotected puck.
+    _unprotect_spi()  # pragma: no cover
 
     # Step 4: flash (hardware); serial-guard runs inside flash_gale_fleet.py
     _flash_image(p.image_path, p.expected_serial)  # pragma: no cover
