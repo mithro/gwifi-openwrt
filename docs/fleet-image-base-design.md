@@ -288,7 +288,10 @@ work.
 - MT7915 DBDC phy order/count — only provable on real hardware;
   `gwifi-radio-setup` normalizes whatever appears.
 - `gwifi-aps` stays 11n/11ac; 802.11ax uplift for MT7915 is a follow-up.
-- VM LLDP visibility (announce on `eth0` without puck side-effects).
+- ~~VM LLDP visibility (announce on `eth0` without puck side-effects)~~ —
+  done 2026-07-26 (branch tenwrt-lldpd): lldpd in tenwrt.config, and the
+  base post-reload-hook appends the *detected trunk* to the lldpd announce
+  list (no-op on pucks, whose jacks are pre-listed; eth0 on the VM).
 - Converting om2p to the simple profile + `bootstrap.sh` (and retiring
   `fleet-files/`) — its build machinery moves to the base now (D6), its
   content later.

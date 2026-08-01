@@ -57,6 +57,8 @@ REQUIRED_PACKAGES = [
     "openwisp-config", "openwisp-monitoring",
     # VM guest tools: ACPI graceful-shutdown handler + qemu guest agent
     "acpid", "qemu-ga",
+    # switch/host visibility (config via wisp ansells-aps-base template)
+    "lldpd",
     # PCIe Wi-Fi drivers — all in-tree families (any card that may be passed through)
     "kmod-ath9k", "kmod-ath10k", "kmod-ath11k-pci", "kmod-ath12k",
     "kmod-mt76x0e", "kmod-mt76x2", "kmod-mt7615e", "kmod-mt7915e",
