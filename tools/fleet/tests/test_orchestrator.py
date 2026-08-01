@@ -15,7 +15,8 @@ def test_plan_for_stock_puck(stock_g4, tmp_path):
     backup = tmp_path / "gale-2831HW00VZA-2026-06-30-pre-flash.bin"
     backup.write_bytes(stock_g4)
     p = orchestrator.plan(backup, date="2026-06-30")
-    assert p.steps == ["backup", "extract", "build", "flash", "poweron", "verify", "sheet"]
+    assert p.steps == ["backup", "extract", "build", "unprotect", "flash",
+                       "poweron", "verify", "sheet"]
     assert p.expected_serial == "2831HW00VZA"
     assert p.is_stock is True
     assert p.refuse is False
@@ -98,7 +99,7 @@ def test_plan_image_path_alongside_backup_monkeypatched(tmp_path, monkeypatch):
 
 
 def test_plan_steps_always_full_sequence(tmp_path, monkeypatch):
-    """plan() always returns the full six-step sequence regardless of puck state."""
+    """plan() always returns the full step sequence regardless of puck state."""
     import galeflash.orchestrator as orch
     for is_stock in (True, False):
         monkeypatch.setattr(orch.identity, "from_dump",
@@ -106,7 +107,8 @@ def test_plan_steps_always_full_sequence(tmp_path, monkeypatch):
         b = tmp_path / "gale-S-2026-07-01-pre-flash.bin"
         b.write_bytes(b"x")
         p = orch.plan(b, date="2026-07-01", rekeyed_ok=True)
-        assert p.steps == ["backup", "extract", "build", "flash", "poweron", "verify", "sheet"]
+        assert p.steps == ["backup", "extract", "build", "unprotect", "flash",
+                       "poweron", "verify", "sheet"]
 
 
 def test_plan_carries_identity_dict(tmp_path, monkeypatch):
@@ -133,3 +135,17 @@ def test_flashplan_is_frozen(tmp_path, monkeypatch):
     assert p.refuse is True
     with pytest.raises(dataclasses.FrozenInstanceError):
         p.refuse = False
+
+
+# ---------------------------------------------------------------------------
+# Step order: the unprotect pre-flight
+# ---------------------------------------------------------------------------
+
+def test_unprotect_step_sits_between_build_and_flash():
+    """Stock units ship with block-protect latched, so the flash must be
+    preceded by an unprotect — but only AFTER the backup, so nothing is ever
+    written to the device before its capture exists."""
+    steps = orchestrator.STEPS
+    assert "unprotect" in steps
+    assert steps.index("unprotect") == steps.index("flash") - 1
+    assert steps.index("backup") < steps.index("unprotect")
