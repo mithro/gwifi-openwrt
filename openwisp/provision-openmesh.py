@@ -28,7 +28,8 @@ WISP = "wisp.welland.mithis.com"
 NETWORK_CSV = "/opt/gdoc2netcfg/.cache/network.csv"
 
 # gdoc "Driver" value -> OpenWrt model string the device reports (must match the
-# `boards` entries added to OPENWISP_CUSTOM_OPENWRT_IMAGES in playbook.yml). The
+# `boards` entries added to OPENWISP_CUSTOM_OPENWRT_IMAGES in
+# group_vars/openwisp2.yml). The
 # bare "OM2P" has no h/w revision in the gdoc; onboarding refines it to a
 # revision-specific string (OpenMesh OM2P v{1,2,4}), which the map also covers.
 DRIVER_TO_MODEL = {

@@ -1,10 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
 """The openwisp/ Ansible tree must be site-parameterised, not welland-only."""
+import importlib.util
+import sys
 from pathlib import Path
 
 import yaml
 
 OW = Path(__file__).resolve().parents[3] / "openwisp"
+
+
+def _load_script(filename, modname):
+    """Load a hyphenated openwisp/ script as a module.
+
+    Registering in sys.modules before exec_module is required, not optional --
+    see the note in test_create_vm.py.
+    """
+    spec = importlib.util.spec_from_file_location(modname, OW / filename)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def test_per_site_inventories_exist():
@@ -122,6 +137,18 @@ def test_firmware_map_survived_the_move():
     for board in ("Google WiFi (Gale)", "Google Wifi", "OpenMesh OM2P-LC",
                   "OpenMesh OM2P v1", "OpenMesh OM2P v2", "OpenMesh OM2P v4"):
         assert board in blob
+
+
+def test_firmware_validator_still_finds_the_map_after_the_move():
+    """Regression guard: validate-firmware-images.py read the map out of
+    playbook.yml's `vars:`.  Moving those vars to group_vars broke it with a
+    bare KeyError, and nothing in the suite noticed -- asserting the map
+    exists is not the same as asserting its CONSUMER can still load it."""
+    vf = _load_script("validate-firmware-images.py", "validate_firmware_images")
+    custom = vf.load_custom_images()
+    _fw_map, reverse = vf.build_reverse_map(custom)
+    for board, want in vf.EXPECT.items():
+        assert reverse.get(board) == want, board
 
 
 def test_influxdb_admin_password_is_never_set():

@@ -40,19 +40,43 @@ certificate**, no warning (see §6 → TLS for how it's issued/renewed).
 
 ## 1. What runs where
 
-| Thing            | Value                                                              |
-|------------------|-------------------------------------------------------------------|
-| Hypervisor host  | `ten64.welland.mithis.com` (Traverse Ten64, NXP LS1088A, aarch64) — libvirt/KVM `qemu:///system` |
-| Guest VM         | `wisp` — Debian 13 (trixie) arm64, 2 vCPU, ~3.8 GiB RAM, 20 GB virtio-blk disk, AAVMF UEFI, autostart |
-| Network          | bridge `br-net` = **VLAN 5** (management, "Network infrastructure") |
-| Address          | `10.1.5.2` / `wisp.welland.mithis.com` (DHCP reservation, MAC `02:00:0a:01:05:02`) |
-| OpenWISP role    | `openwisp.openwisp2` **25.10.2** (modules pinned `~=1.2.0`)         |
-| Control plane    | Ansible runs **on the VM itself** (`ansible_connection=local`)      |
+**Two sites, one tree.** Each site runs its own independent controller; the
+site is chosen by which inventory you deploy with.
+
+| Thing            | welland | monarto |
+|------------------|---------|---------|
+| Hypervisor host  | `ten64.welland.mithis.com` | `ten64.monarto.mithis.com` |
+| Guest VM         | `wisp` — Debian 13 (trixie) arm64, 2 vCPU, 4 GiB RAM, 20 GB virtio-blk, AAVMF UEFI, autostart | same |
+| Network          | bridge `br-wifi` = **VLAN 4** (wifi) | bridge `br-wifi` = **VLAN 4** (wifi) |
+| Address          | `10.1.4.2` / `2404:e80:a137:104::2` | `10.2.4.2` / `2404:e80:a137:204::2` |
+| MAC              | `02:00:0a:01:04:02` | `02:00:0a:02:04:02` |
+| Inventory        | `inventories/welland` | `inventories/monarto` |
+
+Common to both: Traverse Ten64 (NXP LS1088A, aarch64) running libvirt/KVM
+`qemu:///system`; OpenWISP role `openwisp.openwisp2` **25.10.2** (modules
+pinned `~=1.2.0`); Ansible runs **on the VM itself**
+(`ansible_connection=local`).
+
+> **The MAC encodes the IPv4.** `02:00:` followed by the four octets in hex,
+> so `10.2.4.2` → `02:00:0a:02:04:02`. Each site's ten64 already carries a
+> matching `dhcp-host` reservation, and `create-vm.py` refuses to build a VM
+> whose MAC disagrees with it.
+
+> **Correction (2026-08-02).** This section previously described welland as
+> `br-net` / VLAN 5 / `10.1.5.2` / MAC `02:00:0a:01:05:02`. That was the
+> **pre-migration** state: the VM moved to `br-wifi` / VLAN 4 / `10.1.4.2`
+> per `docs/wisp-netboot-install-plan.md` (Tasks 2.2–2.3) and this file was
+> never updated. `playbook.yml` inherited the same staleness in
+> `openwisp2_allowed_hosts`, which therefore named an address the VM no
+> longer had; it is now set per-site in `host_vars/`.
+>
+> Addressing is **static** (netplan), not DHCP, because VLAN 4 is where wisp
+> itself serves netboot DHCP — a DHCP client on a VLAN it also serves is a
+> chicken-and-egg. The reservation is kept as documentation.
 
 The VM substrate (libvirt on the Ten64) mirrors the existing Home Assistant
-VM, but with a virtio-blk disk and a Debian cloud image guest. The VM itself
-was provisioned with cloud-init (NoCloud `cidata` seed); that step is outside
-this directory.
+VM, but with a virtio-blk disk and a Debian cloud image guest. Creating that
+guest is no longer a manual step — see `create-vm.py` in §5.
 
 ## 2. Why these choices
 
@@ -111,22 +135,47 @@ monitoring module targets.
 | File                       | Purpose                                                        |
 |----------------------------|----------------------------------------------------------------|
 | `requirements.yml`         | Pins openwisp.openwisp2 25.10.2 + geerlingguy.certbot 5.4.1 + collections. |
-| `inventory`                | One host, `ansible_connection=local`, FQDN as `inventory_hostname`. |
-| `playbook.yml`             | Module set, locale/email/allowed-hosts, Let's Encrypt TLS, + custom firmware-upgrader hardware (§9). |
+| `create-vm.py`             | Creates a site's `wisp` guest on its Ten64 (image, cloud-init seed, domain XML, `virsh define`). `--dry-run` runs every pre-flight and changes nothing. |
+| `inventories/<site>`       | One host, `ansible_connection=local`, FQDN as `inventory_hostname`. **One host per file** — see the warning in §5. |
+| `group_vars/openwisp2.yml` | Everything identical between sites: module set, timezone, TLS paths, firmware-upgrader hardware map (§9). |
+| `host_vars/<fqdn>.yml`     | The three values that differ per site: from-email, allowed-hosts, certbot domain. No secrets. |
+| `playbook.yml`             | Site-agnostic: roles, pre_tasks, post_tasks. Carries no site literal. |
 | `apt-preferences-influxdb` | The InfluxDB 1.8.10 apt pin (→ `/etc/apt/preferences.d/influxdb`). |
-| `validate-firmware-images.py` | Offline check of the `OPENWISP_CUSTOM_OPENWRT_IMAGES` map in `playbook.yml` (§9). |
+| `validate-firmware-images.py` | Offline check of the `OPENWISP_CUSTOM_OPENWRT_IMAGES` map in `group_vars/openwisp2.yml` (§9). |
 | `provision-openmesh.py`    | Pre-provision the 6 Open-Mesh APs as OpenWISP devices (reads MACs from ten64 at runtime; §9). |
 | `README.md`                | This document.                                                 |
 
 ## 5. Reproducing the deployment from scratch
 
-These are the exact steps used. Run them **on the `wisp` VM** as user `tim`
-(passwordless sudo). The VM must already exist with DNS/DHCP set up, and — for
-the TLS cert to issue — the wisp vhost must be enabled on ten64 (§6 → TLS) so
-the ACME challenge reaches the box.
+### 5a. Create the VM (from the desktop, once per site)
 
 ```sh
-# 0. Get this directory onto the box at ~/openwisp (e.g. scp/rsync/tar).
+uv run openwisp/create-vm.py --site <site> --dry-run \
+      --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"   # pre-flights only, no changes
+uv run openwisp/create-vm.py --site <site> --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+It refuses before touching anything if the MAC disagrees with the site's
+`dhcp-host` reservation, the bridge is missing, or a `wisp` domain already
+exists. It fetches and checksum-verifies the Debian 13 arm64 cloud image,
+grows it to 20 G, builds the NoCloud seed (label `cidata`), then defines,
+autostarts and starts the domain.
+
+> **monarto is IPv6-direct-only.** Its A record is a reverse proxy on a
+> *different machine*, so ssh must pin `-6`. `create-vm.py` does this via the
+> site table; do the same by hand. If you see
+> `REMOTE HOST IDENTIFICATION HAS CHANGED` for a monarto host, you reached the
+> proxy — fix the transport, **never** delete the `known_hosts` entry.
+
+### 5b. Deploy OpenWISP
+
+Run these **on the `wisp` VM** as user `tim` (passwordless sudo). The VM must
+exist (5a), and — for the TLS cert to issue — the wisp vhost must be enabled
+on that site's ten64 (§6 → TLS) so the ACME challenge reaches the box.
+
+```sh
+# 0. Get this directory onto the box at ~/openwisp (rsync), EXCLUDING the
+#    secrets: --exclude='.admin-credentials' --exclude='.wifi-secrets'
 
 # 1. Bootstrap the control toolchain (ansible bundle brings the required
 #    community.general / ansible.posix collections; git lets galaxy fetch the
@@ -141,14 +190,21 @@ sudo install -m 0644 ~/openwisp/apt-preferences-influxdb /etc/apt/preferences.d/
 ansible-galaxy install -r ~/openwisp/requirements.yml
 #    -> openwisp.openwisp2 (25.10.2), Stouts.postfix, openwisp.influxdb
 
-# 4. Run the playbook against localhost. Takes ~15-40 min on 2 arm64 cores
-#    (it compiles Django + GeoDjango + the OpenWISP modules in a venv at
-#    /opt/openwisp2/env). Best run detached so it survives an SSH drop:
+# 4. Run the playbook against localhost with THIS SITE'S inventory. Takes
+#    ~15-40 min on 2 arm64 cores (it compiles Django + GeoDjango + the
+#    OpenWISP modules in a venv at /opt/openwisp2/env). Run detached so it
+#    survives an SSH drop:
 cd ~/openwisp
-setsid bash -c 'ansible-playbook -i inventory playbook.yml; echo EXIT=$?' \
+setsid bash -c 'ansible-playbook -i inventories/<site> playbook.yml; echo EXIT=$?' \
     > ~/openwisp/deploy.log 2>&1 < /dev/null &
 #    ...then watch:  tail -f ~/openwisp/deploy.log
 ```
+
+> **Use the inventory for the site you are standing on.** With
+> `ansible_connection=local` the playbook configures *this* machine, so
+> deploying with the wrong site's inventory would give this VM the other
+> site's hostname, ALLOWED_HOSTS and certificate. That is why each inventory
+> file lists exactly one host.
 
 A clean run ends with a `PLAY RECAP` showing `failed=0`.
 
@@ -197,7 +253,7 @@ A clean run ends with a `PLAY RECAP` showing `failed=0`.
 
 ```sh
 ansible-galaxy install --force -r ~/openwisp/requirements.yml   # bump version in requirements.yml first
-cd ~/openwisp && ansible-playbook -i inventory playbook.yml
+cd ~/openwisp && ansible-playbook -i inventories/<site> playbook.yml
 ```
 
 The InfluxDB pin keeps the time-series DB stable across upgrades. To move to a
@@ -291,5 +347,12 @@ requires the **Build's `os` field** to match the device's reported `os` string.
   wrap the command in `setsid bash -c '…' > log 2>&1 < /dev/null &`. A bare
   `A && B && setsid C … &` leaves the subshell holding the SSH channel and
   `ssh` hangs until the run finishes.
-- After rebuilding the VM, clear the stale host key:
-  `ssh-keygen -f ~/.ssh/known_hosts.<host> -R 10.1.5.2`.
+- After **rebuilding** the VM, clear the stale host key — the guest is new, so
+  its key legitimately changed:
+  `ssh-keygen -f ~/.ssh/known_hosts.<host> -R 10.1.4.2` (welland) or
+  `-R 10.2.4.2` (monarto).
+  **This is the only case where clearing the entry is right.** A host-key
+  warning for a *monarto* name that you did not just rebuild almost certainly
+  means ssh fell back to IPv4 and reached the reverse proxy — a different
+  machine. Fix the transport (`ssh -6`); deleting the entry there would
+  discard the warning that caught the wrong-host connection.

@@ -59,10 +59,21 @@ Deploy runs Ansible **on the wisp VM against itself** (see `README.md` §5/§7).
 From the primary checkout (which has the secrets):
 
 ```sh
-# sync this dir to the box, then run the playbook there
-rsync -a --exclude .worktrees ./ wisp.welland.mithis.com:~/openwisp/   # or scp the changed files
-ssh wisp.welland.mithis.com 'cd ~/openwisp && ansible-playbook -i inventory playbook.yml'
+# sync this dir to the box, then run the playbook there.
+# EXCLUDE THE SECRETS: the deployment does not need them on the VM, and a
+# seed/config box is not where the admin password and mesh key belong.
+rsync -a --exclude .worktrees --exclude '__pycache__' \
+      --exclude '.admin-credentials' --exclude '.wifi-secrets' \
+      ./ wisp.welland.mithis.com:~/openwisp/
+ssh wisp.welland.mithis.com \
+    'cd ~/openwisp && ansible-playbook -i inventories/welland playbook.yml'
 ```
+
+For monarto, substitute the host and `-i inventories/monarto`, and pin IPv6
+(`ssh -6`, `rsync -e 'ssh -6'`) — monarto's IPv4 is a reverse proxy on a
+different machine. **Always deploy with the inventory of the site the VM is
+at:** `ansible_connection=local` means the playbook configures that box, so
+the wrong inventory would hand it the other site's identity.
 
 Device pre-provisioning (idempotent, reads MACs from ten64 at runtime):
 
