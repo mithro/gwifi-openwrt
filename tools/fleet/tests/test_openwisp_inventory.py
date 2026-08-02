@@ -111,6 +111,15 @@ def test_tls_paths_follow_inventory_hostname_not_a_literal():
     assert "{{ inventory_hostname }}" in g["openwisp2_ssl_key"]
 
 
+def test_nginx_ipv6_is_enabled():
+    """The role defaults this off and emits IPv4-only listen lines.  monarto
+    is reachable only over IPv6 from outside, so an IPv4-only nginx makes the
+    admin UI unreachable; welland's IPv6 lines were added out-of-band and a
+    re-run would have removed them."""
+    g = yaml.safe_load((OW / "group_vars" / "openwisp2.yml").read_text())
+    assert g["openwisp2_nginx_ipv6"] is True
+
+
 def test_certbot_auto_renew_stays_off():
     """geerlingguy's cron would run as the wrong user; the packaged root
     certbot.timer does renewals instead."""

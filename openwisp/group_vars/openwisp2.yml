@@ -32,6 +32,19 @@ openwisp2_controller_subnet_division: false
 # `openwisp`, so writes would fail. Version is pinned to 1.8.10 via the
 # apt-preferences-influxdb file, not here (role has no version knob).
 
+# ---- nginx listeners --------------------------------------------------
+# The role defaults this to false and then emits IPv4-only `listen` lines.
+# Both sites need IPv6: monarto is reachable ONLY over IPv6 from outside its
+# own network (its A record is a reverse proxy on a different machine), so an
+# IPv4-only nginx makes the admin UI unreachable -- exactly what happened on
+# the first monarto deploy.
+#
+# welland has the `listen [::]:80/443` lines today, but they were added
+# out-of-band: the role never generated them, so the NEXT playbook run there
+# would have removed them and broken welland's access.  Setting the variable
+# makes both sites correct and re-run-safe.
+openwisp2_nginx_ipv6: true
+
 # ---- Locale -----------------------------------------------------------
 # Both sites (Welland and Monarto) are in South Australia -> local time for
 # readable monitoring graphs. Change per-site in host_vars if that stops
