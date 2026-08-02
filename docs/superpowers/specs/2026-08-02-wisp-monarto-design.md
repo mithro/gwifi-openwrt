@@ -52,7 +52,8 @@ lists only `10.2.4.2` and `10.2.4.3`, both `FAILED`.
 |---|---|
 | Host | `ten64.welland.mithis.com`, Debian forky/sid, libvirt/KVM aarch64 |
 | Guest | `wisp` — 4 GiB RAM, 2 vCPU, machine `virt-10.2`, AAVMF UEFI |
-| Disks | `/var/lib/libvirt/images/wisp.qcow2` (vda, virtio) + `wisp-seed.iso` (sda, scsi — cloud-init NoCloud) |
+| Guest OS | Debian 13 (trixie) arm64 — verified on the live VM |
+| Disks | `wisp.qcow2` **20 G** (vda, virtio; 6.2 G used) + `wisp-seed.iso` ~374 KiB (sda, scsi — cloud-init NoCloud) |
 | NIC | MAC `02:00:0a:01:04:02`, bridge **`br-wifi`**, autostart **enabled** |
 | Address | `10.1.4.2/24`, `2404:e80:a137:104::2/64`, **static netplan** |
 | Edge | ten64 nginx: `:80` ACME + `@acme_fallback`, `:443` SNI passthrough → `10.1.4.2` |
@@ -370,7 +371,9 @@ spec. Nothing in this spec registers a device or pushes a template.
 
 1. **Certbot contact e-mail for monarto** — welland uses `claude@mith.ro`.
    Reuse, or a site-specific address?
-2. **Guest image staging** — fetch the Debian cloud image directly on
-   ten64.monarto (needs egress), or stage from welland/big-storage?
+2. ~~**Guest image staging**~~ — **resolved 2026-08-02**: ten64.monarto has
+   working egress to `cloud.debian.org` (HTTP 302 from `2001:6b0:19::173`,
+   over IPv6), so `create-vm.py` fetches the image directly on the host. No
+   staging from welland or big-storage needed.
 3. **`.admin-credentials`** currently holds one site's credentials in a flat
    file. Extend to two entries, or one file per site?
