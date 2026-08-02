@@ -66,3 +66,51 @@ def test_monarto_pins_ipv6_transport():
     """D5: monarto's IPv4 is a reverse proxy on another host."""
     cv = _load()
     assert "-6" in cv.SITES["monarto"].ssh_opts
+
+
+RESERVATION = (
+    "# wisp — DHCP\n"
+    "dhcp-host=02:00:0a:02:04:02,10.2.4.2,[2404:e80:a137:204::2],wisp\n"
+)
+
+
+def test_parse_reservation_extracts_mac_and_ips():
+    cv = _load()
+    r = cv.parse_reservation(RESERVATION)
+    assert r.mac == "02:00:0a:02:04:02"
+    assert r.ipv4 == "10.2.4.2"
+    assert r.ipv6 == "2404:e80:a137:204::2"
+
+
+def test_parse_reservation_is_case_insensitive_on_mac():
+    cv = _load()
+    r = cv.parse_reservation("dhcp-host=02:00:0A:02:04:02,10.2.4.2,wisp\n")
+    assert r.mac == "02:00:0a:02:04:02"
+
+
+def test_parse_reservation_raises_when_absent():
+    cv = _load()
+    with pytest.raises(cv.PreflightError, match="no dhcp-host"):
+        cv.parse_reservation("# nothing here\n")
+
+
+def test_check_reservation_accepts_matching(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_read_reservation", lambda site: RESERVATION)
+    cv.check_reservation(cv.SITES["monarto"])          # must not raise
+
+
+def test_check_reservation_refuses_mac_mismatch(monkeypatch):
+    cv = _load()
+    wrong = "dhcp-host=02:00:0a:02:04:99,10.2.4.2,wisp\n"
+    monkeypatch.setattr(cv, "_read_reservation", lambda site: wrong)
+    with pytest.raises(cv.PreflightError, match="MAC"):
+        cv.check_reservation(cv.SITES["monarto"])
+
+
+def test_check_reservation_refuses_ip_mismatch(monkeypatch):
+    cv = _load()
+    wrong = "dhcp-host=02:00:0a:02:04:02,10.2.4.99,wisp\n"
+    monkeypatch.setattr(cv, "_read_reservation", lambda site: wrong)
+    with pytest.raises(cv.PreflightError, match="IPv4"):
+        cv.check_reservation(cv.SITES["monarto"])

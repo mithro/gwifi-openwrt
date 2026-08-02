@@ -13,6 +13,8 @@ D5 (monarto is IPv6-direct-only) and D6 (do not pin the QEMU machine version).
 from __future__ import annotations
 
 import ipaddress
+import re
+import subprocess
 from dataclasses import dataclass
 
 
@@ -70,3 +72,70 @@ SITES: dict[str, Site] = {
         ssh_opts=("-6",),
     ),
 }
+
+
+RESERVATION_PATH = "/etc/dnsmasq.d/wifi/generated/wisp.conf"
+
+
+class PreflightError(RuntimeError):
+    """A pre-flight check failed; nothing has been changed on the target."""
+
+
+@dataclass(frozen=True)
+class Reservation:
+    mac: str
+    ipv4: str
+    ipv6: str | None
+
+
+def parse_reservation(text: str) -> Reservation:
+    """Parse the `dhcp-host=` line out of a generated dnsmasq fragment."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("dhcp-host="):
+            continue
+        fields = line[len("dhcp-host="):].split(",")
+        mac = fields[0].strip().lower()
+        v4 = next((f.strip() for f in fields
+                   if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", f.strip())), None)
+        v6 = next((f.strip()[1:-1] for f in fields
+                   if f.strip().startswith("[") and f.strip().endswith("]")), None)
+        if v4 is None:
+            raise PreflightError(f"dhcp-host line has no IPv4: {line!r}")
+        return Reservation(mac=mac, ipv4=v4, ipv6=v6)
+    raise PreflightError(f"no dhcp-host line found in {RESERVATION_PATH}")
+
+
+def _ssh(site: Site, *argv: str) -> str:
+    """Run a command on the site's ten64 and return stdout.
+
+    ``site.ssh_opts`` carries the IPv6 pin for monarto (D5).  stderr is
+    deliberately NOT suppressed: it is captured and folded into the error.
+    """
+    cmd = ["ssh", *site.ssh_opts, "-o", "ConnectTimeout=15",
+           "-o", "BatchMode=yes", site.ten64, *argv]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise PreflightError(
+            f"ssh to {site.ten64} failed (exit {proc.returncode}): "
+            f"{proc.stderr.strip()}")
+    return proc.stdout
+
+
+def _read_reservation(site: Site) -> str:      # pragma: no cover - network
+    return _ssh(site, "sudo", "cat", RESERVATION_PATH)
+
+
+def check_reservation(site: Site) -> None:
+    """Refuse unless the site's live dhcp-host reservation matches the table.
+
+    A MAC typo would otherwise produce a VM that boots, never receives its
+    reservation, and fails confusingly much later.
+    """
+    got = parse_reservation(_read_reservation(site))
+    if got.mac != site.mac:
+        raise PreflightError(
+            f"{site.name}: reservation MAC {got.mac} != planned {site.mac}")
+    if got.ipv4 != site.ipv4:
+        raise PreflightError(
+            f"{site.name}: reservation IPv4 {got.ipv4} != planned {site.ipv4}")
