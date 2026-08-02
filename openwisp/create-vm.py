@@ -197,3 +197,62 @@ def domain_xml(site: Site) -> str:
   </devices>
 </domain>
 """
+
+
+def network_config(site: Site) -> str:
+    """NoCloud network-config: static, matching welland's end state.
+
+    Static rather than DHCP by design (D1).  VLAN 4 is where wisp itself
+    will later serve netboot DHCP, and a DHCP client on a VLAN it also
+    serves is the chicken-and-egg welland had to migrate away from.
+    """
+    return f"""network:
+  version: 2
+  ethernets:
+    net0:
+      match:
+        macaddress: "{site.mac}"
+      set-name: "net0"
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - {site.ipv4}/{site.prefix4}
+        - "{site.ipv6}/{site.prefix6}"
+      routes:
+        - to: default
+          via: {site.gw4}
+        - to: default
+          via: "{site.gw6}"
+      nameservers:
+        addresses: [{site.gw4}]
+"""
+
+
+def meta_data(site: Site) -> str:
+    return f"instance-id: wisp-{site.name}\nlocal-hostname: wisp\n"
+
+
+def user_data(site: Site, *, ssh_key: str) -> str:
+    """NoCloud user-data: the `tim` admin account and the network freeze.
+
+    No password is set anywhere: the seed ISO sits readable on the
+    hypervisor, so key-only access is the only safe posture.
+    """
+    return f"""#cloud-config
+fqdn: {site.fqdn}
+prefer_fqdn_over_hostname: true
+users:
+  - name: tim
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - "{ssh_key}"
+ssh_pwauth: false
+write_files:
+  - path: /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg
+    permissions: "0644"
+    content: |
+      network: {{config: disabled}}
+package_update: true
+"""

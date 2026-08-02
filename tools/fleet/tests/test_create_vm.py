@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
+import yaml
 
 CV_PATH = Path(__file__).resolve().parents[3] / "openwisp" / "create-vm.py"
 
@@ -168,3 +169,68 @@ def test_welland_xml_carries_its_own_identity():
     cv = _load()
     root = ET.fromstring(cv.domain_xml(cv.SITES["welland"]))
     assert root.find("devices/interface/mac").get("address") == "02:00:0a:01:04:02"
+
+
+def test_network_config_is_static_on_the_sites_addresses():
+    cv = _load()
+    nc = yaml.safe_load(cv.network_config(cv.SITES["monarto"]))
+    eth = nc["network"]["ethernets"]["net0"]
+    assert eth["dhcp4"] is False
+    assert "10.2.4.2/24" in eth["addresses"]
+    assert "2404:e80:a137:204::2/64" in eth["addresses"]
+
+
+def test_network_config_matches_on_mac_and_renames_to_net0():
+    cv = _load()
+    eth = yaml.safe_load(cv.network_config(cv.SITES["monarto"]))["network"]["ethernets"]["net0"]
+    assert eth["match"]["macaddress"] == "02:00:0a:02:04:02"
+    assert eth["set-name"] == "net0"
+
+
+def test_network_config_has_both_default_routes():
+    cv = _load()
+    eth = yaml.safe_load(cv.network_config(cv.SITES["monarto"]))["network"]["ethernets"]["net0"]
+    vias = {r["via"] for r in eth["routes"]}
+    assert vias == {"10.2.4.1", "2404:e80:a137:204::1"}
+
+
+def test_network_config_resolver_is_the_site_router():
+    cv = _load()
+    eth = yaml.safe_load(cv.network_config(cv.SITES["monarto"]))["network"]["ethernets"]["net0"]
+    assert eth["nameservers"]["addresses"] == ["10.2.4.1"]
+
+
+def test_user_data_sets_hostname_to_the_fqdn():
+    cv = _load()
+    ud = yaml.safe_load(cv.user_data(cv.SITES["monarto"], ssh_key="ssh-ed25519 AAAA test"))
+    assert ud["fqdn"] == "wisp.monarto.mithis.com"
+
+
+def test_user_data_disables_cloud_init_network_regeneration():
+    cv = _load()
+    ud = yaml.safe_load(cv.user_data(cv.SITES["monarto"], ssh_key="ssh-ed25519 AAAA test"))
+    paths = {f["path"]: f for f in ud["write_files"]}
+    target = "/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
+    assert paths[target]["content"].strip() == "network: {config: disabled}"
+
+
+def test_user_data_creates_tim_with_passwordless_sudo_and_key():
+    cv = _load()
+    ud = yaml.safe_load(cv.user_data(cv.SITES["monarto"], ssh_key="ssh-ed25519 AAAA test"))
+    user = next(u for u in ud["users"] if u["name"] == "tim")
+    assert "NOPASSWD:ALL" in user["sudo"]
+    assert user["ssh_authorized_keys"] == ["ssh-ed25519 AAAA test"]
+
+
+def test_user_data_carries_no_password():
+    """Access is by key only; a seed ISO is world-readable on the host."""
+    cv = _load()
+    raw = cv.user_data(cv.SITES["monarto"], ssh_key="ssh-ed25519 AAAA test")
+    assert "password" not in raw.lower()
+
+
+def test_meta_data_instance_id_is_site_specific():
+    cv = _load()
+    md = yaml.safe_load(cv.meta_data(cv.SITES["monarto"]))
+    assert md["instance-id"] == "wisp-monarto"
+    assert md["local-hostname"] == "wisp"
