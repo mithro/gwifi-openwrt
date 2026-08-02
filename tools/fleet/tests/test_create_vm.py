@@ -234,3 +234,63 @@ def test_meta_data_instance_id_is_site_specific():
     md = yaml.safe_load(cv.meta_data(cv.SITES["monarto"]))
     assert md["instance-id"] == "wisp-monarto"
     assert md["local-hostname"] == "wisp"
+
+
+def test_check_bridge_accepts_present(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_list_bridges", lambda s: ["br-wifi", "br-net"])
+    cv.check_bridge(cv.SITES["monarto"])
+
+
+def test_check_bridge_refuses_absent(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_list_bridges", lambda s: ["br-net"])
+    with pytest.raises(cv.PreflightError, match="br-wifi"):
+        cv.check_bridge(cv.SITES["monarto"])
+
+
+def test_check_no_existing_domain_refuses_when_defined(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_list_domains", lambda s: ["homeassistant", "wisp"])
+    with pytest.raises(cv.PreflightError, match="already exists"):
+        cv.check_no_existing_domain(cv.SITES["monarto"])
+
+
+def test_check_no_existing_domain_passes_when_absent(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_list_domains", lambda s: ["homeassistant"])
+    cv.check_no_existing_domain(cv.SITES["monarto"])
+
+
+def test_cli_rejects_unknown_site(capsys):
+    cv = _load()
+    with pytest.raises(SystemExit):
+        cv.main(["--site", "nowhere"])
+
+
+def test_dry_run_makes_no_changes(monkeypatch, capsys):
+    """--dry-run runs every pre-flight but must never mutate the target."""
+    cv = _load()
+    monkeypatch.setattr(cv, "_read_reservation", lambda s: RESERVATION)
+    monkeypatch.setattr(cv, "_list_bridges", lambda s: ["br-wifi"])
+    monkeypatch.setattr(cv, "_list_domains", lambda s: ["homeassistant"])
+
+    def _boom(*a, **k):
+        raise AssertionError("dry-run must not mutate the target")
+
+    monkeypatch.setattr(cv, "_apply", _boom)
+    assert cv.main(["--site", "monarto", "--dry-run",
+                    "--ssh-key", "ssh-ed25519 AAAA test"]) == 0
+    out = capsys.readouterr().out
+    assert "02:00:0a:02:04:02" in out
+    assert "<name>wisp</name>" in out
+
+
+def test_dry_run_still_reports_preflight_failure(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_read_reservation",
+                        lambda s: "dhcp-host=02:00:0a:02:04:99,10.2.4.2,wisp\n")
+    monkeypatch.setattr(cv, "_list_bridges", lambda s: ["br-wifi"])
+    monkeypatch.setattr(cv, "_list_domains", lambda s: [])
+    assert cv.main(["--site", "monarto", "--dry-run",
+                    "--ssh-key", "k"]) != 0

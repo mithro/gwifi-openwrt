@@ -12,9 +12,11 @@ D5 (monarto is IPv6-direct-only) and D6 (do not pin the QEMU machine version).
 """
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 
 
@@ -256,3 +258,117 @@ write_files:
       network: {{config: disabled}}
 package_update: true
 """
+
+
+DEBIAN_IMAGE_URL = (
+    "https://cloud.debian.org/images/cloud/trixie/latest/"
+    "debian-13-genericcloud-arm64.qcow2"
+)
+DISK_SIZE = "20G"          # matches welland
+
+
+def _list_bridges(site: Site) -> list[str]:        # pragma: no cover - network
+    out = _ssh(site, "ip", "-br", "link", "show", "type", "bridge")
+    return [ln.split()[0] for ln in out.splitlines() if ln.strip()]
+
+
+def _list_domains(site: Site) -> list[str]:        # pragma: no cover - network
+    out = _ssh(site, "sudo", "virsh", "list", "--all", "--name")
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def check_bridge(site: Site) -> None:
+    if site.bridge not in _list_bridges(site):
+        raise PreflightError(
+            f"{site.name}: bridge {site.bridge} not present on {site.ten64}")
+
+
+def check_no_existing_domain(site: Site) -> None:
+    if "wisp" in _list_domains(site):
+        raise PreflightError(
+            f"{site.name}: domain 'wisp' already exists on {site.ten64}; "
+            "refusing to redefine it")
+
+
+def _apply(site: Site, xml: str, seed: dict[str, str]) -> None:  # pragma: no cover
+    """Stage the image and seed, then define and start the VM.
+
+    NOTE: the root disk is the DOWNLOADED cloud image, grown in place --
+    never `qemu-img create`, which would yield a blank disk with no OS.
+    """
+    stage = "~/wisp-staging"                     # not /tmp, per repo convention
+    _ssh(site, "mkdir", "-p", stage)
+
+    # 1. Fetch the guest image and verify it against Debian's SHA512SUMS.
+    #    ten64.monarto has egress (verified: 302 from cloud.debian.org).
+    base = DEBIAN_IMAGE_URL.rsplit("/", 1)[-1]
+    _ssh(site, "sh", "-c",
+         f"cd {stage} && curl -fLsS -O {DEBIAN_IMAGE_URL} "
+         f"&& curl -fLsS -O {DEBIAN_IMAGE_URL.rsplit('/', 1)[0]}/SHA512SUMS "
+         f"&& grep ' {base}$' SHA512SUMS | sha512sum -c -")
+
+    # 2. Install as the root disk and grow it to the welland-matching size.
+    _ssh(site, "sudo", "cp", f"{stage}/{base}", f"{IMAGES}/wisp.qcow2")
+    _ssh(site, "sudo", "qemu-img", "resize", f"{IMAGES}/wisp.qcow2", DISK_SIZE)
+
+    # 3. Build the NoCloud seed ISO.  The volume label MUST be `cidata`;
+    #    cloud-init discovers the datasource by that label alone.
+    for name, body in seed.items():
+        _ssh(site, "sh", "-c",
+             f"cat > {stage}/{name} <<'__EOF__'\n{body}__EOF__")
+    _ssh(site, "sh", "-c",
+         f"cd {stage} && genisoimage -quiet -output wisp-seed.iso "
+         f"-volid cidata -joliet -rock user-data meta-data network-config")
+    _ssh(site, "sudo", "cp", f"{stage}/wisp-seed.iso", f"{IMAGES}/wisp-seed.iso")
+
+    # 4. Define, autostart, start.
+    _ssh(site, "sh", "-c",
+         f"cat > {stage}/wisp.xml <<'__EOF__'\n{xml}__EOF__")
+    _ssh(site, "sudo", "virsh", "define", f"{stage}/wisp.xml")
+    _ssh(site, "sudo", "virsh", "autostart", "wisp")
+    _ssh(site, "sudo", "virsh", "start", "wisp")
+
+    # 5. The seed carries no secrets (key-only, no password), but there is no
+    #    reason to leave the staging copy lying about.
+    _ssh(site, "rm", "-rf", stage)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--site", required=True, choices=sorted(SITES))
+    ap.add_argument("--ssh-key", required=True,
+                    help="public key authorised for `tim` in the guest")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run every pre-flight and print the artefacts; "
+                         "change nothing")
+    args = ap.parse_args(argv)
+
+    site = SITES[args.site]
+    xml = domain_xml(site)
+    seed = {
+        "meta-data": meta_data(site),
+        "user-data": user_data(site, ssh_key=args.ssh_key),
+        "network-config": network_config(site),
+    }
+
+    try:
+        check_reservation(site)
+        check_bridge(site)
+        check_no_existing_domain(site)
+    except PreflightError as exc:
+        print(f"PRE-FLIGHT FAILED: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(f"# site={site.name} fqdn={site.fqdn} mac={site.mac}")
+        print(xml)
+        for name, body in seed.items():
+            print(f"# --- {name} ---\n{body}")
+        return 0
+
+    _apply(site, xml, seed)
+    return 0
+
+
+if __name__ == "__main__":                          # pragma: no cover
+    raise SystemExit(main())
