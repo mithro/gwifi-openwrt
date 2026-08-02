@@ -1,0 +1,22 @@
+---
+# Site-specific vars for welland's wisp VM.  NO SECRETS IN THIS FILE.
+# Everything identical between sites lives in group_vars/openwisp2.yml.
+
+openwisp2_default_from_email: "openwisp@wisp.welland.mithis.com"
+
+# Allow reaching the admin by IP as a fallback (DNS hiccups); the FQDN
+# remains the primary, certificate-matching access point.
+#
+# This is 10.1.4.2, NOT the 10.1.5.2 this file's predecessor carried: the VM
+# moved from br-net/VLAN 5 to br-wifi/VLAN 4 (see
+# docs/wisp-netboot-install-plan.md Tasks 2.2-2.3) and the playbook was never
+# updated, so ALLOWED_HOSTS named an address the VM no longer had.  Confirmed
+# against the live VM's MAC (02:00:0a:01:04:02 — the scheme encodes the IPv4),
+# DNS, and the ten64 vhost's `proxy_pass http://10.1.4.2`.
+openwisp2_allowed_hosts:
+  - "10.1.4.2"
+
+certbot_certs:
+  - email: "claude@mith.ro"
+    domains:
+      - "wisp.welland.mithis.com"

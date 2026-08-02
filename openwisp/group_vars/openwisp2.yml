@@ -1,0 +1,130 @@
+---
+# Shared OpenWISP deployment vars — identical at every site.
+#
+# Site-specific values live in host_vars/<fqdn>.yml.  Defaults not overridden
+# here are kept as the role ships them; for the full list see the installed
+# role at ~/.ansible/roles/openwisp.openwisp2/defaults/main.yml (on the wisp
+# VM) or upstream: github.com/openwisp/ansible-openwisp2 (tag 25.10.2).
+# Every override below is deliberate and commented.
+
+# ---- OpenWISP modules -------------------------------------------------
+# Enabled to cover the required feature set:
+#   controller (always on) -> central WiFi/VLAN/mesh config, multi-site
+#   monitoring (default on) -> signal, connected clients, throughput
+#   network_topology        -> mesh/topology visualisation
+#   firmware_upgrader       -> centralised firmware management
+openwisp2_monitoring: true
+openwisp2_network_topology: true
+openwisp2_firmware_upgrader: true
+# Off: not in the requirements, avoid bloat + extra daemons.
+openwisp2_radius: false
+openwisp2_controller_subnet_division: false
+
+# ---- Database ---------------------------------------------------------
+# Keep the role default: SQLite + SpatiaLite (openwisp_utils.db.backends
+# .spatialite). Right-sized for ~12 pucks; no PostgreSQL/PostGIS daemon to
+# run or maintain. Revisit only if the fleet/monitoring volume grows.
+
+# ---- Time-series (InfluxDB) -------------------------------------------
+# Defaults kept: localhost:8086, db openwisp2, NO auth (localhost-bound).
+# Do NOT set influxdb_admin_password: enabling auth would make the
+# sub-role create user `admin`, but openwisp-monitoring connects as
+# `openwisp`, so writes would fail. Version is pinned to 1.8.10 via the
+# apt-preferences-influxdb file, not here (role has no version knob).
+
+# ---- Locale -----------------------------------------------------------
+# Both sites (Welland and Monarto) are in South Australia -> local time for
+# readable monitoring graphs. Change per-site in host_vars if that stops
+# being true.
+openwisp2_time_zone: "Australia/Adelaide"
+# en-gb is already the role default (non-US English); left implicit.
+
+# ---- TLS: real Let's Encrypt certificate ------------------------------
+# ten64 (the edge) does NOT terminate TLS for wisp: it SNI-passes :443
+# straight through to wisp:443 and routes wisp's :80 (ACME challenge, with
+# an @acme_fallback that proxies the challenge to wisp:80). So wisp holds
+# its OWN cert. geerlingguy.certbot issues it via HTTP-01 with --standalone
+# (briefly stops nginx to bind :80; the challenge arrives through ten64's
+# fallback). openwisp's nginx is then pointed at the LE live paths below.
+#
+# Renewal is hands-off: the packaged root `certbot.timer` runs
+# `certbot renew`, and the role's /etc/letsencrypt/renewal-hooks/{pre,post}
+# scripts stop/start nginx around each renewal. Hence certbot_auto_renew is
+# off here (geerlingguy's cron would run as the wrong user).
+#
+# PREREQUISITE (one-time, on the site's ten64): the wisp vhost must be
+# symlinked into /etc/nginx/sites-enabled/ so ten64 routes the FQDN.
+#
+# These follow inventory_hostname, so one shared value serves both sites.
+openwisp2_ssl_cert: "/etc/letsencrypt/live/{{ inventory_hostname }}/fullchain.pem"
+openwisp2_ssl_key: "/etc/letsencrypt/live/{{ inventory_hostname }}/privkey.pem"
+certbot_create_if_missing: true
+certbot_create_method: standalone   # default; stops nginx to free :80
+certbot_auto_renew: false           # rely on the root certbot.timer instead
+
+# ---- Firmware upgrader: custom hardware support -----------------------
+# openwisp-firmware-upgrader 1.2.1 ships a stock board->image map
+# (openwisp_firmware_upgrader/hardware.py, OPENWRT_FIRMWARE_IMAGE_MAP) with
+# ZERO entries for our fleet: neither the Google WiFi puck (ipq40xx/chromium
+# "gale") nor the Open-Mesh OM2P APs are present. The upgrader matches a
+# device to a firmware image by testing `device.model` against each image's
+# `boards` tuple (models.py: `model__in=boards`, REVERSE_FIRMWARE_IMAGE_MAP
+# keyed on device.model). With no entry it cannot recognise the hardware, so
+# you can neither upload nor assign an image for these devices.
+#
+# The OPENWISP_CUSTOM_OPENWRT_IMAGES setting fixes this. hardware.py does
+#   OrderedDict(CUSTOM_OPENWRT_IMAGES).update(<stock map>)
+# so our entries are MERGED with (not replacing) the stock list. Each entry
+# is (image_type_key, {label, boards}); the key is a TYPE label shown in the
+# upload form, NOT the literal uploaded filename, so we follow the stock
+# naming convention (no `openwrt-`/version prefix). `boards` MUST equal what
+# the device reports via `ubus call system board` -> .model.
+#
+# Values below are verified against our OpenWrt 25.12.2 source tree:
+#   gale  : DTS model "Google WiFi (Gale)"   (target ipq40xx/chromium)
+#           ("Google Wifi" is also listed so the pre-provisioned OpenWISP
+#            devices match before they onboard & report the full DTS model)
+#   OM2P  : DTS models "OpenMesh OM2P v{1,2,4}" (target ath79/generic)
+#   OM2P-LC: DTS model "OpenMesh OM2P-LC"      (target ath79/generic)
+# All OM2P h/w revisions are covered because the reported model is
+# revision-specific and the gdoc "Driver" column records only the family
+# ("OM2P"); extra entries are harmless (they only ever match a device that
+# reports that exact model).
+#
+# NOTE (flashing, separate from recognition): the OPENWISP_FIRMWARE_UPGRADERS
+# _MAP default upgrader runs `sysupgrade` over SSH. (a) The gale pucks boot
+# via depthcharge/netboot — confirm sysupgrade-to-flash behaves before relying
+# on remote upgrades. (b) The OM2P units currently run Open-Mesh/CloudTrax
+# stock firmware; they must be flashed to OpenWrt (factory image) once before
+# OpenWISP can manage/upgrade them. Adding the map entry is the prerequisite,
+# not the whole story.
+#
+# Rendered verbatim into settings.py via *_instructions (the role emits each
+# item with `{{ instruction }}`), which keeps the nested tuple literal far
+# more readable than forcing it through YAML list-of-lists.
+openwisp2_extra_django_settings_instructions:
+  - |
+    OPENWISP_CUSTOM_OPENWRT_IMAGES = (
+        # --- Google WiFi (gale, ipq4019) -- target ipq40xx/chromium ---
+        ("ipq40xx-chromium-google_wifi-squashfs-sysupgrade.bin", {
+            "label": "Google WiFi (Gale, ipq4019)",
+            "boards": ("Google WiFi (Gale)", "Google Wifi"),
+        }),
+        # --- Open-Mesh OM2P family -- target ath79/generic ---
+        ("ath79-generic-openmesh_om2p-lc-squashfs-sysupgrade.bin", {
+            "label": "Open-Mesh OM2P-LC",
+            "boards": ("OpenMesh OM2P-LC",),
+        }),
+        ("ath79-generic-openmesh_om2p-v1-squashfs-sysupgrade.bin", {
+            "label": "Open-Mesh OM2P v1",
+            "boards": ("OpenMesh OM2P v1",),
+        }),
+        ("ath79-generic-openmesh_om2p-v2-squashfs-sysupgrade.bin", {
+            "label": "Open-Mesh OM2P v2",
+            "boards": ("OpenMesh OM2P v2",),
+        }),
+        ("ath79-generic-openmesh_om2p-v4-squashfs-sysupgrade.bin", {
+            "label": "Open-Mesh OM2P v4",
+            "boards": ("OpenMesh OM2P v4",),
+        }),
+    )

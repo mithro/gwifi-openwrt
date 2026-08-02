@@ -1,0 +1,20 @@
+---
+# Site-specific vars for monarto's wisp VM.  NO SECRETS IN THIS FILE.
+# Everything identical between sites lives in group_vars/openwisp2.yml.
+
+openwisp2_default_from_email: "openwisp@wisp.monarto.mithis.com"
+
+# Allow reaching the admin by IP as a fallback (DNS hiccups); the FQDN
+# remains the primary, certificate-matching access point.
+#
+# 10.2.4.2 is not a free choice: ten64.monarto's generated dnsmasq fragment
+# already reserves it —
+#   dhcp-host=02:00:0a:02:04:02,10.2.4.2,[2404:e80:a137:204::2],wisp
+# and create-vm.py refuses to build the VM if the two disagree.
+openwisp2_allowed_hosts:
+  - "10.2.4.2"
+
+certbot_certs:
+  - email: "claude@mith.ro"
+    domains:
+      - "wisp.monarto.mithis.com"

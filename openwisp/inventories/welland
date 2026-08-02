@@ -10,6 +10,11 @@
 #       -> tasks run on this machine directly (fast, no SSH fan-out, no
 #          ProxyJump fragility for the hundreds of connections a run makes).
 #
+# ONE host per file, on purpose.  With connection=local a second host listed
+# here would be configured onto whichever box the run happens on, silently
+# mis-configuring a site.  See D2 in
+# docs/superpowers/specs/2026-08-02-wisp-monarto-design.md.
+#
 # Run as user `tim` (passwordless sudo); `become: true` in the playbook
 # escalates per-task.
 
