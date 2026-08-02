@@ -10,6 +10,8 @@ See docs/superpowers/specs/2026-08-02-wisp-monarto-design.md for the design
 decisions, in particular D4 (refuse on MAC/reservation disagreement),
 D5 (monarto is IPv6-direct-only) and D6 (do not pin the QEMU machine version).
 """
+from __future__ import annotations
+
 import ipaddress
 from dataclasses import dataclass
 

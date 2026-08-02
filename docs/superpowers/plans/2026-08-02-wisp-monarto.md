@@ -41,6 +41,7 @@ modules, so tests load them via `importlib`:
 
 ```python
 import importlib.util
+import sys
 from pathlib import Path
 
 CV_PATH = Path(__file__).resolve().parents[3] / "openwisp" / "create-vm.py"
@@ -48,9 +49,24 @@ CV_PATH = Path(__file__).resolve().parents[3] / "openwisp" / "create-vm.py"
 def _load():
     spec = importlib.util.spec_from_file_location("create_vm", CV_PATH)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod        # REQUIRED -- see below
     spec.loader.exec_module(mod)
     return mod
 ```
+
+> **The `sys.modules` line is load-bearing.** A module that defines a
+> dataclass under `from __future__ import annotations` makes `dataclasses`
+> resolve its string annotations through `sys.modules[cls.__module__].__dict__`.
+> Unregistered, that lookup returns `None` and the import dies with a bare
+> `AttributeError: 'NoneType' object has no attribute '__dict__'` — pointing
+> nowhere near the real cause. `create-vm.py` uses exactly that combination
+> from Task 1 onward. This ordering is also what the importlib docs' own
+> "importing a source file directly" recipe uses.
+>
+> Note `tools/fleet/tests/test_presence_template.py` still has the
+> unregistered version. It passes today only because
+> `openwisp/build-templates.py` happens not to combine those two features;
+> worth fixing separately.
 
 **Two hard rules from the spec, violated at your peril:**
 
@@ -107,6 +123,7 @@ MACs) means the consistency test below can prove the table is self-consistent.
 # SPDX-License-Identifier: Apache-2.0
 """Offline tests for openwisp/create-vm.py."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -115,8 +132,19 @@ CV_PATH = Path(__file__).resolve().parents[3] / "openwisp" / "create-vm.py"
 
 
 def _load():
+    """Load the hyphenated script as a module.
+
+    ``sys.modules[spec.name] = mod`` BEFORE ``exec_module`` is required, not
+    optional: a module defining a dataclass under ``from __future__ import
+    annotations`` makes dataclasses resolve its string annotations via
+    ``sys.modules[cls.__module__].__dict__``.  Unregistered, that lookup
+    returns None and the import dies with a bare
+    ``AttributeError: 'NoneType' object has no attribute '__dict__'``.
+    This ordering is also what the importlib docs' own recipe uses.
+    """
     spec = importlib.util.spec_from_file_location("create_vm", CV_PATH)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 

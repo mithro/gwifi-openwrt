@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Offline tests for openwisp/create-vm.py."""
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,8 +10,19 @@ CV_PATH = Path(__file__).resolve().parents[3] / "openwisp" / "create-vm.py"
 
 
 def _load():
+    """Load the hyphenated script as a module.
+
+    ``sys.modules[spec.name] = mod`` BEFORE ``exec_module`` is required, not
+    optional: a module defining a dataclass under ``from __future__ import
+    annotations`` makes dataclasses resolve its string annotations via
+    ``sys.modules[cls.__module__].__dict__``.  Unregistered, that lookup
+    returns None and the import dies with a bare
+    ``AttributeError: 'NoneType' object has no attribute '__dict__'``.
+    This ordering is also what the importlib docs' own recipe uses.
+    """
     spec = importlib.util.spec_from_file_location("create_vm", CV_PATH)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
 
