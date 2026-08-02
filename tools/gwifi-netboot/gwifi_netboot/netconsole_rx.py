@@ -9,6 +9,7 @@ arrival. Runs as gwifi-netconsole.service on wisp (10.1.4.2:6666).
 
 from __future__ import annotations
 
+import argparse
 import socket
 import sys
 from datetime import datetime, timezone
@@ -37,6 +38,30 @@ def serve(bind: tuple[str, int] = DEFAULT_BIND,
                 fh.write(f"{stamp} {line}\n")
 
 
+def parse_bind(argv: list[str]) -> tuple[str, int]:
+    """Parse ``--bind HOST:PORT`` from argv, falling back to DEFAULT_BIND.
+
+    The bind address used to be the DEFAULT_BIND constant alone -- welland's
+    10.1.4.2 -- so a second site had no way to run this. The rendered unit
+    now passes its own site's address (see ``gwifi_netboot.sites``).
+
+    A malformed value exits rather than silently falling back: binding the
+    wrong address would look healthy in systemd while receiving nothing.
+    """
+    parser = argparse.ArgumentParser(prog="gwifi_netboot.netconsole_rx")
+    parser.add_argument("--bind", default=None,
+                        help=f"HOST:PORT (default {DEFAULT_BIND[0]}:"
+                             f"{DEFAULT_BIND[1]})")
+    args = parser.parse_args(argv)
+    if args.bind is None:
+        return DEFAULT_BIND
+    host, sep, port = args.bind.rpartition(":")
+    if not sep or not host:
+        parser.error(f"--bind must be HOST:PORT, got {args.bind!r}")
+    if not port.isdigit():
+        parser.error(f"--bind port must be numeric, got {port!r}")
+    return (host, int(port))
+
+
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_BIND[1]
-    serve((DEFAULT_BIND[0], port))
+    serve(parse_bind(sys.argv[1:]))

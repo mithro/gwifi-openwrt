@@ -44,3 +44,39 @@ def test_datagrams_land_in_per_source_files(tmp_path):
     assert "second line" in text
     assert "Kernel panic" in text
     assert all(line[:2] == "20" for line in text.splitlines())  # stamped
+
+
+# --- --bind parsing ----------------------------------------------------------
+# The receiver's bind address was the module constant DEFAULT_BIND =
+# ("10.1.4.2", 6666) -- welland's wisp. The rendered unit now passes the site's
+# address explicitly, so the entrypoint must accept one.
+
+
+def test_parse_bind_accepts_host_and_port():
+    from gwifi_netboot.netconsole_rx import parse_bind
+
+    assert parse_bind(["--bind", "10.2.4.2:6666"]) == ("10.2.4.2", 6666)
+
+
+def test_parse_bind_defaults_when_absent():
+    from gwifi_netboot.netconsole_rx import DEFAULT_BIND, parse_bind
+
+    assert parse_bind([]) == DEFAULT_BIND
+
+
+def test_parse_bind_rejects_a_missing_port():
+    import pytest
+
+    from gwifi_netboot.netconsole_rx import parse_bind
+
+    with pytest.raises(SystemExit):
+        parse_bind(["--bind", "10.2.4.2"])
+
+
+def test_parse_bind_rejects_a_non_numeric_port():
+    import pytest
+
+    from gwifi_netboot.netconsole_rx import parse_bind
+
+    with pytest.raises(SystemExit):
+        parse_bind(["--bind", "10.2.4.2:six"])
