@@ -76,6 +76,38 @@ RESERVATION = (
 )
 
 
+def test_ssh_argv_quotes_the_remote_command_as_a_single_word():
+    """ssh joins its trailing args with spaces and the REMOTE LOGIN SHELL
+    re-parses them.  Passing ["sh", "-c", "cd X && curl Y"] unquoted arrives
+    as `sh -c cd X && curl Y`, so the login shell runs a no-op `cd` and then
+    executes curl in $HOME -- which is exactly how the first monarto run
+    downloaded the image to the wrong directory."""
+    cv = _load()
+    argv = cv.ssh_argv(cv.SITES["monarto"],
+                       ["sh", "-c", "cd ~/wisp-staging && curl -O http://x/y"])
+    assert argv[-1] == "sh -c 'cd ~/wisp-staging && curl -O http://x/y'"
+    # everything before the last element is ssh's own options + the host
+    assert argv[-2] == "ten64.monarto.mithis.com"
+
+
+def test_ssh_argv_keeps_simple_commands_intact():
+    cv = _load()
+    argv = cv.ssh_argv(cv.SITES["welland"], ["sudo", "cat", "/etc/hosts"])
+    assert argv[-1] == "sudo cat /etc/hosts"
+
+
+def test_ssh_argv_pins_ipv6_only_for_monarto():
+    cv = _load()
+    assert "-6" in cv.ssh_argv(cv.SITES["monarto"], ["true"])
+    assert "-6" not in cv.ssh_argv(cv.SITES["welland"], ["true"])
+
+
+def test_ssh_argv_quotes_paths_containing_spaces():
+    cv = _load()
+    argv = cv.ssh_argv(cv.SITES["monarto"], ["cat", "/tmp/a b/c"])
+    assert argv[-1] == "cat '/tmp/a b/c'"
+
+
 def test_parse_reservation_extracts_mac_and_ips():
     cv = _load()
     r = cv.parse_reservation(RESERVATION)

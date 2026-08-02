@@ -15,8 +15,10 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import re
+import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 
@@ -108,15 +110,30 @@ def parse_reservation(text: str) -> Reservation:
     raise PreflightError(f"no dhcp-host line found in {RESERVATION_PATH}")
 
 
+def ssh_argv(site: Site, argv: Sequence[str]) -> list[str]:
+    """Build the local ssh argv, with the remote command as ONE quoted word.
+
+    ssh concatenates its trailing arguments with spaces and hands the result
+    to the remote LOGIN SHELL, which parses it again.  Passing argv through
+    unquoted therefore loses all structure: ``["sh", "-c", "cd X && curl Y"]``
+    arrives as ``sh -c cd X && curl Y``, where the login shell runs a no-op
+    ``cd`` (with X as $0) and then runs curl in ITS OWN cwd -- $HOME.
+
+    ``shlex.join`` collapses argv into a single correctly-quoted word, so the
+    remote shell passes it through intact.  Tilde still expands, because the
+    expansion happens in the inner shell.
+    """
+    return ["ssh", *site.ssh_opts, "-o", "ConnectTimeout=15",
+            "-o", "BatchMode=yes", site.ten64, shlex.join(argv)]
+
+
 def _ssh(site: Site, *argv: str) -> str:
     """Run a command on the site's ten64 and return stdout.
 
     ``site.ssh_opts`` carries the IPv6 pin for monarto (D5).  stderr is
     deliberately NOT suppressed: it is captured and folded into the error.
     """
-    cmd = ["ssh", *site.ssh_opts, "-o", "ConnectTimeout=15",
-           "-o", "BatchMode=yes", site.ten64, *argv]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(ssh_argv(site, argv), capture_output=True, text=True)
     if proc.returncode != 0:
         raise PreflightError(
             f"ssh to {site.ten64} failed (exit {proc.returncode}): "
