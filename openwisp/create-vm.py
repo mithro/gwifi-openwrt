@@ -307,13 +307,40 @@ def check_no_existing_domain(site: Site) -> None:
             "refusing to redefine it")
 
 
+def staging_dir(home: str) -> str:
+    """Absolute staging path under the remote home.
+
+    MUST be absolute.  ``ssh_argv`` quotes every argument, so a bare argv
+    element is entirely literal -- no tilde expansion, no ``$VAR``, no glob.
+    ``mkdir -p '~/wisp-staging'`` therefore creates a directory literally
+    NAMED ``~``.  Shell features only work inside an explicit ``sh -c``.
+
+    (Not /tmp, per the repo convention.)
+    """
+    return f"{home}/wisp-staging"
+
+
+def remote_home(site: Site) -> str:
+    """Resolve the ten64's home directory to an absolute path.
+
+    Done once so every staging path below is absolute and unambiguous.  The
+    expansion happens inside ``sh -c``, which is the only place a shell
+    feature survives ssh_argv's quoting.
+    """
+    home = _ssh(site, "sh", "-c", 'printf %s "$HOME"').strip()
+    if not home.startswith("/"):
+        raise PreflightError(
+            f"{site.name}: could not resolve remote $HOME (got {home!r})")
+    return home
+
+
 def _apply(site: Site, xml: str, seed: dict[str, str]) -> None:  # pragma: no cover
     """Stage the image and seed, then define and start the VM.
 
     NOTE: the root disk is the DOWNLOADED cloud image, grown in place --
     never `qemu-img create`, which would yield a blank disk with no OS.
     """
-    stage = "~/wisp-staging"                     # not /tmp, per repo convention
+    stage = staging_dir(remote_home(site))
     _ssh(site, "mkdir", "-p", stage)
 
     # 1. Fetch the guest image and verify it against Debian's SHA512SUMS.

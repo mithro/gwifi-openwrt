@@ -102,6 +102,31 @@ def test_ssh_argv_pins_ipv6_only_for_monarto():
     assert "-6" not in cv.ssh_argv(cv.SITES["welland"], ["true"])
 
 
+def test_staging_dir_is_absolute_never_a_tilde():
+    """Because ssh_argv quotes every argument, `~` is NEVER expanded for a
+    bare argv element -- `mkdir -p '~/wisp-staging'` creates a directory
+    literally named `~`.  Staging paths must therefore be absolute."""
+    cv = _load()
+    stage = cv.staging_dir("/home/tim")
+    assert stage.startswith("/")
+    assert "~" not in stage
+
+
+def test_remote_home_rejects_a_non_absolute_answer(monkeypatch):
+    """A garbled $HOME must fail loudly rather than silently staging into a
+    relative path."""
+    cv = _load()
+    monkeypatch.setattr(cv, "_ssh", lambda site, *a: "not-a-path\n")
+    with pytest.raises(cv.PreflightError, match="HOME"):
+        cv.remote_home(cv.SITES["monarto"])
+
+
+def test_remote_home_accepts_and_strips_a_real_path(monkeypatch):
+    cv = _load()
+    monkeypatch.setattr(cv, "_ssh", lambda site, *a: "/home/tim\n")
+    assert cv.remote_home(cv.SITES["monarto"]) == "/home/tim"
+
+
 def test_ssh_argv_quotes_paths_containing_spaces():
     cv = _load()
     argv = cv.ssh_argv(cv.SITES["monarto"], ["cat", "/tmp/a b/c"])
