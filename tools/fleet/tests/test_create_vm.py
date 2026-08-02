@@ -2,6 +2,7 @@
 """Offline tests for openwisp/create-vm.py."""
 import importlib.util
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -114,3 +115,56 @@ def test_check_reservation_refuses_ip_mismatch(monkeypatch):
     monkeypatch.setattr(cv, "_read_reservation", lambda site: wrong)
     with pytest.raises(cv.PreflightError, match="IPv4"):
         cv.check_reservation(cv.SITES["monarto"])
+
+
+def test_domain_xml_is_wellformed_and_named():
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    assert root.findtext("name") == "wisp"
+
+
+def test_domain_xml_matches_welland_shape():
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    assert root.findtext("memory") == "4194304"          # 4 GiB, as welland
+    assert root.findtext("vcpu") == "2"
+    os_type = root.find("os/type")
+    assert os_type.get("arch") == "aarch64"
+
+
+def test_domain_xml_does_not_pin_machine_version():
+    """D6: welland pins virt-10.2 but the hosts run different QEMU."""
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    assert root.find("os/type").get("machine") == "virt"
+
+
+def test_domain_xml_uses_uefi_loader():
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    assert root.findtext("os/loader") == "/usr/share/AAVMF/AAVMF_CODE.ms.fd"
+
+
+def test_domain_xml_nic_is_on_the_right_bridge_with_the_right_mac():
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    iface = root.find("devices/interface")
+    assert iface.find("source").get("bridge") == "br-wifi"
+    assert iface.find("mac").get("address") == "02:00:0a:02:04:02"
+    assert iface.find("model").get("type") == "virtio"
+
+
+def test_domain_xml_has_virtio_root_and_seed_cdrom():
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["monarto"]))
+    targets = {d.find("target").get("dev"): d for d in root.findall("devices/disk")}
+    assert targets["vda"].find("target").get("bus") == "virtio"
+    assert targets["vda"].find("source").get("file").endswith("/wisp.qcow2")
+    assert targets["sda"].find("source").get("file").endswith("/wisp-seed.iso")
+
+
+def test_welland_xml_carries_its_own_identity():
+    """The generator must be site-driven, not monarto-hardcoded."""
+    cv = _load()
+    root = ET.fromstring(cv.domain_xml(cv.SITES["welland"]))
+    assert root.find("devices/interface/mac").get("address") == "02:00:0a:01:04:02"

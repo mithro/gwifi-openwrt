@@ -139,3 +139,61 @@ def check_reservation(site: Site) -> None:
     if got.ipv4 != site.ipv4:
         raise PreflightError(
             f"{site.name}: reservation IPv4 {got.ipv4} != planned {site.ipv4}")
+
+
+IMAGES = "/var/lib/libvirt/images"
+MEMORY_KIB = 4194304        # 4 GiB — matches welland
+VCPUS = 2
+LOADER = "/usr/share/AAVMF/AAVMF_CODE.ms.fd"
+
+
+def domain_xml(site: Site) -> str:
+    """Render the libvirt domain XML for a site's wisp VM.
+
+    Deliberately uses the UNVERSIONED ``virt`` machine alias (D6): welland's
+    domain says ``virt-10.2``, but welland runs QEMU 11.0.3 and monarto
+    10.2.1, so a pinned version is portable only by luck.  libvirt
+    canonicalises ``virt`` to the host's newest on define.
+    """
+    return f"""<domain type='kvm'>
+  <name>wisp</name>
+  <memory unit='KiB'>{MEMORY_KIB}</memory>
+  <currentMemory unit='KiB'>{MEMORY_KIB}</currentMemory>
+  <vcpu placement='static'>{VCPUS}</vcpu>
+  <os>
+    <type arch='aarch64' machine='virt'>hvm</type>
+    <loader readonly='yes' type='pflash' format='raw'>{LOADER}</loader>
+  </os>
+  <features><acpi/><gic version='3'/></features>
+  <cpu mode='host-passthrough' check='none'/>
+  <clock offset='utc'/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+    <emulator>/usr/bin/qemu-system-aarch64</emulator>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='{IMAGES}/wisp.qcow2'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <disk type='file' device='cdrom'>
+      <driver name='qemu' type='raw'/>
+      <source file='{IMAGES}/wisp-seed.iso'/>
+      <target dev='sda' bus='scsi'/>
+      <readonly/>
+    </disk>
+    <controller type='scsi' model='virtio-scsi'/>
+    <interface type='bridge'>
+      <mac address='{site.mac}'/>
+      <source bridge='{site.bridge}'/>
+      <model type='virtio'/>
+    </interface>
+    <console type='pty'><target type='serial' port='0'/></console>
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+    <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>
+  </devices>
+</domain>
+"""
