@@ -43,13 +43,28 @@ def test_each_inventory_names_exactly_one_host_run_locally():
         assert "ansible_connection=local" in body
 
 
-def test_allowed_hosts_is_the_current_address_per_site():
-    """welland's playbook said 10.1.5.2 — an address the VM lost in the
-    VLAN 4 migration."""
+def test_allowed_hosts_never_lists_the_bare_wisp_ip():
+    """The bare IP must belong to the gwifi-images vhost, NOT OpenWISP.
+
+    This test used to assert the OPPOSITE -- that each site listed its own
+    10.X.4.2 -- which is the assumption that broke every eMMC install at
+    monarto.  The openwisp2 role derives nginx's server_name from this list:
+
+        server_name {{ inventory_hostname }}{% for h in openwisp2_allowed_hosts %} {{ h }}{% endfor %};
+
+    so listing the IP makes the OpenWISP vhost own Host <ip> on :80 and 301
+    it to HTTPS.  The netbooted installer fetches the factory image as
+    http://<ip>/<factory>.bin -- plain HTTP, by IP literal, with no TLS
+    stack in the image -- so it cannot follow that redirect.
+
+    Nothing needs OpenWISP by IP: the pucks' agent is configured with the
+    FQDN, which is also the only name the certificate matches.
+    """
     for fqdn, ip in (("wisp.welland.mithis.com", "10.1.4.2"),
                      ("wisp.monarto.mithis.com", "10.2.4.2")):
         v = yaml.safe_load((OW / "host_vars" / f"{fqdn}.yml").read_text())
-        assert v["openwisp2_allowed_hosts"] == [ip], fqdn
+        assert v["openwisp2_allowed_hosts"] == [], fqdn
+        assert ip not in (v["openwisp2_allowed_hosts"] or []), fqdn
 
 
 def _walk(node):

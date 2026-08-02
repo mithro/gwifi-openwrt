@@ -102,6 +102,47 @@ conf-dir=/etc/dnsmasq.d/gwifi-generated
 """
 
 
+def gwifi_images_vhost(site: Site) -> str:
+    """Render ``/etc/nginx/sites-available/gwifi-images`` for a site.
+
+    The netbooted installer fetches the factory image with
+
+        uclient-fetch -O /tmp/factory.bin "http://$SERVER/$FILENAME"
+
+    -- plain HTTP on port 80, addressed by IP literal, because all the
+    installer knows is the ``tftpserverip=`` it was handed on the kernel
+    command line.  So *something* must own Host ``<wisp_ip>`` on :80 and
+    serve /srv/gwifi/images.
+
+    Like the dnsmasq config, this existed ONLY as a hand-written file on
+    wisp.welland.  monarto had no such vhost, and worse, its OpenWISP
+    vhost claimed the bare IP itself -- the role builds
+
+        server_name {{ inventory_hostname }}{% for h in openwisp2_allowed_hosts %} {{ h }}{% endfor %};
+
+    so listing the IP in ``openwisp2_allowed_hosts`` handed :80 to
+    OpenWISP, which 301s to HTTPS.  The minimal installer image has no
+    TLS stack (and a cert could never match an IP), so the image fetch
+    died there.  See the host_vars files: the bare IP belongs to THIS
+    vhost, and devices reach OpenWISP by FQDN anyway.
+    """
+    return f"""\
+# gale puck installer artifact server -- /srv/gwifi/images (factory.bin,
+# manifest.json). Netbooted installers fetch by IP literal, so this vhost
+# owns Host "{site.wisp_ip}" on :80; name-based requests still go to the
+# OpenWISP vhost (which must NOT list the bare IP in server_name).
+# Rendered by gwifi_netboot.sites for site {site.name!r} -- do not hand-edit.
+server {{
+    listen 80;
+    server_name {site.wisp_ip};
+    root /srv/gwifi/images;
+    autoindex off;
+    add_header Cache-Control "no-cache";
+    location / {{ try_files $uri =404; }}
+}}
+"""
+
+
 def netboot_unit(site: Site) -> str:
     """Render gwifi-netboot.service with the site's bind address."""
     return f"""\

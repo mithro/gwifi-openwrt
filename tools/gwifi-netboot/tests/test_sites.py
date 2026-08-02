@@ -93,6 +93,52 @@ def test_welland_dnsmasq_conf_reproduces_the_live_file():
     assert "dhcp-option=option:router,10.1.4.1" in conf
 
 
+# --- nginx image-server vhost ------------------------------------------------
+# The installer fetches the factory image over plain HTTP on :80 by IP
+# literal.  welland served that from a hand-written vhost that was never in
+# the repo; monarto had none AND its OpenWISP vhost claimed the bare IP, so
+# the fetch got a 301 to HTTPS the installer cannot follow.
+
+
+def test_images_vhost_owns_the_bare_ip_on_port_80():
+    conf = sites.gwifi_images_vhost(sites.SITES["monarto"])
+    assert "listen 80;" in conf
+    assert "server_name 10.2.4.2;" in conf
+
+
+def test_images_vhost_serves_the_published_image_dir():
+    conf = sites.gwifi_images_vhost(sites.SITES["monarto"])
+    assert "root /srv/gwifi/images;" in conf
+
+
+def test_images_vhost_never_redirects_to_https():
+    """A 301 to https:// is exactly what broke monarto: the minimal
+    installer has no TLS stack, and a cert cannot match an IP."""
+    conf = sites.gwifi_images_vhost(sites.SITES["monarto"])
+    assert "return 301" not in conf
+    assert "https" not in conf
+
+
+def test_images_vhost_is_site_specific():
+    conf = sites.gwifi_images_vhost(sites.SITES["monarto"])
+    assert "10.1.4." not in conf
+
+
+def test_welland_images_vhost_reproduces_the_live_file():
+    """Pins the file that is already serving welland's installs."""
+    conf = sites.gwifi_images_vhost(sites.SITES["welland"])
+    assert "server_name 10.1.4.2;" in conf
+    assert "root /srv/gwifi/images;" in conf
+    assert "autoindex off;" in conf
+
+
+def test_images_vhost_does_not_list_a_hostname():
+    """If it also answered to the FQDN it would shadow OpenWISP's vhost."""
+    for name in sites.SITES:
+        conf = sites.gwifi_images_vhost(sites.SITES[name])
+        assert "mithis.com" not in conf.split("server {")[1]
+
+
 # --- systemd unit rendering --------------------------------------------------
 
 

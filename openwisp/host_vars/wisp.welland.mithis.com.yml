@@ -4,17 +4,22 @@
 
 openwisp2_default_from_email: "openwisp@wisp.welland.mithis.com"
 
-# Allow reaching the admin by IP as a fallback (DNS hiccups); the FQDN
-# remains the primary, certificate-matching access point.
+# DELIBERATELY EMPTY — do not add the bare IP here.
 #
-# This is 10.1.4.2, NOT the 10.1.5.2 this file's predecessor carried: the VM
-# moved from br-net/VLAN 5 to br-wifi/VLAN 4 (see
-# docs/wisp-netboot-install-plan.md Tasks 2.2-2.3) and the playbook was never
-# updated, so ALLOWED_HOSTS named an address the VM no longer had.  Confirmed
-# against the live VM's MAC (02:00:0a:01:04:02 — the scheme encodes the IPv4),
-# DNS, and the ten64 vhost's `proxy_pass http://10.1.4.2`.
-openwisp2_allowed_hosts:
-  - "10.1.4.2"
+# This previously listed 10.1.4.2, which was a LATENT BREAKAGE: welland's
+# live nginx vhost predates this variable and so does not carry the IP,
+# which is the only reason welland's eMMC installs still worked.  The next
+# `make deploy-nginx` would have regenerated
+#   server_name wisp.welland.mithis.com 10.1.4.2;
+# handing :80 to OpenWISP, which 301s to HTTPS — and the netbooted installer
+# fetches the factory image as http://10.1.4.2/<factory>.bin by IP literal
+# over plain HTTP, with no TLS stack.  That is exactly how monarto broke.
+#
+# The bare IP belongs to the gwifi-images vhost (rendered by
+# gwifi_netboot.sites).  Nothing needs OpenWISP by IP: the pucks' agent uses
+# `openwisp.http.url='https://wisp.welland.mithis.com'`, the only name the
+# certificate matches.
+openwisp2_allowed_hosts: []
 
 certbot_certs:
   - email: "claude@mith.ro"

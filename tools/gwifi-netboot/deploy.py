@@ -74,7 +74,9 @@ def main() -> int:
     (staged / "gwifi-netconsole.service").write_text(
         sitelib.netconsole_unit(site))
     (staged / "gwifi.conf").write_text(sitelib.dnsmasq_conf(site))
-    print(f"rendered units + dnsmasq conf for {site.name} -> {staged}")
+    (staged / "gwifi-images").write_text(sitelib.gwifi_images_vhost(site))
+    print(f"rendered units + dnsmasq conf + image vhost for {site.name} "
+          f"-> {staged}")
     if dry:
         print("--- gwifi.conf ---")
         print((staged / "gwifi.conf").read_text())
@@ -99,6 +101,17 @@ def main() -> int:
         "/etc/dnsmasq.d/gwifi.conf && "
         "sudo systemctl daemon-reload")
 
+    # The image server: the installer fetches the factory image over plain
+    # HTTP on :80 by IP literal, so this vhost must own the bare IP.  It is
+    # separate from the OpenWISP vhost, which must NOT list the bare IP in
+    # server_name (see host_vars) or it wins :80 and 301s to HTTPS -- which
+    # the minimal installer cannot follow.
+    ssh("sudo install -m 0644 ~/gwifi-netboot-staging/rendered/gwifi-images "
+        "/etc/nginx/sites-available/gwifi-images && "
+        "sudo ln -sfn ../sites-available/gwifi-images "
+        "/etc/nginx/sites-enabled/gwifi-images && "
+        "sudo nginx -t && sudo systemctl reload nginx")
+
     # dnsmasq first: the netboot unit is ordered After=dnsmasq.service, and it
     # is dnsmasq that actually answers the pucks.  Install it if absent -- a
     # freshly built wisp has no dnsmasq, and without it nothing serves DHCP or
@@ -122,6 +135,12 @@ def main() -> int:
     # Smoke test against THIS site's address.
     ssh("sleep 2 && systemctl is-active gwifi-netboot gwifi-netconsole && "
         f"curl -sf http://{site.wisp_ip}:8080/status | head -c 200 && echo")
+    # Probe the image server with a name that cannot exist: 404 means this
+    # vhost owns the bare IP (try_files =404); 301 means the OpenWISP vhost
+    # took :80 back and installer image fetches will fail.
+    ssh(f"curl -sS -o /dev/null -w 'image vhost -> %{{http_code}} "
+        f"(404 = OK, 301 = OpenWISP owns :80)\\n' "
+        f"http://{site.wisp_ip}/__deploy_probe__")
     print(f"deploy OK ({site.name})")
     return 0
 
