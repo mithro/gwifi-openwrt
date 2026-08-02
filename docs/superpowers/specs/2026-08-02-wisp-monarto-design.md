@@ -36,13 +36,30 @@ built separately:
 | 1 | **Controller base + parameterisation** | — | **this spec** |
 | 2 | Netboot stack (`gwifi-netboot`, netconsole, dnsmasq) | 1 | later |
 | 3 | Templates, multi-site (`build-templates.py`) | 1 | later |
-| 4 | Device onboarding | flash pipeline | **moot — no APs at monarto** |
-| 5 | Presence + remote syslog | 3, 4 | **moot until 4** |
+| 4 | Device onboarding | 3, **netboot (2)** | **LIVE — 4 pucks deployed** |
+| 5 | Presence + remote syslog | 3, 4 | pending 4 |
 
-Sub-projects 4 and 5 are moot as of 2026-08-02: monarto has no wifi APs.
-The `node{1,2,3}-wifi-google.monarto.mithis.com` names in DNS are
-spreadsheet placeholders, and `ip neigh show dev br-wifi` on ten64.monarto
-lists only `10.2.4.2` and `10.2.4.3`, both `FAILED`.
+**Updated 2026-08-02 (superseding the original "no APs at monarto"):**
+puck05, puck13, puck14 and puck15 have been physically deployed to monarto.
+Sub-projects 4 and 5 are no longer moot.
+
+**None of them is on the network yet**, verified on ten64.monarto: no
+Google-OUI (`58:cb:52`) address appears in *any* of the eight
+`dnsmasq.*.leases` files, none appears in ARP on any bridge, `br-wifi` has
+no neighbours but the two `FAILED` wisp entries, and `dnsmasq@wifi` logged
+no DHCP in 24 h.
+
+The likely cause is structural rather than a fault, and it re-orders the
+plan: puck13/14/15 were flashed with the **TFTP-first depthcharge**, so
+they netboot — and the netboot server (`gwifi-netboot` + a dnsmasq serving
+`.100–.199` with TFTP) is a **wisp-VM service that monarto does not yet
+have**. With no server answering, depthcharge times out and falls back to
+eMMC vboot; a puck whose eMMC holds no fleet image then WDT-reboot-loops
+(see `docs/wisp-netboot-install-design.md` and the puck09 precedent).
+
+**Consequence:** sub-project 2 (netboot stack) is now on the critical path
+to those four pucks working, and it depends on this sub-project. The
+order 1 → 2 is unchanged; its urgency is not.
 
 ## Current state (verified live 2026-08-01/02)
 
