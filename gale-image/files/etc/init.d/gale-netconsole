@@ -7,10 +7,35 @@
 # source IP/interface at module load).
 START=99
 
-TARGET_IP="10.1.4.2"
-TARGET_MAC="02:00:0a:01:04:02"   # wisp net0 (stable; encodes 10.1.4.2)
 TARGET_PORT="6666"
 DEV="br-mgmt"
+
+# wisp's address is DERIVED from the puck's own address, never hardcoded.
+#
+# It used to be TARGET_IP="10.1.4.2" / TARGET_MAC="02:00:0a:01:04:02" --
+# welland's wisp.  A monarto puck running this image would have streamed
+# its kernel log across the WAN to the WRONG SITE, and nothing would have
+# reported it: netconsole is fire-and-forget UDP, so the modprobe still
+# succeeds and the "streaming printk" log line still appears.  Kernel
+# panics -- the whole reason this exists, since field pucks have no serial
+# console -- would simply never arrive.
+#
+# Two site-invariants make the derivation safe:
+#   * wisp is always host .2 on the puck's own wifi-VLAN /24
+#     (10.1.4.2 at welland, 10.2.4.2 at monarto), and
+#   * the fleet MAC scheme encodes the IPv4 verbatim: 02:00: followed by
+#     the four octets in hex, so 10.2.4.2 <-> 02:00:0a:02:04:02.
+# wisp is on-link (same VLAN 4 /24 as the puck), so its own MAC is the
+# correct link-layer target -- no gateway indirection.
+wisp_ip_for() {      # $1 = this puck's br-mgmt address
+    echo "${1%.*}.2"
+}
+
+wisp_mac_for() {     # $1 = wisp's IPv4
+    # Deliberately unquoted: tr turns the dots into spaces so the four
+    # octets word-split into printf's four %02x arguments.
+    printf '02:00:%02x:%02x:%02x:%02x' $(echo "$1" | tr '.' ' ')
+}
 
 boot() {
     i=0
@@ -24,8 +49,10 @@ boot() {
         logger -t gale-netconsole "no address on $DEV; netconsole not started"
         return 1
     fi
+    TARGET_IP=$(wisp_ip_for "$SRC")
+    TARGET_MAC=$(wisp_mac_for "$TARGET_IP")
     # '+' = extended netconsole (release feature not needed but harmless)
     modprobe netconsole "netconsole=+6665@$SRC/$DEV,$TARGET_PORT@$TARGET_IP/$TARGET_MAC" \
-        && logger -t gale-netconsole "streaming printk from $SRC to $TARGET_IP:$TARGET_PORT" \
+        && logger -t gale-netconsole "streaming printk from $SRC to $TARGET_IP:$TARGET_PORT ($TARGET_MAC)" \
         || logger -t gale-netconsole "netconsole modprobe FAILED"
 }
