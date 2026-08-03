@@ -180,7 +180,6 @@ class PresenceDetector(Thread):
 
         ok = True
         if device_slug not in self._registered_clients:
-            self._registered_clients.add(device_slug)
             body = {
                 "state_topic": f"homeassistant/device_tracker/{device_slug}/state",
                 "json_attributes_topic": f"homeassistant/device_tracker/{device_slug}/state",
@@ -197,10 +196,23 @@ class PresenceDetector(Thread):
                 body = Settings.deep_merge(body, self._settings.params[device])
                 if "name" not in body["device"]:
                     body["device"]["name"] = body["name"]
-            # Register the device in HA
-            ok &= self._publish(
+            # Register the device in HA.
+            #
+            # LOCAL DEVIATION from upstream: only remember the device as
+            # registered once this publish actually SUCCEEDS. Upstream adds it
+            # to _registered_clients before publishing, so a config publish
+            # that fails because the broker is not connected yet is never
+            # retried -- the device keeps publishing state to a topic HA never
+            # subscribed to, and no entity is ever created. Logs look healthy
+            # ("is now at home") while HA shows nothing. Hit fleet-wide at
+            # monarto on 2026-08-03, when the broker rejected auth long enough
+            # for every device to be marked registered while disconnected.
+            registered = self._publish(
                 f"homeassistant/device_tracker/{device_slug}/config", json.dumps(body)
             )
+            if registered:
+                self._registered_clients.add(device_slug)
+            ok &= registered
         # Set the state of the device
         state = {
             "in_zones": [f"zone.{self._settings.location}"] if seen else [],

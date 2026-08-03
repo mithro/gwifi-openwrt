@@ -71,3 +71,27 @@ def test_parse_results_duplicate_raises():
     with pytest.raises(ValueError, match="duplicate"):
         parse_results("RESULT apk OK a\nRESULT apk OK b\n"
                       "RESULT files OK -\nRESULT service OK x\nRESULT mqtt OK x\n")
+
+
+def _load_deploy_presence():
+    """deploy_presence.py is a CLI script, not a package module."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "deploy_presence.py"
+    spec = importlib.util.spec_from_file_location("deploy_presence", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_deploy_presence_knows_both_sites():
+    assert set(_load_deploy_presence().SITES) == {"welland", "monarto"}
+
+
+def test_each_site_registry_is_its_own_wisp():
+    # the registry host is that site's wisp VM at <net>.4.2; a copy-paste
+    # slip here would deploy monarto using welland's puck list
+    sites = _load_deploy_presence().SITES
+    assert sites["welland"] == "tim@10.1.4.2"
+    assert sites["monarto"] == "tim@10.2.4.2"

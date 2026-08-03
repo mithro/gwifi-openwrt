@@ -107,3 +107,24 @@ def test_django_format_still_works_with_presence_placeholder():
     # catch indentation/syntax errors locally instead of on the live wisp shell
     ast.parse(rendered)
     compile(rendered, "<djangosnippet>", "exec")
+
+
+def test_device_is_only_marked_registered_after_a_successful_config_publish():
+    """Local deviation from upstream presence-detector.
+
+    Upstream adds the device to _registered_clients BEFORE publishing its
+    discovery config. If that publish fails (broker not connected yet) the
+    config is never retried: state keeps flowing to a topic HA never
+    subscribed to and no entity is ever created. Monarto hit this fleet-wide
+    on 2026-08-03. Guard the ordering so a regression fails here.
+    """
+    src = (BT_PATH.parent / "presence" / "presence-detector.py").read_text()
+    body = src[src.index("def _ha_seen"):src.index("def _ha_seen") + 2500]
+
+    add = body.index("self._registered_clients.add(device_slug)")
+    publish = body.index('f"homeassistant/device_tracker/{device_slug}/config"')
+    assert publish < add, (
+        "_registered_clients.add() must come AFTER the config publish, "
+        "so a failed publish is retried rather than silently skipped")
+    # and it must be conditional on the publish result, not unconditional
+    assert "if registered:" in body
