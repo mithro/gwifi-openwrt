@@ -77,11 +77,54 @@ def test_a_monarto_puck_never_targets_welland():
     assert "0a:01:" not in mac
 
 
+def test_no_dhcp_fallback_broadcasts_instead_of_giving_up():
+    """The script must not `return 1` when br-mgmt has no address.
+
+    It used to, which made the channel useless for the failure you most
+    need it for: a puck that boots but never gets a lease emitted
+    nothing, so a dead image and a dead network looked identical from the
+    wire.  Now it broadcasts from an IPv4 link-local address instead.
+    """
+    text = SCRIPT.read_text()
+    body = text.split("boot()")[1]
+    assert "169.254." in body, "no link-local fallback source"
+    assert "255.255.255.255" in body, "fallback must broadcast"
+    assert "ff:ff:ff:ff:ff:ff" in body, "fallback needs a broadcast MAC"
+    # The old give-up path must be gone: no bare `return 1` for the
+    # no-address case.
+    assert "netconsole not started" not in body
+
+
+def test_fallback_source_is_deterministic_per_puck():
+    """Two silent pucks must not collide on the same link-local address.
+
+    Derived from the last two MAC octets, so it is stable across reboots
+    and distinct per unit.
+    """
+    snippet = (
+        'MAC=24:05:88:39:8a:08\n'
+        'X=$(printf "%d" "0x$(echo "$MAC" | cut -d: -f5)")\n'
+        'Y=$(printf "%d" "0x$(echo "$MAC" | cut -d: -f6)")\n'
+        'echo "169.254.$X.$Y"\n'
+    )
+    assert _sh(snippet) == "169.254.138.8"
+
+    other = snippet.replace("24:05:88:39:8a:08", "58:cb:52:ed:b0:f9")
+    assert _sh(other) == "169.254.176.249"
+
+
 def test_no_hardcoded_site_address_remains_in_the_script():
     """Guards against a future edit reintroducing a literal target."""
+    # A TARGET_* value is legitimate only if it is DERIVED from the puck's
+    # own address, or is the site-agnostic broadcast fallback.  Anything
+    # else is a site literal creeping back in.
+    BROADCAST = {'"255.255.255.255"', '"ff:ff:ff:ff:ff:ff"'}
     text = SCRIPT.read_text()
     assignments = re.findall(r'^\s*TARGET_(?:IP|MAC)=(.+)$', text, re.M)
+    assert assignments, "no TARGET_* assignments found -- test is vacuous"
     for value in assignments:
+        value = value.strip()
         assert "10.1.4.2" not in value, f"hardcoded welland target: {value}"
         assert "02:00:0a:01:04:02" not in value, f"hardcoded MAC: {value}"
-        assert "$(" in value, f"TARGET_* must be derived, got: {value}"
+        assert "$(" in value or value in BROADCAST, \
+            f"TARGET_* must be derived or the broadcast fallback: {value}"

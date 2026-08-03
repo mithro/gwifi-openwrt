@@ -148,10 +148,23 @@ def test_netboot_unit_binds_the_sites_address():
     assert "10.1.4.2" not in unit
 
 
-def test_netconsole_unit_binds_the_sites_address():
-    unit = sites.netconsole_unit(sites.SITES["monarto"])
-    assert "--bind 10.2.4.2:6666" in unit
-    assert "10.1.4.2" not in unit
+def test_netconsole_unit_binds_all_addresses_to_catch_broadcast():
+    """0.0.0.0, NOT the site address -- and that is deliberate.
+
+    A puck that boots but never gets a DHCP lease cannot know its own
+    address or wisp's (wisp is derived from the puck's), so
+    gale-netconsole falls back to BROADCASTING its kernel log from an
+    IPv4 link-local source.  A socket bound to a specific unicast address
+    never receives broadcast, so binding the site address would silently
+    drop exactly the logs that matter most.
+    """
+    for name in sites.SITES:
+        unit = sites.netconsole_unit(sites.SITES[name])
+        assert "--bind 0.0.0.0:6666" in unit, name
+        # No site address may appear -- binding one would break the
+        # fallback, and a welland literal would be the old site-leak bug.
+        assert "10.1.4.2" not in unit, name
+        assert "10.2.4.2" not in unit, name
 
 
 def test_units_keep_their_ordering_and_restart_policy():

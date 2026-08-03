@@ -171,7 +171,18 @@ WantedBy=multi-user.target
 
 
 def netconsole_unit(site: Site) -> str:
-    """Render gwifi-netconsole.service with the site's bind address."""
+    """Render gwifi-netconsole.service.
+
+    Binds 0.0.0.0, NOT the site address, on purpose. A puck that boots but
+    never gets a DHCP lease cannot know its own address or wisp's (wisp is
+    derived from the puck's), so ``gale-netconsole`` falls back to
+    broadcasting its kernel log from an IPv4 link-local source. A socket
+    bound to a specific unicast address never receives broadcast, so
+    binding ``{site.wisp_ip}`` here would silently drop exactly the logs
+    that matter most -- a puck too broken to get an address.
+
+    Per-puck separation is unaffected: the receiver files by SOURCE ip.
+    """
     return f"""\
 # SPDX-License-Identifier: Apache-2.0
 # Netconsole receiver for the gale fleet's kernel logs (no field serial).
@@ -184,7 +195,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/gwifi-netboot
-ExecStart=/usr/bin/python3 -m gwifi_netboot.netconsole_rx --bind {site.wisp_ip}:6666
+ExecStart=/usr/bin/python3 -m gwifi_netboot.netconsole_rx --bind 0.0.0.0:6666
 Restart=on-failure
 RestartSec=5
 User=root
