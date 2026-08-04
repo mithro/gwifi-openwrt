@@ -163,3 +163,34 @@ def test_monarto_script_targets_no_welland_endpoint():
                  "ha.welland.mithis.com"):
         assert host not in script, f"monarto script points at {host}"
     assert "10.1.4." not in script, "monarto script carries a welland address"
+
+
+# ------------------------------------------------------------------- usteer
+
+def test_usteer_section_is_named_so_merges_are_idempotent():
+    """openwisp-config MERGES /etc/config/* instead of overwriting them, and a
+    merge matches sections by NAME. An anonymous `config usteer` has no name to
+    match, so every apply appended another copy -- five sections per welland
+    puck and four per monarto puck by 2026-08-04, auto-named usteer2/3/4.
+
+    Naming it 'usteer1' (the section the gale image itself ships) makes the
+    merge an in-place update, so applying N times is the same as applying once.
+    """
+    first = bt.USTEER_CONFIG.strip().splitlines()[0]
+    assert first == "config usteer 'usteer1'", (
+        f"usteer section must be named 'usteer1', got: {first!r}. "
+        "An anonymous section makes every openwisp apply add a duplicate.")
+
+
+def test_usteer_config_declares_one_section_only():
+    assert bt.USTEER_CONFIG.count("config usteer") == 1
+
+
+def test_usteer_carries_the_options_the_image_sets():
+    """The image's usteer1 sets these on most pucks; pinning them in the
+    template stops the live config depending on which image a puck was
+    flashed with."""
+    for opt in ("load_kick_enabled", "syslog", "network", "local_mode",
+                "assoc_steering", "load_balancing_threshold"):
+        assert f"option {opt} " in bt.USTEER_CONFIG, f"missing option {opt}"
+    assert bt.USTEER_CONFIG.count("list ssid_list") == 2

@@ -246,11 +246,25 @@ LLDPD_CONFIG = """config lldpd 'config'
 	option lldp_class 4
 """
 
-USTEER_CONFIG = """config usteer
+# The section MUST be named, and named 'usteer1' to match the one the gale
+# image ships. openwisp-config MERGES /etc/config/* rather than overwriting
+# them, and a merge matches sections by name -- an ANONYMOUS section has no
+# name to match, so every single apply appended another copy. Observed
+# 2026-08-04: five usteer sections on every welland puck and four on every
+# monarto puck (welland had had one more apply), the extras auto-named
+# usteer2/3/4 by netjsonconfig. Naming it after the image's own section makes
+# the merge update-in-place and therefore idempotent.
+#
+# load_kick_enabled/syslog are carried here because the image's usteer1 sets
+# them on 9 of 10 pucks; specifying them makes every puck identical instead of
+# depending on which image a puck happens to have been flashed with.
+USTEER_CONFIG = """config usteer 'usteer1'
 	option network 'mgmt'
 	option local_mode '0'
 	option assoc_steering '1'
 	option load_balancing_threshold '0'
+	option load_kick_enabled '0'
+	option syslog '1'
 	list ssid_list 'ansells'
 	list ssid_list 'ansells-guest'
 """
