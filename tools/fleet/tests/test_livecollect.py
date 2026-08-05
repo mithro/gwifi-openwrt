@@ -158,3 +158,39 @@ def test_merge_live_fields_none_upstream_does_not_erase(tmp_path):
                       upstream=None, wifi_macs={})
     data = json.loads(inv.read_text())
     assert data["upstream"] == "sw-old port 3"
+
+
+# --------------------------------------------------- collect_puck_live sites
+
+def _load_collector():
+    """collect_puck_live.py is a CLI script, not a package module."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "collect_puck_live.py"
+    spec = importlib.util.spec_from_file_location("collect_puck_live", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_collector_knows_both_sites():
+    """Until 2026-08-05 the registry host was hardcoded to welland, so the
+    monarto pucks could never be collected and their sheet BSSID cells stayed
+    blank. Same gap that was fixed in deploy_presence/set_device_vars."""
+    assert set(_load_collector().SITES) == {"welland", "monarto"}
+
+
+def test_each_site_registry_is_its_own_wisp():
+    # a copy-paste slip here would collect monarto using welland's puck list
+    sites = _load_collector().SITES
+    assert sites["welland"] == "tim@10.1.4.2"
+    assert sites["monarto"] == "tim@10.2.4.2"
+
+
+def test_collector_has_no_module_level_registry_host():
+    """Guard the regression: a reintroduced module-level REGISTRY_HOST would
+    silently make --site a no-op."""
+    mod = _load_collector()
+    assert not hasattr(mod, "REGISTRY_HOST"), (
+        "REGISTRY_HOST is back at module level; --site would be ignored")
