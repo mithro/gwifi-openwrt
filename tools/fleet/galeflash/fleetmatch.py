@@ -155,9 +155,20 @@ def match_puck(live_identity: dict, header: list[str], rows: list[list[str]]) ->
         "serial": serial,
         "row_number": None,
         "flash_status": "",
+        # False when the sheet has no Flash Status column at all.  _cell()
+        # returns "" for the resulting -1 index, which is indistinguishable
+        # from a genuinely blank cell -- i.e. from "not yet flashed".  Callers
+        # must not read a blank status as permission to flash unless this is
+        # True.  (identify_puck.py fetched only A1:Z1000 while the schema
+        # reached AH, so this was silently the case for every puck.)
+        "flash_status_known": status_col >= 0,
         "mac_ok": None,
         "notes": [],
     }
+    if status_col < 0:
+        result["notes"].append(
+            "sheet header has no 'Flash Status' column — flash state is "
+            "UNKNOWN, not blank (is the fetched column range wide enough?)")
 
     match_idx = None
     for i, row in enumerate(rows):

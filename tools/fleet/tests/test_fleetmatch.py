@@ -153,3 +153,30 @@ def test_missing_name_column_raises():
     header = [h for h in _HEADER if h != "Name"]
     with pytest.raises(ValueError, match="Name"):
         find_claimable_row("3108HT0023N", "puck16", header, [])
+
+
+def test_missing_flash_status_column_is_flagged_not_silently_blank():
+    """A truncated fetch must not read as 'not yet flashed'.
+
+    identify_puck.py fetched A1:Z1000 while the sheet's schema reached AH, so
+    'Flash Status' fell outside the header entirely.  _cell() returns "" for a
+    -1 column index, which is indistinguishable from a genuinely blank cell —
+    so puck07 (flashed+boot-verified) reported as READY TO FLASH.  Surface the
+    absent column instead of guessing.
+    """
+    header = [h for h in _HEADER if h != "Flash Status"]
+    rows = [[""] * len(header)]
+    rows[0][3] = "1605HW000GM"
+    live = {"serial_number": "1605HW000GM"}
+    r = match_puck(live, header, rows)
+    assert r["matched"] is True
+    assert r["flash_status_known"] is False
+    assert any("flash status" in n.lower() for n in r["notes"])
+
+
+def test_flash_status_is_known_when_the_column_exists():
+    live = {"serial_number": "2712HW0072Z",
+            "ethernet_mac0": "24058836E2F4", "ethernet_mac1": "24058836E2F5"}
+    r = match_puck(live, _HEADER, _ROWS)
+    assert r["flash_status_known"] is True
+    assert r["flash_status"] == "flashed+boot-verified"
