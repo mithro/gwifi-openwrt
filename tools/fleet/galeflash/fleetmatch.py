@@ -22,6 +22,112 @@ def _cell(row: list[str], idx: int) -> str:
     return row[idx].strip() if 0 <= idx < len(row) else ""
 
 
+def find_claimable_row(
+    serial: str, name: str, header: list[str], rows: list[list[str]]
+) -> dict:
+    """Decide whether the row called *name* may be seeded with *serial*.
+
+    The fleet sheet is pre-populated with placeholder rows that carry a Name
+    (``puck16``…) but no Serial.  Everything downstream — ``match_puck`` here
+    and ``sheetmap.compute_updates`` — keys off the **Serial** column, so a
+    placeholder is invisible to the pipeline until its Serial is seeded: a
+    freshly flashed puck's whole record lands in ``unmatched`` and is dropped
+    without a single cell being written.  Seeding that one cell is what links
+    a physical unit to the fleet name the operator chose for it.
+
+    Because Serial is an *identity* column, this is deliberately a gate and
+    not a write-through:
+
+      * an occupied cell is never overwritten — a differing serial means the
+        row already belongs to another puck, not that this one moved;
+      * a serial already listed on a different row is refused — claiming it
+        again would list one physical puck twice, and duplicate serials would
+        make ``compute_updates``' serial→row map non-deterministic;
+      * a duplicated or absent Name is refused rather than guessed at.
+
+    Re-claiming a row that already carries this exact serial is not an error:
+    it reports ``already`` so the caller can no-op and stay idempotent.
+
+    Args:
+        serial: the live puck's VPD serial number.
+        name:   the fleet name to claim (matched case- and whitespace-
+                insensitively against the Name column).
+        header: the sheet's header row.
+        rows:   the sheet's data rows (header excluded).
+
+    Returns a dict:
+        claimable:  True iff a write is needed AND safe.
+        already:    True iff the row already carries this serial (no write).
+        row_number: 1-based spreadsheet row of the named row, or None.
+        serial_col: 0-based index of the Serial column, or None.
+        reason:     human-readable explanation when not claimable.
+
+    Raises:
+        ValueError: if the header lacks a Name or Serial column.
+    """
+    name_col = _col(header, "name")
+    serial_col = _col(header, "serial")
+    if name_col < 0:
+        raise ValueError("Header row has no 'Name' column — cannot claim a row.")
+    if serial_col < 0:
+        raise ValueError("Header row has no 'Serial' column — cannot claim a row.")
+
+    serial = serial.strip()
+    wanted = name.strip().lower()
+
+    result = {
+        "claimable": False,
+        "already": False,
+        "row_number": None,
+        "serial_col": serial_col,
+        "reason": "",
+    }
+
+    matches = [i for i, row in enumerate(rows)
+               if _cell(row, name_col).lower() == wanted]
+
+    if not matches:
+        result["reason"] = f"no row named {name!r} in the sheet"
+        return result
+    if len(matches) > 1:
+        sheet_rows = ", ".join(f"row {i + 2}" for i in matches)
+        result["reason"] = (
+            f"ambiguous: {len(matches)} rows are named {name!r} ({sheet_rows})")
+        return result
+
+    row_idx = matches[0]
+    result["row_number"] = row_idx + 2          # +1 header, +1 for 1-based
+
+    # A serial may appear exactly once in the sheet.  Check this BEFORE the
+    # target cell so "already claimed elsewhere" is reported as such rather
+    # than as an empty-cell claim that would duplicate the identity.
+    for i, row in enumerate(rows):
+        if i != row_idx and _cell(row, serial_col) == serial:
+            other = _cell(row, name_col) or "(unnamed)"
+            result["reason"] = (
+                f"serial {serial!r} is already listed on row {i + 2} "
+                f"({other}) — claiming it for {name!r} would list one "
+                f"physical puck twice")
+            return result
+
+    current = _cell(rows[row_idx], serial_col)
+    if current == serial:
+        result["already"] = True
+        result["reason"] = (
+            f"row {result['row_number']} ({name}) already carries "
+            f"{serial!r} — nothing to do")
+        return result
+    if current:
+        result["reason"] = (
+            f"row {result['row_number']} ({name}) already holds serial "
+            f"{current!r}, not {serial!r} — that row is a different puck; "
+            f"identity cells are never overwritten")
+        return result
+
+    result["claimable"] = True
+    return result
+
+
 def match_puck(live_identity: dict, header: list[str], rows: list[list[str]]) -> dict:
     """Match a live puck to a fleet-sheet row by serial.
 
@@ -49,9 +155,20 @@ def match_puck(live_identity: dict, header: list[str], rows: list[list[str]]) ->
         "serial": serial,
         "row_number": None,
         "flash_status": "",
+        # False when the sheet has no Flash Status column at all.  _cell()
+        # returns "" for the resulting -1 index, which is indistinguishable
+        # from a genuinely blank cell -- i.e. from "not yet flashed".  Callers
+        # must not read a blank status as permission to flash unless this is
+        # True.  (identify_puck.py fetched only A1:Z1000 while the schema
+        # reached AH, so this was silently the case for every puck.)
+        "flash_status_known": status_col >= 0,
         "mac_ok": None,
         "notes": [],
     }
+    if status_col < 0:
+        result["notes"].append(
+            "sheet header has no 'Flash Status' column — flash state is "
+            "UNKNOWN, not blank (is the fetched column range wide enough?)")
 
     match_idx = None
     for i, row in enumerate(rows):

@@ -2,7 +2,7 @@
 """Tests for galeflash.fleetmatch — match a live puck against the fleet sheet."""
 import pytest
 
-from galeflash.fleetmatch import match_puck
+from galeflash.fleetmatch import find_claimable_row, match_puck
 
 # Header mirrors the real 'Google WiFi Pucks' tab (subset, real order/casing).
 _HEADER = ["Flags", "Model", "OS", "Serial", "MAC", "Name", "PSK",
@@ -72,3 +72,111 @@ def test_mac_uncheckable_when_sheet_cells_empty():
     r = match_puck(live, _HEADER, rows)
     assert r["matched"] is True
     assert r["mac_ok"] is None
+
+
+# ---------------------------------------------------------------------------
+# find_claimable_row — seed a placeholder row's Serial from the live puck
+# ---------------------------------------------------------------------------
+#
+# The sheet is pre-populated with named-but-serial-less rows (puck16..puck22
+# on 2026-08-12).  sync_sheet.compute_updates matches records to rows BY
+# SERIAL, so until a placeholder's Serial cell is seeded every write for that
+# puck lands in `unmatched` and is silently dropped.  These tests pin the
+# gate that decides whether seeding a given row is safe.
+
+def _named(name, serial=""):
+    r = [""] * len(_HEADER)
+    r[3] = serial
+    r[5] = name
+    return r
+
+
+def test_blank_placeholder_row_is_claimable():
+    rows = [_named("puck15", "3719HW004FU"), _named("puck16")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is True
+    assert r["already"] is False
+    assert r["row_number"] == 3      # header=row1, data idx1 -> sheet row 3
+    assert r["serial_col"] == 3      # found by NAME, not by position
+
+
+def test_row_already_carrying_this_serial_needs_no_write():
+    """Idempotent: re-running the claim must not be an error."""
+    rows = [_named("puck16", "3108HT0023N")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is False
+    assert r["already"] is True
+    assert r["row_number"] == 2
+
+
+def test_row_holding_a_different_serial_is_refused():
+    """Never overwrite an occupied identity cell — that row is another puck."""
+    rows = [_named("puck16", "9999HW9999Z")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is False
+    assert r["already"] is False
+    assert "9999HW9999Z" in r["reason"]
+
+
+def test_serial_already_listed_on_another_row_is_refused():
+    """Claiming would list one physical puck twice — refuse and name the row."""
+    rows = [_named("puck07", "3108HT0023N"), _named("puck16")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is False
+    assert "puck07" in r["reason"]
+    assert "row 2" in r["reason"]
+
+
+def test_unknown_name_is_refused():
+    rows = [_named("puck16")]
+    r = find_claimable_row("3108HT0023N", "puck99", _HEADER, rows)
+    assert r["claimable"] is False
+    assert r["row_number"] is None
+    assert "puck99" in r["reason"]
+
+
+def test_duplicate_names_are_ambiguous_and_refused():
+    rows = [_named("puck16"), _named("puck16")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is False
+    assert "ambiguous" in r["reason"].lower()
+
+
+def test_name_match_ignores_case_and_surrounding_whitespace():
+    rows = [_named(" PUCK16 ")]
+    r = find_claimable_row("3108HT0023N", "puck16", _HEADER, rows)
+    assert r["claimable"] is True
+    assert r["row_number"] == 2
+
+
+def test_missing_name_column_raises():
+    header = [h for h in _HEADER if h != "Name"]
+    with pytest.raises(ValueError, match="Name"):
+        find_claimable_row("3108HT0023N", "puck16", header, [])
+
+
+def test_missing_flash_status_column_is_flagged_not_silently_blank():
+    """A truncated fetch must not read as 'not yet flashed'.
+
+    identify_puck.py fetched A1:Z1000 while the sheet's schema reached AH, so
+    'Flash Status' fell outside the header entirely.  _cell() returns "" for a
+    -1 column index, which is indistinguishable from a genuinely blank cell —
+    so puck07 (flashed+boot-verified) reported as READY TO FLASH.  Surface the
+    absent column instead of guessing.
+    """
+    header = [h for h in _HEADER if h != "Flash Status"]
+    rows = [[""] * len(header)]
+    rows[0][3] = "1605HW000GM"
+    live = {"serial_number": "1605HW000GM"}
+    r = match_puck(live, header, rows)
+    assert r["matched"] is True
+    assert r["flash_status_known"] is False
+    assert any("flash status" in n.lower() for n in r["notes"])
+
+
+def test_flash_status_is_known_when_the_column_exists():
+    live = {"serial_number": "2712HW0072Z",
+            "ethernet_mac0": "24058836E2F4", "ethernet_mac1": "24058836E2F5"}
+    r = match_puck(live, _HEADER, _ROWS)
+    assert r["flash_status_known"] is True
+    assert r["flash_status"] == "flashed+boot-verified"
