@@ -5,7 +5,7 @@ FirmwareImage with the given board image-type key. Re-runnable: reuses an
 existing Category/Build and skips an image type already present on the Build.
 
 The image-type key must already be registered (stock board map or
-OPENWISP_CUSTOM_OPENWRT_IMAGES in playbook.yml §9). Never prints secrets.
+OPENWISP_CUSTOM_OPENWRT_IMAGES in group_vars/openwisp2.yml §9). Never prints secrets.
 
 Usage:
   uv run --with requests python openwisp/upload-firmware.py \

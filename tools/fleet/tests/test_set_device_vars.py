@@ -9,12 +9,14 @@ import pytest
 from set_device_vars import (
     GDOC2NETCFG,
     GDOC2NETCFG_DIR,
-    SSH_TEN64,
+    SITES,
     build_django_script,
     build_show_login_cmd,
     partition_puck_names,
     redact,
     scrub_hex,
+    ssh_ten64,
+    ssh_wisp,
     validate_logins,
 )
 
@@ -82,8 +84,9 @@ def test_build_django_script_handles_nasty_password_injection_safe():
 
 def test_build_show_login_cmd_runs_with_cwd_gdoc2netcfg():
     cmd = build_show_login_cmd(["puck06", "puck12"])
-    assert cmd[:len(SSH_TEN64)] == SSH_TEN64
-    assert len(cmd) == len(SSH_TEN64) + 1        # one shell-string argument
+    prefix = ssh_ten64()
+    assert cmd[:len(prefix)] == prefix
+    assert len(cmd) == len(prefix) + 1           # one shell-string argument
     remote = cmd[-1]
     # the cd is load-bearing (config.toml + .cache both resolve off CWD) --
     # this assertion is what stops a future edit from "simplifying" it away
@@ -100,3 +103,28 @@ def test_build_show_login_cmd_quotes_odd_machine_names_safely():
     # survive as exactly one token -- proof it can't break out into a second
     # command -- even though real machine names are always the puckNN shape.
     assert shlex.split(remote)[-1] == odd
+
+
+def test_sites_cover_both_deployments():
+    assert set(SITES) == {"welland", "monarto"}
+
+
+def test_ssh_helpers_follow_the_selected_site(monkeypatch):
+    # SITE is module state set from --site; the helpers must read it at call
+    # time, not capture it at import, or --site monarto would still talk to
+    # welland's controller.
+    import set_device_vars as sdv
+
+    monkeypatch.setattr(sdv, "SITE", "monarto")
+    assert "ten64.monarto.mithis.com" in sdv.ssh_ten64()
+    assert "wisp.monarto.mithis.com" in sdv.ssh_wisp()
+
+    monkeypatch.setattr(sdv, "SITE", "welland")
+    assert "ten64.welland.mithis.com" in sdv.ssh_ten64()
+    assert "wisp.welland.mithis.com" in sdv.ssh_wisp()
+
+
+def test_each_site_endpoint_belongs_to_that_site():
+    for site, cfg in SITES.items():
+        assert f".{site}." in cfg["ten64"]
+        assert f".{site}." in cfg["wisp"]

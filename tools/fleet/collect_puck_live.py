@@ -14,6 +14,7 @@ Usage:
     uv run collect_puck_live.py                 # whole registry
     uv run collect_puck_live.py --puck 12       # just puck12
     uv run collect_puck_live.py --inventory DIR # override inventory dir
+    uv run collect_puck_live.py --site monarto  # the monarto registry
 """
 
 from __future__ import annotations
@@ -37,7 +38,15 @@ from galeflash.livecollect import (
 )
 
 DEFAULT_INVENTORY = Path("/home/tim/local/gwifi/fleet-flash/inventory")
-REGISTRY_HOST = "tim@10.1.4.2"  # wisp.welland.mithis.com
+
+# Each site's wisp serves its own puck registry (gwifi-netboot writes it).
+# Addressed by IP rather than name because this CLI also runs from hosts that
+# resolve the site names differently -- same table as tools/fleet/
+# deploy_presence.py and openwisp/build-templates.py.
+SITES = {
+    "welland": "tim@10.1.4.2",   # wisp.welland.mithis.com
+    "monarto": "tim@10.2.4.2",   # wisp.monarto.mithis.com
+}
 REGISTRY_PATH = "/etc/dnsmasq.d/gwifi-generated/pucks.conf"
 
 # Generous timeouts: a puck on a lossy mesh-backhaul management path (40%
@@ -159,10 +168,15 @@ def main() -> None:
                         metavar="DIR")
     parser.add_argument("--puck", action="append", type=int, metavar="NN",
                         help="Collect only puckNN (repeatable).")
+    parser.add_argument("--site", choices=sorted(SITES), default="welland",
+                        help="which deployment's puck registry to collect "
+                             "(default: welland)")
     args = parser.parse_args()
 
-    print(f"Fetching registry from {REGISTRY_HOST}:{REGISTRY_PATH}")
-    regs = parse_pucks_conf(ssh(REGISTRY_HOST, f"sudo -n cat {REGISTRY_PATH}"))
+    registry_host = SITES[args.site]
+    print(f"site: {args.site}")
+    print(f"Fetching registry from {registry_host}:{REGISTRY_PATH}")
+    regs = parse_pucks_conf(ssh(registry_host, f"sudo -n cat {REGISTRY_PATH}"))
     if args.puck:
         wanted = {f"puck{n:02d}" for n in args.puck}
         unknown = wanted - set(regs)

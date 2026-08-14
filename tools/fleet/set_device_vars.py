@@ -45,11 +45,31 @@ import shlex
 import subprocess
 import sys
 
-SSH_TEN64 = ["ssh", "ten64.welland.mithis.com"]
-SSH_WISP = [
-    "ssh", "-o", "ConnectTimeout=30", "wisp.welland.mithis.com",
-    "sudo", "/opt/openwisp2/env/bin/python", "/opt/openwisp2/manage.py", "shell",
-]
+# Per-site endpoints. Mirrors the SITES table in openwisp/build-templates.py;
+# kept as its own literal rather than imported because that module's filename
+# is hyphenated and it is not on the path from here.
+SITES = {
+    "welland": {"ten64": "ten64.welland.mithis.com",
+                "wisp": "wisp.welland.mithis.com"},
+    "monarto": {"ten64": "ten64.monarto.mithis.com",
+                "wisp": "wisp.monarto.mithis.com"},
+}
+
+# Set from --site in main(); module-level so the helpers keep their signatures.
+SITE = "welland"
+
+
+def ssh_ten64():
+    return ["ssh", "-o", "ConnectTimeout=30", SITES[SITE]["ten64"]]
+
+
+def ssh_wisp():
+    return [
+        "ssh", "-o", "ConnectTimeout=30", SITES[SITE]["wisp"],
+        "sudo", "/opt/openwisp2/env/bin/python",
+        "/opt/openwisp2/manage.py", "shell",
+    ]
+
 
 GDOC2NETCFG_DIR = "/opt/gdoc2netcfg"
 GDOC2NETCFG = f"{GDOC2NETCFG_DIR}/.venv/bin/gdoc2netcfg"
@@ -219,7 +239,7 @@ def list_registered_pucks() -> list[str]:
     exclusion is always printed, so an operator can spot a puck that somehow
     registered under an unexpected name instead of it just vanishing.
     """
-    p = run_ssh(SSH_WISP, what="listing registered devices from wisp",
+    p = run_ssh(ssh_wisp(), what="listing registered devices from wisp",
                timeout=60, input=LIST_DEVICES_SCRIPT)
     if p.stderr.strip():
         # No `logins` dict exists yet at this point (this call precedes
@@ -266,7 +286,7 @@ def build_show_login_cmd(machines: list[str]) -> list[str]:
               f'wifi show-login --json "$@"')
     args = " ".join(shlex.quote(m) for m in machines)
     remote_cmd = f"sh -c {shlex.quote(script)} _ {args}"
-    return SSH_TEN64 + [remote_cmd]
+    return ssh_ten64() + [remote_cmd]
 
 
 def fetch_logins(machines: list[str]) -> dict:
@@ -297,7 +317,14 @@ def main() -> int:
     parser.add_argument("--puck", action="append", type=int, metavar="NN",
                         help="Only set puckNN (repeatable). Default: every "
                              "puck registered on wisp.")
+    parser.add_argument("--site", choices=sorted(SITES), default="welland",
+                        help="which deployment to act on (default: welland)")
     args = parser.parse_args()
+
+    global SITE
+    SITE = args.site
+    print(f"site: {SITE}  ten64={SITES[SITE]['ten64']}  "
+          f"wisp={SITES[SITE]['wisp']}")
 
     if args.puck:
         machines = sorted({f"puck{n:02d}" for n in args.puck})
@@ -335,7 +362,7 @@ def main() -> int:
         return 1
 
     script = build_django_script(logins)
-    p = run_ssh(SSH_WISP, what="setting context on wisp", timeout=180,
+    p = run_ssh(ssh_wisp(), what="setting context on wisp", timeout=180,
                input=script, logins=logins)
     out = scrub_hex(redact(p.stdout, logins))
     sys.stdout.write(out)

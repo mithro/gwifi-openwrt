@@ -47,6 +47,7 @@ on 5 GHz only — 2.4 GHz coverage stays with the pucks. It has no physical
 jacks, so the base post-reload-hook falls back to the virtio trunk eth0 when
 neither puck jack name (eth-black/lan) exists.
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -54,15 +55,56 @@ from pathlib import Path
 
 PRESENCE_DIR = Path(__file__).resolve().parent / "presence"
 
-SSH_TEN64 = ["ssh", "ten64.welland.mithis.com"]
-SSH_WISP = [
-    "ssh", "-o", "ConnectTimeout=30", "wisp.welland.mithis.com",
-    "sudo", "/opt/openwisp2/env/bin/python", "/opt/openwisp2/manage.py", "shell",
-]
+# Per-site wiring. Everything that differs between the two deployments lives
+# here; the template *content* is identical at both sites by design (same
+# SSIDs, same AP layout), only the endpoints and rosters change.
+#
+#   ten64        host holding the hostapd configs the passphrases come from
+#   wisp         the site's OpenWISP controller
+#   pucks        OpenWISP device names to attach templates to (missing ones
+#                are skipped, so listing not-yet-registered pucks is safe)
+#   extra        non-puck devices attached to base + their own AP template
+#   syslog_ip    the site router's wifi leg (rsyslog imudp 514/6666 binds it)
+#   mqtt_host    Home Assistant, for presence-detector
+#   render       devices to render for verification at the end
+SITES = {
+    "welland": dict(
+        ten64="ten64.welland.mithis.com",
+        wisp="wisp.welland.mithis.com",
+        # puck03 registered 2026-07-25 (fresh install). puck05 is absent by
+        # design — the hardware moved to monarto 2026-08-03; leaving it here
+        # would keep re-attaching templates to a device that is not on site.
+        pucks=["puck01", "puck02", "puck03", "puck04", "puck06",
+               "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"],
+        extra=["tenwrt"],
+        syslog_ip="10.1.4.1",
+        mqtt_host="ha.welland.mithis.com",
+        render=["puck12", "tenwrt"],
+    ),
+    "monarto": dict(
+        ten64="ten64.monarto.mithis.com",
+        wisp="wisp.monarto.mithis.com",
+        # puck05 moved here from welland 2026-08-03; 13/14/15 are new.
+        pucks=["puck05", "puck13", "puck14", "puck15"],
+        # No tenwrt VM at monarto.
+        extra=[],
+        syslog_ip="10.2.4.1",
+        mqtt_host="ha.monarto.mithis.com",
+        render=["puck13"],
+    ),
+}
 
-# The pucks (OpenWISP device names). puck03 registered 2026-07-25 (fresh install).
-PUCKS = ["puck01", "puck02", "puck03", "puck04", "puck05", "puck06",
-         "puck07", "puck08", "puck09", "puck10", "puck11", "puck12"]
+
+def ssh_ten64(site):
+    return ["ssh", "-o", "ConnectTimeout=30", SITES[site]["ten64"]]
+
+
+def ssh_wisp(site):
+    return [
+        "ssh", "-o", "ConnectTimeout=30", SITES[site]["wisp"],
+        "sudo", "/opt/openwisp2/env/bin/python",
+        "/opt/openwisp2/manage.py", "shell",
+    ]
 
 SSID_MAIN, SSID_IOT, SSID_GUEST = "ansells", "ansells-iot", "ansells-guest"
 
@@ -85,10 +127,10 @@ def parse_hostapd(text):
     return out
 
 
-def read_passphrases():
+def read_passphrases(site):
     cfgs = {}
     for fn in ("hostapd.wlan-roam.conf", "hostapd.wlan-iot.conf"):
-        p = subprocess.run(SSH_TEN64 + ["sudo", "cat", f"/etc/hostapd/{fn}"],
+        p = subprocess.run(ssh_ten64(site) + ["sudo", "cat", f"/etc/hostapd/{fn}"],
                            capture_output=True, text=True, timeout=60)
         if p.returncode != 0:
             sys.stderr.write(p.stderr)
@@ -204,11 +246,25 @@ LLDPD_CONFIG = """config lldpd 'config'
 	option lldp_class 4
 """
 
-USTEER_CONFIG = """config usteer
+# The section MUST be named, and named 'usteer1' to match the one the gale
+# image ships. openwisp-config MERGES /etc/config/* rather than overwriting
+# them, and a merge matches sections by name -- an ANONYMOUS section has no
+# name to match, so every single apply appended another copy. Observed
+# 2026-08-04: five usteer sections on every welland puck and four on every
+# monarto puck (welland had had one more apply), the extras auto-named
+# usteer2/3/4 by netjsonconfig. Naming it after the image's own section makes
+# the merge update-in-place and therefore idempotent.
+#
+# load_kick_enabled/syslog are carried here because the image's usteer1 sets
+# them on 9 of 10 pucks; specifying them makes every puck identical instead of
+# depending on which image a puck happens to have been flashed with.
+USTEER_CONFIG = """config usteer 'usteer1'
 	option network 'mgmt'
 	option local_mode '0'
 	option assoc_steering '1'
 	option load_balancing_threshold '0'
+	option load_kick_enabled '0'
+	option syslog '1'
 	list ssid_list 'ansells'
 	list ssid_list 'ansells-guest'
 """
@@ -249,9 +305,10 @@ uci -q commit wireless
 
 # Remote syslog to the site router's wifi leg (per-net remote syslog
 # design, gdoc2netcfg 2026-07-30): /var/log/wifi/<hostname>.log on ten64.
-# {{ syslog_ip }} comes from the template default_values (site default
-# 10.1.4.1; override per device/group for other sites). Kernel netconsole
-# to wisp:6666 is separate and unchanged.
+# {{ syslog_ip }} comes from the template default_values, which
+# build-templates.py fills from its per-site table (--site); override per
+# device/group only to point one puck elsewhere. Kernel netconsole to
+# wisp:6666 is separate and unchanged.
 uci set system.@system[0].log_ip='{{ syslog_ip }}'
 uci set system.@system[0].log_port='514'
 uci set system.@system[0].log_proto='udp'
@@ -302,7 +359,7 @@ def netjson_base():
 
 
 PRESENCE_SETTINGS = """{
-  "mqtt_host": "ha.welland.mithis.com",
+  "mqtt_host": "%(mqtt_host)s",
   "mqtt_port": 1883,
   "mqtt_username": "{{ mqtt_username }}",
   "mqtt_password": "{{ mqtt_password }}",
@@ -319,17 +376,22 @@ PRESENCE_SETTINGS = """{
 """
 
 
-def netjson_presence():
+def netjson_presence(mqtt_host):
     """presence-detector delivery: vendored script + per-device settings + init.
 
     Credentials arrive per device via Config.context (set_device_vars.py);
     {{ name }} is OpenWISP's built-in device-name variable, so ap_name gives
-    the per-puck entity prefix (design spec 'Entity model')."""
+    the per-puck entity prefix (design spec 'Entity model'). The broker host
+    is baked in per site rather than templated — it is not a secret and each
+    site's pucks only ever talk to their own HA.
+
+    %-formatting (not .format) because the body is full of Jinja {{ }} that
+    must survive untouched into the rendered settings.json."""
     return {"files": [
         {"path": "/opt/presence-detector/presence-detector.py", "mode": "0755",
          "contents": (PRESENCE_DIR / "presence-detector.py").read_text()},
         {"path": "/etc/presence-detector/settings.json", "mode": "0600",
-         "contents": PRESENCE_SETTINGS},
+         "contents": PRESENCE_SETTINGS % {"mqtt_host": mqtt_host}},
         {"path": "/etc/init.d/presence-detector", "mode": "0755",
          "contents": (PRESENCE_DIR / "init.d-presence-detector").read_text()},
     ]}
@@ -350,10 +412,11 @@ BASE = json.loads({base!r})
 PRESENCE = json.loads({presence!r})
 DEFAULTS = json.loads({defaults!r})
 PUCKS = {pucks!r}
-# Devices the templates attach to: the pucks + the ten64 VM. The attach loop
-# skips names that have not registered yet — re-run this script after the
-# tenwrt VM's first successful registration (design spec §4.6).
-DEVICES = PUCKS + ["tenwrt"]
+# Devices the templates attach to: the pucks + any site extras (the ten64 VM
+# at welland; monarto has none). The attach loop skips names that have not
+# registered yet — re-run this script after a new device's first successful
+# registration (design spec §4.6).
+DEVICES = PUCKS + {extra!r}
 
 # One-time rename of the pre-2026-07-26 gwifi-* template names. Must run
 # before the upserts: update_or_create keys on name, so without this the new
@@ -465,7 +528,7 @@ if context_missing:
           "— run tools/fleet/set_device_vars.py before the config applies")
 
 # verification renders, passphrases redacted
-for name in ("puck12", "tenwrt"):
+for name in {render!r}:
     try:
         d = Device.objects.get(organization=org, name=name)
     except Device.DoesNotExist:
@@ -480,18 +543,30 @@ for name in ("puck12", "tenwrt"):
 '''
 
 
-def main() -> int:
-    vals = read_passphrases()
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--site", choices=sorted(SITES), default="welland",
+                    help="which deployment to build templates on "
+                         "(default: welland)")
+    args = ap.parse_args(argv)
+    site = args.site
+    cfg = SITES[site]
+    print(f"site: {site}  ten64={cfg['ten64']}  wisp={cfg['wisp']}")
+
+    vals = read_passphrases(site)
     script = DJANGO.format(active=json.dumps(netjson_simple()),
                            tenwrt=json.dumps(netjson_tenwrt_aps()),
                            preserved=json.dumps(netjson_mesh_aps()),
                            base=json.dumps(netjson_base()),
-                           presence=json.dumps(netjson_presence()),
+                           presence=json.dumps(
+                               netjson_presence(cfg["mqtt_host"])),
                            defaults=json.dumps(
-                               {**vals, "syslog_ip": "10.1.4.1"}),
-                           pucks=PUCKS)
-    p = subprocess.run(SSH_WISP, input=script, text=True, capture_output=True,
-                       timeout=180)
+                               {**vals, "syslog_ip": cfg["syslog_ip"]}),
+                           pucks=cfg["pucks"],
+                           extra=cfg["extra"],
+                           render=cfg["render"])
+    p = subprocess.run(ssh_wisp(site), input=script, text=True,
+                       capture_output=True, timeout=180)
     # safety: redact any stray key values from the captured output before printing
     out = p.stdout
     for v in vals.values():

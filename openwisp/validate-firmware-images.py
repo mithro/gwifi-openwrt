@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the OPENWISP_CUSTOM_OPENWRT_IMAGES staged in playbook.yml.
+"""Validate the OPENWISP_CUSTOM_OPENWRT_IMAGES staged in group_vars/openwisp2.yml.
 
 Run:  uv run --with pyyaml python openwisp/validate-firmware-images.py
 
@@ -29,7 +29,10 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
-PLAYBOOK = HERE / "playbook.yml"
+# The firmware map lives in the SHARED group_vars, not playbook.yml: the
+# playbook became site-agnostic when monarto was added, and the map is
+# identical at every site.
+GROUP_VARS = HERE / "group_vars" / "openwisp2.yml"
 
 
 def _find_openwrt():
@@ -64,8 +67,8 @@ EXPECT = {
 
 def load_custom_images():
     """Exec the verbatim Python the role renders into settings.py."""
-    play = next(iter(yaml.safe_load_all(PLAYBOOK.read_text())))[0]
-    instr = play["vars"]["openwisp2_extra_django_settings_instructions"]
+    group_vars = yaml.safe_load(GROUP_VARS.read_text())
+    instr = group_vars["openwisp2_extra_django_settings_instructions"]
     assert isinstance(instr, list), "instructions must be a YAML list"
     block = "\n".join(instr)
     compile(block, "<settings_instructions>", "exec")  # SyntaxError if malformed

@@ -1,0 +1,2 @@
+# Site-rendered systemd units + dnsmasq conf (see gwifi_netboot/sites.py)
+.rendered/

@@ -7,10 +7,35 @@
 # source IP/interface at module load).
 START=99
 
-TARGET_IP="10.1.4.2"
-TARGET_MAC="02:00:0a:01:04:02"   # wisp net0 (stable; encodes 10.1.4.2)
 TARGET_PORT="6666"
 DEV="br-mgmt"
+
+# wisp's address is DERIVED from the puck's own address, never hardcoded.
+#
+# It used to be TARGET_IP="10.1.4.2" / TARGET_MAC="02:00:0a:01:04:02" --
+# welland's wisp.  A monarto puck running this image would have streamed
+# its kernel log across the WAN to the WRONG SITE, and nothing would have
+# reported it: netconsole is fire-and-forget UDP, so the modprobe still
+# succeeds and the "streaming printk" log line still appears.  Kernel
+# panics -- the whole reason this exists, since field pucks have no serial
+# console -- would simply never arrive.
+#
+# Two site-invariants make the derivation safe:
+#   * wisp is always host .2 on the puck's own wifi-VLAN /24
+#     (10.1.4.2 at welland, 10.2.4.2 at monarto), and
+#   * the fleet MAC scheme encodes the IPv4 verbatim: 02:00: followed by
+#     the four octets in hex, so 10.2.4.2 <-> 02:00:0a:02:04:02.
+# wisp is on-link (same VLAN 4 /24 as the puck), so its own MAC is the
+# correct link-layer target -- no gateway indirection.
+wisp_ip_for() {      # $1 = this puck's br-mgmt address
+    echo "${1%.*}.2"
+}
+
+wisp_mac_for() {     # $1 = wisp's IPv4
+    # Deliberately unquoted: tr turns the dots into spaces so the four
+    # octets word-split into printf's four %02x arguments.
+    printf '02:00:%02x:%02x:%02x:%02x' $(echo "$1" | tr '.' ' ')
+}
 
 boot() {
     i=0
@@ -20,12 +45,41 @@ boot() {
         sleep 2
         i=$((i + 1))
     done
-    if [ -z "$SRC" ]; then
-        logger -t gale-netconsole "no address on $DEV; netconsole not started"
-        return 1
+    if [ -n "$SRC" ]; then
+        TARGET_IP=$(wisp_ip_for "$SRC")
+        TARGET_MAC=$(wisp_mac_for "$TARGET_IP")
+        DESC="$SRC -> $TARGET_IP:$TARGET_PORT ($TARGET_MAC)"
+    else
+        # NO-DHCP FALLBACK.  This used to `return 1` and stay silent, which
+        # made the channel useless for the failure you most need it for: a
+        # puck that boots but never gets an address emits NOTHING, so a dead
+        # image and a dead network look identical from the wire.  (Exactly
+        # what happened to puck05 on 2026-08-03 -- an install verified
+        # "flashed+verified", then total silence with no way to see why.)
+        #
+        # Without DHCP we know neither our own address nor wisp's -- wisp is
+        # DERIVED from ours -- so fall back to a deterministic IPv4
+        # link-local source and BROADCAST the log. Anything on the VLAN can
+        # then see it (wisp's receiver binds 0.0.0.0; failing that, tcpdump
+        # udp port 6666 on any host in the segment).
+        #
+        # 169.254.<x>.<y> from the last two MAC octets: deterministic per
+        # puck, so two silent pucks do not collide. Added, not replacing,
+        # so a late DHCP lease still works normally.
+        MAC=$(cat "/sys/class/net/$DEV/address" 2>&1)
+        X=$(printf '%d' "0x$(echo "$MAC" | cut -d: -f5)")
+        Y=$(printf '%d' "0x$(echo "$MAC" | cut -d: -f6)")
+        SRC="169.254.$X.$Y"
+        ip addr add "$SRC/16" dev "$DEV"
+        ip link set "$DEV" up
+        TARGET_IP="255.255.255.255"
+        TARGET_MAC="ff:ff:ff:ff:ff:ff"
+        DESC="NO-DHCP FALLBACK $SRC -> broadcast:$TARGET_PORT"
+        logger -t gale-netconsole \
+            "no address on $DEV after 90s; broadcasting from $SRC instead"
     fi
     # '+' = extended netconsole (release feature not needed but harmless)
     modprobe netconsole "netconsole=+6665@$SRC/$DEV,$TARGET_PORT@$TARGET_IP/$TARGET_MAC" \
-        && logger -t gale-netconsole "streaming printk from $SRC to $TARGET_IP:$TARGET_PORT" \
-        || logger -t gale-netconsole "netconsole modprobe FAILED"
+        && logger -t gale-netconsole "streaming printk $DESC" \
+        || logger -t gale-netconsole "netconsole modprobe FAILED ($DESC)"
 }

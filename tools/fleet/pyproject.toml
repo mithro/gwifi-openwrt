@@ -4,7 +4,10 @@ version = "0.0.0"
 requires-python = ">=3.10"
 
 [dependency-groups]
-dev = ["pytest"]
+# pyyaml: test_openwisp_inventory.py and test_create_vm.py parse the
+# Ansible inventory/group_vars as YAML rather than regexing the text, so
+# the suite cannot even collect without it.
+dev = ["pytest", "pyyaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -26,8 +26,9 @@ verifies four steps in order:
            per puck inside this CLI (accepted spec deviation, see Task 6)
 
 Usage:
-    uv run deploy_presence.py                 # whole registry
-    uv run deploy_presence.py --puck 12       # just puck12
+    uv run deploy_presence.py                      # whole welland registry
+    uv run deploy_presence.py --puck 12            # just puck12
+    uv run deploy_presence.py --site monarto       # whole monarto registry
 """
 
 from __future__ import annotations
@@ -42,7 +43,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from galeflash.livecollect import parse_pucks_conf
 from galeflash.presencedeploy import STEPS, build_install_script, parse_results
 
-REGISTRY_HOST = "tim@10.1.4.2"  # wisp.welland.mithis.com
+# The puck registry lives on each site's wisp (gwifi-netboot writes it).
+# Addressed by IP rather than name because this CLI is also run from hosts
+# that resolve the site names differently.
+SITES = {
+    "welland": "tim@10.1.4.2",   # wisp.welland.mithis.com
+    "monarto": "tim@10.2.4.2",   # wisp.monarto.mithis.com
+}
 REGISTRY_PATH = "/etc/dnsmasq.d/gwifi-generated/pucks.conf"
 
 SSH_OPTS = ["-4", "-o", "ConnectTimeout=20",
@@ -90,10 +97,15 @@ def main() -> None:
                         help="Deploy only to puckNN (repeatable).")
     parser.add_argument("--verbose", action="store_true",
                         help="Show raw install-script output (apk/service/log evidence).")
+    parser.add_argument("--site", choices=sorted(SITES), default="welland",
+                        help="which deployment's puck registry to use "
+                             "(default: welland)")
     args = parser.parse_args()
 
-    print(f"Fetching registry from {REGISTRY_HOST}:{REGISTRY_PATH}")
-    regs = parse_pucks_conf(ssh(REGISTRY_HOST, f"sudo -n cat {REGISTRY_PATH}"))
+    registry_host = SITES[args.site]
+    print(f"site: {args.site}")
+    print(f"Fetching registry from {registry_host}:{REGISTRY_PATH}")
+    regs = parse_pucks_conf(ssh(registry_host, f"sudo -n cat {REGISTRY_PATH}"))
     if args.puck:
         wanted = {f"puck{n:02d}" for n in args.puck}
         unknown = wanted - set(regs)

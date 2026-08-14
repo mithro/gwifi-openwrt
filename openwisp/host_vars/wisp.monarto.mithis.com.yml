@@ -1,0 +1,28 @@
+---
+# Site-specific vars for monarto's wisp VM.  NO SECRETS IN THIS FILE.
+# Everything identical between sites lives in group_vars/openwisp2.yml.
+
+openwisp2_default_from_email: "openwisp@wisp.monarto.mithis.com"
+
+# DELIBERATELY EMPTY — do not add the bare IP here.
+#
+# The role builds nginx's server_name from this list:
+#   server_name {{ inventory_hostname }}{% for h in openwisp2_allowed_hosts %} {{ h }}{% endfor %};
+# so listing 10.2.4.2 made the OpenWISP vhost claim the bare IP on :80 and
+# 301 it to HTTPS.  That address must instead reach the gwifi-images vhost,
+# because the netbooted installer fetches the factory image as
+#   http://10.2.4.2/<factory>.bin
+# by IP literal over plain HTTP — it has no TLS stack and a cert could never
+# match an IP.  Setting this broke every eMMC install at monarto.
+#
+# Nothing depends on reaching OpenWISP by IP: the pucks' agent is configured
+# with the FQDN (`openwisp.http.url='https://wisp.<site>.mithis.com'`), which
+# is also the only name the certificate matches.  welland has run this way
+# all along — its live vhost predates this variable, which is the ONLY reason
+# welland's installs still worked.
+openwisp2_allowed_hosts: []
+
+certbot_certs:
+  - email: "claude@mith.ro"
+    domains:
+      - "wisp.monarto.mithis.com"

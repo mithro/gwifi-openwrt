@@ -13,12 +13,15 @@ def _load():
     return mod
 
 
+MQTT = "ha.welland.mithis.com"
+
+
 def test_pucks_includes_puck03():
-    assert "puck03" in _load().PUCKS
+    assert "puck03" in _load().SITES["welland"]["pucks"]
 
 
 def test_presence_files():
-    files = _load().netjson_presence()["files"]
+    files = _load().netjson_presence(MQTT)["files"]
     paths = {f["path"]: f for f in files}
     assert set(paths) == {
         "/opt/presence-detector/presence-detector.py",
@@ -32,7 +35,7 @@ def test_presence_files():
 
 def test_presence_settings_uses_context_vars_no_secrets():
     import json
-    files = _load().netjson_presence()["files"]
+    files = _load().netjson_presence(MQTT)["files"]
     settings = next(f for f in files
                     if f["path"] == "/etc/presence-detector/settings.json")
     c = settings["contents"]
@@ -42,7 +45,7 @@ def test_presence_settings_uses_context_vars_no_secrets():
     parsed = json.loads(c.replace("{{ mqtt_username }}", "u")
                          .replace("{{ mqtt_password }}", "p")
                          .replace("{{ name }}", "puck99"))
-    assert parsed["mqtt_host"] == "ha.welland.mithis.com"
+    assert parsed["mqtt_host"] == MQTT
     assert parsed["fallback_sync_interval"] == 60
     assert parsed["filter_is_denylist"] is True and parsed["filter"] == []
     assert parsed["interfaces"] == []
@@ -52,7 +55,7 @@ def test_presence_settings_uses_context_vars_no_secrets():
 def test_presence_script_matches_vendored_copy():
     mod = _load()
     vendored = (BT_PATH.parent / "presence" / "presence-detector.py").read_text()
-    files = mod.netjson_presence()["files"]
+    files = mod.netjson_presence(MQTT)["files"]
     script = next(f for f in files
                   if f["path"] == "/opt/presence-detector/presence-detector.py")
     assert script["contents"] == vendored
@@ -98,9 +101,30 @@ def test_django_format_still_works_with_presence_placeholder():
     mod = _load()
     rendered = mod.DJANGO.format(
         active="{}", tenwrt="{}", preserved="{}", base="{}",
-        defaults="{}", pucks=[], presence="{}",
+        defaults="{}", pucks=[], presence="{}", extra=[], render=[],
     )
     assert "ansells-presence" in rendered
     # catch indentation/syntax errors locally instead of on the live wisp shell
     ast.parse(rendered)
     compile(rendered, "<djangosnippet>", "exec")
+
+
+def test_device_is_only_marked_registered_after_a_successful_config_publish():
+    """Local deviation from upstream presence-detector.
+
+    Upstream adds the device to _registered_clients BEFORE publishing its
+    discovery config. If that publish fails (broker not connected yet) the
+    config is never retried: state keeps flowing to a topic HA never
+    subscribed to and no entity is ever created. Monarto hit this fleet-wide
+    on 2026-08-03. Guard the ordering so a regression fails here.
+    """
+    src = (BT_PATH.parent / "presence" / "presence-detector.py").read_text()
+    body = src[src.index("def _ha_seen"):src.index("def _ha_seen") + 2500]
+
+    add = body.index("self._registered_clients.add(device_slug)")
+    publish = body.index('f"homeassistant/device_tracker/{device_slug}/config"')
+    assert publish < add, (
+        "_registered_clients.add() must come AFTER the config publish, "
+        "so a failed publish is retried rather than silently skipped")
+    # and it must be conditional on the publish result, not unconditional
+    assert "if registered:" in body
