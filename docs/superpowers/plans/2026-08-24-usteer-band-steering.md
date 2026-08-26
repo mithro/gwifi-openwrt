@@ -42,9 +42,16 @@ cd <repo-root> && uv run --with pytest pytest tests/openwisp -q   # 19 tests
    expected and is not a failure of your test. Association alone is what
    usteer acts on.
 
-4. **Use `ubus call usteer update_config`, never `set_config`.** `ubus.c:259`
-   shows `set_config` calls `usteer_init_defaults()` first, wiping `network`,
-   `ssid_list` and everything else not restated in the same call.
+4. **`update_config` merges scalars but REPLACES lists — always restate every
+   array field.** `set_config` is worse (it calls `usteer_init_defaults()`
+   first, `ubus.c:259`), but `update_config` is not the safe merge it looks
+   like. At `ubus.c:262-283` the BOOL/I32/U32 cases `continue` when the field
+   is absent, while `CFG_ARRAY_CB`/`CFG_STRING_CB` call
+   `config_data[i].ptr.CB.set(tb[i])` unconditionally — so an omitted list is
+   set from NULL and ends up **empty**. Proven on puck07 2026-08-26: a call
+   carrying two integers silently emptied `ssid_list`, leaving usteer tracking
+   nothing. Always include `ssid_list` and `interfaces`, and always diff
+   `get_config` before/after. Recovery: `/etc/init.d/usteer restart`.
 
 5. **The usteer UCI section must stay named `usteer1`.** openwisp merges
    `/etc/config/*` by section name; an anonymous section appends a fresh copy
@@ -641,9 +648,15 @@ ssh root@10.1.4.112 'ubus call usteer get_config' > tmp/usteer-puck12-before.jso
 
 - [ ] **Step 2: Apply the canary**
 
+Restate `ssid_list` and `interfaces` even though you are not changing them —
+omitting an array field empties it (see fact 4).
+
 ```bash
 ssh root@10.1.4.112 "ubus call usteer update_config \
-  '{\"load_balancing_threshold\":1,\"event_log_types\":[\"assoc_req_accept\",\"assoc_req_deny\"]}'"
+  '{\"load_balancing_threshold\":1,\
+    \"event_log_types\":[\"assoc_req_accept\",\"assoc_req_deny\"],\
+    \"ssid_list\":[\"ansells\",\"ansells-guest\"],\
+    \"interfaces\":[\"br0.4\"]}'"
 ```
 
 - [ ] **Step 3: Verify it took, and that nothing else moved**

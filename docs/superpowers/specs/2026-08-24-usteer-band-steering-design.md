@@ -189,6 +189,30 @@ Use `update_config`, never `set_config`: `ubus.c:259` shows `set_config` calls
 `usteer_init_defaults()` first, which would wipe `network`, `ssid_list` and
 everything else not restated in the same call.
 
+**But `update_config` is only a merge for SCALARS.** Proven the hard way on
+puck07, 2026-08-26: a call carrying just two integers silently emptied
+`ssid_list`, leaving usteer tracking no SSIDs at all. `ubus.c:262-283`:
+
+```c
+case CFG_BOOL:
+    if (!tb[i]) continue;                 /* absent -> preserved */
+case CFG_I32:
+case CFG_U32:
+    if (!tb[i]) continue;                 /* absent -> preserved */
+case CFG_ARRAY_CB:
+case CFG_STRING_CB:
+    config_data[i].ptr.CB.set(tb[i]);     /* NO absence check; set(NULL) clears */
+```
+
+Scalars skip when absent; array and string callbacks are invoked
+unconditionally, so an omitted list is set from NULL and ends up empty.
+
+**Rule: every `update_config` call MUST restate every array/string field it
+wants to keep** — at minimum `ssid_list` and `interfaces`. Always diff
+`get_config` before and after and confirm nothing but the intended keys moved;
+do not assume omission is safe. Recovery is `/etc/init.d/usteer restart`,
+which re-reads UCI.
+
 Once the canary verifies, commit to the template and run
 `build-templates.py` for both sites.
 
