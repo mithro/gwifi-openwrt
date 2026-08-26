@@ -10,6 +10,7 @@ Two kinds of assertion here:
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -194,3 +195,111 @@ def test_usteer_carries_the_options_the_image_sets():
                 "assoc_steering", "load_balancing_threshold"):
         assert f"option {opt} " in bt.USTEER_CONFIG, f"missing option {opt}"
     assert bt.USTEER_CONFIG.count("list ssid_list") == 2
+
+
+# --------------------------------------------------- usteer client steering
+#
+# Until 2026-08-26 usteer was a pure observer on this fleet: it published
+# 802.11k neighbour reports and never moved a single client. Confirmed live
+# by a laptop sitting on puck07 at -76 dBm while puck10 heard it at -50 dBm.
+# Every actuator was switched off; these tests pin the ones that matter.
+
+def test_usteer_roam_state_machine_is_enabled():
+    """THE fix for sticky clients.
+
+    usteer_local_node_roam_check() (policy.c:425-431) reads:
+
+        if (config.roam_scan_snr)         min_signal = config.roam_scan_snr;
+        else if (config.roam_trigger_snr) min_signal = config.roam_trigger_snr;
+        else                              return;
+
+    With both at 0 it returns before looking at a single client, so the roam
+    state machine never runs at all. A non-zero roam_trigger_snr revives it.
+    """
+    assert "option roam_trigger_snr '0'" not in bt.USTEER_CONFIG
+    assert "option roam_trigger_snr '34'" in bt.USTEER_CONFIG
+
+
+def test_usteer_roam_threshold_targets_minus_70_dbm_on_5ghz():
+    """min_signal = node->noise + snr, so the SNR must be read against the
+    MEASURED noise floor, not assumed.
+
+    Welland 5 GHz noise floors measured 2026-08-26: -105, -104, -102.
+    snr=34 puts the trigger at -71 / -70 / -68 dBm, a 3 dB spread.
+
+    2.4 GHz floors are far more scattered (-99, -91, -80; puck12 sits at -80
+    because ~35 IoT clients saturate that band) so the same SNR is aggressive
+    there. Tolerated because every usteer-tracked SSID has zero 2.4 GHz
+    associations, and because roam_trigger_snr also gates CANDIDATES via
+    over_min_signal(): on a noisy radio candidates are rejected, which costs
+    beacon requests but never a kick.
+    """
+    snr = int(re.search(r"option roam_trigger_snr '(\d+)'",
+                        bt.USTEER_CONFIG).group(1))
+    for noise in (-105, -104, -102):
+        assert -72 <= noise + snr <= -67, (
+            f"snr={snr} puts the 5 GHz trigger at {noise + snr} dBm")
+
+
+def test_usteer_signal_diff_threshold_is_nonzero():
+    """The roam path calls find_better_candidate() with required_criteria =
+    (1 << UEV_SELECT_REASON_SIGNAL) (policy.c:314). That reason comes only
+    from better_signal_strength(), which returns false outright when
+    signal_diff_threshold is 0 -- so the roam SM could run yet never find
+    anybody to move to.
+    """
+    assert "option signal_diff_threshold '0'" not in bt.USTEER_CONFIG
+    assert "option signal_diff_threshold '10'" in bt.USTEER_CONFIG
+
+
+def test_usteer_load_balancing_threshold_is_nonzero():
+    """Un-gates the association-steering path. below_assoc_threshold()
+    returns false on its first line when this is 0, better_signal_strength()
+    likewise when signal_diff_threshold is 0, and the third reason at
+    policy.c:110 is an upstream bug (`has_better_load(a,b) &&
+    !has_better_load(a,b)`). With all three dead, assoc_steering=1 never
+    denied anything.
+    """
+    assert "option load_balancing_threshold '0'" not in bt.USTEER_CONFIG
+    assert "option load_balancing_threshold '1'" in bt.USTEER_CONFIG
+
+
+def test_usteer_does_not_absolutely_kick_weak_clients():
+    """min_snr kicks a client purely for being weak, with nowhere better to
+    go. Leave it unset: the roam path only moves a client toward a node it
+    has actually been heard on."""
+    assert "option min_snr '" not in bt.USTEER_CONFIG
+
+
+def test_usteer_logs_assoc_decisions_but_not_probes():
+    """Probe logging on a fleet this size would flood the per-net rsyslog."""
+    for evt in ("assoc_req_accept", "assoc_req_deny"):
+        assert f"list event_log_types '{evt}'" in bt.USTEER_CONFIG
+    assert "probe_req" not in bt.USTEER_CONFIG
+
+
+def test_usteer_options_are_all_recognised_by_the_init_script():
+    """/etc/init.d/usteer whitelists the UCI options it forwards; anything
+    outside that list is silently DROPPED rather than erroring. Whitelist
+    transcribed from the live init script on puck10, 2026-08-26."""
+    known = {
+        "network", "enabled",
+        "syslog", "ipv6", "local_mode", "load_kick_enabled", "assoc_steering",
+        "node_up_script", "ssid_list", "event_log_types",
+        "debug_level", "sta_block_timeout", "local_sta_timeout",
+        "local_sta_update", "max_neighbor_reports", "max_retry_band",
+        "seen_policy_timeout", "measurement_report_timeout",
+        "load_balancing_threshold", "band_steering_threshold",
+        "remote_update_interval", "remote_node_timeout", "min_connect_snr",
+        "min_snr", "min_snr_kick_delay", "signal_diff_threshold",
+        "initial_connect_delay", "steer_reject_timeout", "roam_process_timeout",
+        "roam_kick_delay", "roam_scan_tries", "roam_scan_timeout",
+        "roam_scan_snr", "roam_scan_interval", "roam_trigger_snr",
+        "roam_trigger_interval", "band_steering_interval",
+        "band_steering_min_snr", "link_measurement_interval",
+        "load_kick_threshold", "load_kick_delay", "load_kick_min_clients",
+        "load_kick_reason_code",
+    }
+    used = set(re.findall(r"^\t(?:option|list) (\w+) ", bt.USTEER_CONFIG,
+                          re.MULTILINE))
+    assert used <= known, f"init script would silently drop: {used - known}"

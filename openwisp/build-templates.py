@@ -258,13 +258,56 @@ LLDPD_CONFIG = """config lldpd 'config'
 # load_kick_enabled/syslog are carried here because the image's usteer1 sets
 # them on 9 of 10 pucks; specifying them makes every puck identical instead of
 # depending on which image a puck happens to have been flashed with.
+# Client steering was entirely inert until 2026-08-26: usteer published 802.11k
+# neighbour reports and never moved a single client.  Proven live -- a laptop
+# sat on puck07 at -76 dBm while puck10 heard it at -50 dBm, and usteer's own
+# state showed it knew.  Four separate switches were off; three matter:
+#
+#   roam_trigger_snr      usteer_local_node_roam_check() (policy.c:425-431) is
+#                         `if (roam_scan_snr) ... else if (roam_trigger_snr)
+#                         ... else return;`.  Both were 0, so it returned
+#                         before examining a single client and the roam state
+#                         machine NEVER RAN.  This is the sticky-client fix.
+#
+#   signal_diff_threshold the roam path calls find_better_candidate() with
+#                         required_criteria = 1 << UEV_SELECT_REASON_SIGNAL
+#                         (policy.c:314), and that reason comes only from
+#                         better_signal_strength(), which returns false when
+#                         this is 0.  Without it the SM runs but can never
+#                         find anyone to move to.
+#
+#   load_balancing_threshold  un-gates the ASSOCIATION path.  All three
+#                         reasons in is_better_candidate() were dead: this one
+#                         and signal_diff_threshold gated on zeros, and
+#                         has_better_load at policy.c:110 is an upstream bug
+#                         (`has_better_load(a,b) && !has_better_load(a,b)`).
+#                         So assoc_steering='1' had never denied anything.
+#
+# Threshold choice: min_signal = node->noise + snr, so the SNR is meaningless
+# without the measured floor.  Welland 5 GHz noise 2026-08-26 was -105/-104/
+# -102, so snr=34 trips at -71/-70/-68 dBm -- a 3 dB spread, right where a
+# client should start looking.  2.4 GHz floors scatter badly (-99/-91/-80;
+# puck12 is -80 because ~35 IoT clients saturate the band) so 34 is aggressive
+# there, accepted because every usteer-tracked SSID has zero 2.4 GHz clients
+# and because roam_trigger_snr also gates candidates via over_min_signal():
+# on a noisy radio candidates get rejected, costing beacon requests, never a
+# kick.  NOT signal-based alone -- 5 GHz has higher path loss, so comparing
+# raw dBm across bands would push clients the wrong way.
+#
+# min_snr stays unset on purpose: it kicks a client for being weak even when
+# there is nowhere better.  The roam path only ever steers toward a node the
+# client has actually been heard on.
 USTEER_CONFIG = """config usteer 'usteer1'
 	option network 'mgmt'
 	option local_mode '0'
 	option assoc_steering '1'
-	option load_balancing_threshold '0'
+	option load_balancing_threshold '1'
 	option load_kick_enabled '0'
 	option syslog '1'
+	option roam_trigger_snr '34'
+	option signal_diff_threshold '10'
+	list event_log_types 'assoc_req_accept'
+	list event_log_types 'assoc_req_deny'
 	list ssid_list 'ansells'
 	list ssid_list 'ansells-guest'
 """
