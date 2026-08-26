@@ -303,3 +303,59 @@ def test_usteer_options_are_all_recognised_by_the_init_script():
     used = set(re.findall(r"^\t(?:option|list) (\w+) ", bt.USTEER_CONFIG,
                           re.MULTILINE))
     assert used <= known, f"init script would silently drop: {used - known}"
+# ---------------------------------------------------------------------------
+# ath10k fwcfg — the association-limit raise
+# ---------------------------------------------------------------------------
+#
+# puck12 hit the QCA4019 10.4 default of 32 stations per radio on the IoT
+# SSID.  These pin the shape of the fix and, more importantly, guard the two
+# values that are handed to the FIRMWARE.
+
+def _fwcfg_files():
+    paths = {f["path"]: f for f in bt.netjson_base()["files"]}
+    return {p: f for p, f in paths.items() if "fwcfg" in p}
+
+
+def test_base_template_ships_fwcfg_for_both_radios():
+    """Both QCA4019 radios need their own file: fwcfg-<bus>-<dev>.txt."""
+    got = set(_fwcfg_files())
+    assert got == {
+        "/lib/firmware/ath10k/fwcfg-ahb-a000000.wifi.txt",
+        "/lib/firmware/ath10k/fwcfg-ahb-a800000.wifi.txt",
+    }
+
+
+def test_fwcfg_raises_stations_above_the_default_32():
+    for f in _fwcfg_files().values():
+        assert "stations=64" in f["contents"]
+
+
+def test_fwcfg_avoids_the_values_that_broke_firmware_init():
+    """peers=144/tids=288 made the firmware miss its ready event on puck12.
+
+    'could not init core (-110)' and NO phy registered -- i.e. the AP off the
+    air.  peers/tids are sent to the firmware (wmi.c) and resize its tables,
+    so they are the dangerous knobs; keep them at the values proven stable.
+    """
+    for f in _fwcfg_files().values():
+        assert "peers=144" not in f["contents"]
+        assert "tids=288" not in f["contents"]
+        assert "peers=80" in f["contents"]
+        assert "tids=160" in f["contents"]
+
+
+def test_fwcfg_peers_exceeds_stations():
+    """Each vdev burns a self-peer, so peers must exceed the station ceiling
+    or the peer check becomes the real (lower) limit."""
+    for f in _fwcfg_files().values():
+        vals = dict(
+            line.split("=", 1)
+            for line in f["contents"].splitlines()
+            if "=" in line and not line.startswith("#")
+        )
+        assert int(vals["peers"]) > int(vals["stations"])
+
+
+def test_fwcfg_is_mode_0644():
+    for f in _fwcfg_files().values():
+        assert f["mode"] == "0644"

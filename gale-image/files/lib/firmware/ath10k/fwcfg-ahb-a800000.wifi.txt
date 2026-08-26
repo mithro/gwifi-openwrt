@@ -1,0 +1,24 @@
+# ath10k-ct firmware config -- raises the association ceiling.
+#
+# The QCA4019 10.4 firmware defaults to TARGET_10_4_NUM_STATIONS = 32
+# (ath10k-ct hw.h), and the driver refuses associations past it with
+#   "refusing to associate station: too many connected already (32)"
+# from mac.c, printing ar->max_num_stations.  This is NOT hostapd's
+# max_num_sta/maxassoc -- those can only LOWER a ceiling, never raise it.
+#
+# stations= is a driver-side check only.  peers= and tids= are sent to the
+# FIRMWARE (wmi.c: config.num_peers / config.num_tids) and resize its tables,
+# so they are the values that can break it.  Measured on puck12, 2026-08-24:
+#   peers=144 tids=288 -> "wmi unified ready event not received",
+#                         "could not init core (-110)", no phy registers
+#   peers=80  tids=160 -> stable: 6 BSSes, 0 beacon errors, 0 refusals
+# Raise beyond this only after proving it on a puck you can afford to lose.
+#
+# Read in ath10k_core_probe_fw() -- i.e. at driver PROBE.  "wifi reload" and
+# "wifi down/up" do NOT re-read it; only a reboot (or module reload) does.
+# NB: a module reload applies the value but leaves the radio unable to bring
+# up more than one BSS per phy ("Failed to set beacon parameters"), so REBOOT
+# is the correct way to apply this.
+stations=64
+peers=80
+tids=160

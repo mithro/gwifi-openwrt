@@ -316,6 +316,39 @@ CRONTAB = """# lldpd snapshots the hostname at start; reassert so renames propag
 */5 * * * * lldpcli configure system hostname "$(uname -n)"
 """
 
+# ath10k-ct firmware config: raise the association ceiling off the QCA4019
+# 10.4 default of 32 stations per radio.  puck12 hit it hard on the IoT SSID
+# (2026-08-24): "refusing to associate station: too many connected already
+# (32)", 29 of the 32 clients a single IoT vendor OUI.
+#
+# NOT hostapd's max_num_sta/maxassoc -- those only ever LOWER a ceiling.  The
+# number comes from ar->max_num_stations (ath10k mac.c), defaulted from
+# TARGET_10_4_NUM_STATIONS.
+#
+# stations= is a driver-side check; peers=/tids= are handed to the FIRMWARE
+# (wmi.c config.num_peers / config.num_tids) and resize its tables, so those
+# two are what can break it.  Measured live on puck12:
+#   peers=144 tids=288 -> "wmi unified ready event not received" /
+#                         "could not init core (-110)", NO phy registers
+#   peers=80  tids=160 -> stable: 6 BSSes, 0 beacon errors, 0 refusals
+#
+# GOTCHA: read in ath10k_core_probe_fw(), i.e. at driver PROBE.  Delivering
+# this file via openwisp does NOT change a running radio -- "wifi reload" and
+# "wifi down/up" never re-read it, and a module reload applies the value but
+# leaves the radio unable to beacon more than one BSS per phy.  It takes
+# effect at the puck's NEXT BOOT.  New pucks get it from the image
+# (gale-image/files/lib/firmware/ath10k/); this template is what keeps pucks
+# flashed before that change in step.
+ATH10K_FWCFG = """# Managed by openwisp (ansells-aps-base) and baked into the gale image.
+# Applies at next boot: ath10k reads this at driver probe only.
+stations=64
+peers=80
+tids=160
+"""
+
+# Both QCA4019 radios, named by their AHB device: fwcfg-<bus>-<dev>.txt.
+ATH10K_RADIOS = ("a000000.wifi", "a800000.wifi")
+
 POST_RELOAD_HOOK = """#!/bin/sh
 # openwisp post-reload-hook (delivered by the ansells-aps-base template):
 # device state the agent cannot express as plain uci-file templates.
@@ -398,6 +431,10 @@ def netjson_base():
          "contents": CRONTAB},
         {"path": "/etc/openwisp/post-reload-hook", "mode": "0755",
          "contents": POST_RELOAD_HOOK},
+    ] + [
+        {"path": f"/lib/firmware/ath10k/fwcfg-ahb-{radio}.txt", "mode": "0644",
+         "contents": ATH10K_FWCFG}
+        for radio in ATH10K_RADIOS
     ]}
 
 
