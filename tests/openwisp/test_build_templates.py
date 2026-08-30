@@ -241,27 +241,40 @@ def test_usteer_roam_threshold_targets_minus_70_dbm_on_5ghz():
             f"snr={snr} puts the 5 GHz trigger at {noise + snr} dBm")
 
 
-def test_usteer_signal_diff_threshold_is_nonzero():
-    """The roam path calls find_better_candidate() with required_criteria =
-    (1 << UEV_SELECT_REASON_SIGNAL) (policy.c:314). That reason comes only
-    from better_signal_strength(), which returns false outright when
-    signal_diff_threshold is 0 -- so the roam SM could run yet never find
-    anybody to move to.
+def test_usteer_association_path_stays_off_after_the_denial_regression():
+    """The association path must stay disabled -- it broke the fleet.
+
+    Enabling all three of these together on 2026-08-26 made every AP at
+    welland DENY associations (hostapd status_code=17, usteer
+    reason=better_candidate) and it was reverted by hand on the controller on
+    2026-08-29.  Mechanism: usteer's signal compare is band-blind and its
+    n_assoc compare ignores signal, so every AP concludes some other AP is
+    the better candidate and defers; with nobody willing to accept, clients
+    associate nowhere.
+
+    These assertions are deliberately the INVERSE of what this file asserted
+    between 2026-08-26 and 2026-08-29.  Re-enabling any of them requires
+    fixing the band-blind comparison first; until then a test that demanded
+    them non-zero would be defending an outage.
     """
-    assert "option signal_diff_threshold '0'" not in bt.USTEER_CONFIG
-    assert "option signal_diff_threshold '10'" in bt.USTEER_CONFIG
+    assert "option assoc_steering '0'" in bt.USTEER_CONFIG
+    assert "option assoc_steering '1'" not in bt.USTEER_CONFIG
+    assert "option load_balancing_threshold '0'" in bt.USTEER_CONFIG
+    assert "option signal_diff_threshold" not in bt.USTEER_CONFIG
 
 
-def test_usteer_load_balancing_threshold_is_nonzero():
-    """Un-gates the association-steering path. below_assoc_threshold()
-    returns false on its first line when this is 0, better_signal_strength()
-    likewise when signal_diff_threshold is 0, and the third reason at
-    policy.c:110 is an upstream bug (`has_better_load(a,b) &&
-    !has_better_load(a,b)`). With all three dead, assoc_steering=1 never
-    denied anything.
+def test_usteer_keeps_the_roam_trigger_that_was_not_implicated():
+    """The revert was surgical: only the association path came off.
+
+    roam_trigger_snr drives usteer_local_node_roam_check() -- the ROAM path --
+    and had nothing to do with the association denials, so it stays on along
+    with the two event_log_types (observability only).  Guards against a
+    future "just revert the whole usteer commit" that would silently take the
+    sticky-client fix with it.
     """
-    assert "option load_balancing_threshold '0'" not in bt.USTEER_CONFIG
-    assert "option load_balancing_threshold '1'" in bt.USTEER_CONFIG
+    assert "option roam_trigger_snr '34'" in bt.USTEER_CONFIG
+    for evt in ("assoc_req_accept", "assoc_req_deny"):
+        assert f"list event_log_types '{evt}'" in bt.USTEER_CONFIG
 
 
 def test_usteer_does_not_absolutely_kick_weak_clients():

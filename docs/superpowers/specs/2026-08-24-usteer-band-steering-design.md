@@ -241,3 +241,78 @@ Once the canary verifies, commit to the template and run
   own decision against that SSID's compatibility intent).
 - The upstream `has_better_load` bug — reported behaviour, not fixed here.
 - Deploying pucks 16–22 to spread the intrinsic 2.4 GHz IoT load.
+
+---
+
+## Addendum 2026-08-29 — the association path was reverted in production
+
+The design above is **partly wrong in practice**, and the record has to say so.
+
+### What happened
+
+The association-path settings shipped to both sites on 2026-08-26:
+
+```
+option assoc_steering        '1'
+option load_balancing_threshold '1'
+option signal_diff_threshold '10'
+```
+
+Within three days every AP at welland was **denying associations** —
+`hostapd status_code=17`, `usteer reason=better_candidate`. Clients could not
+join anywhere. It was reverted by hand on the welland controller on
+2026-08-29, keeping only `roam_trigger_snr '34'` and the two
+`event_log_types`.
+
+### Why the design was wrong
+
+The "Background" section is right that all three association reasons were
+gated off, and right that turning them on makes `is_better_candidate()` live.
+What it did not follow through is what happens when **every** node evaluates
+that predicate **simultaneously and symmetrically**:
+
+* `better_signal_strength()` compares raw signal and is **band-blind** — 5 GHz
+  arrives weaker than 2.4 GHz from the same distance, so the comparison does
+  not mean what "better" implies;
+* `below_assoc_threshold()` compares association **counts** and ignores signal
+  entirely.
+
+Neither predicate is antisymmetric, so for a client heard by several APs each
+AP can conclude that a *different* AP is the better candidate — and each
+defers. `assoc_steering='1'` turns every one of those deferrals into a denial.
+The result is not "steered to the best AP" but "refused by all of them".
+
+This is a **fleet-wide deadlock, not a threshold-tuning problem**. Raising or
+lowering `signal_diff_threshold` does not fix a comparison that is symmetric
+in the wrong way.
+
+### What is kept
+
+`roam_trigger_snr '34'` drives `usteer_local_node_roam_check()` — the **roam**
+path — and was never implicated in the denials. It stays on, as do the two
+`event_log_types` (observability only). Note the consequence: with
+`signal_diff_threshold` unset, `find_better_candidate()`'s
+`UEV_SELECT_REASON_SIGNAL` requirement (`policy.c:314`) can never be
+satisfied, so the roam state machine runs but has no signal-reason candidate
+to move toward. In practice that buys 802.11k neighbour reports and beacon
+requests, **not** active kicks. That is the accepted trade until the
+band-blind comparison is solved.
+
+### Revised risk assessment
+
+The original risk table said `load_balancing_threshold = 1` was "reversible
+instantly via `update_config`". That was true of the *mechanism* and
+irrelevant to the *impact*: the failure denies new associations rather than
+degrading existing ones, so it is invisible on already-connected clients —
+exactly the population a canary watches — and only surfaces as devices roam
+or reconnect. **A one-puck canary could not have caught this**, because the
+deadlock needs several APs running the config at once.
+
+### Before re-enabling any of it
+
+1. Make the candidate comparison band-aware, or restrict steering to within a
+   single band.
+2. Make the predicate antisymmetric, or add a tie-break so two APs cannot both
+   defer.
+3. Exercise it on **several** APs at once and measure association *success*,
+   not just roam events — the metric the original plan lacked.

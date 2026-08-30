@@ -297,15 +297,44 @@ LLDPD_CONFIG = """config lldpd 'config'
 # min_snr stays unset on purpose: it kicks a client for being weak even when
 # there is nowhere better.  The roam path only ever steers toward a node the
 # client has actually been heard on.
+#
+# 2026-08-29 REGRESSION AND PARTIAL REVERT -- read before re-enabling anything.
+# The three association-path switches above (assoc_steering=1,
+# signal_diff_threshold=10, load_balancing_threshold=1) shipped 2026-08-26 and
+# made every AP at welland DENY associations: hostapd status_code=17, usteer
+# reason=better_candidate.  The mechanism is the analysis above turned against
+# itself -- usteer's signal compare is band-blind and its n_assoc compare
+# ignores signal entirely, so with all three live every AP concludes some other
+# AP is the better candidate and defers.  With no AP willing to accept, clients
+# associate nowhere.  Reverted by hand on the welland controller the same day;
+# this constant now carries that reverted file verbatim, comment included, so
+# build-templates.py reproduces what is actually running rather than the config
+# that broke it.
+#
+# What is KEPT is the half that was proven good and is unrelated to the denial:
+# roam_trigger_snr='34' (the sticky-client fix -- it drives the ROAM path, not
+# the association path) and the two event_log_types (observability only).
+#
+# What is OFF is the whole association path: assoc_steering,
+# load_balancing_threshold and signal_diff_threshold.  Re-enabling any of them
+# needs the band-blind comparison solved first -- see the design doc's
+# 2026-08-29 addendum.  Note signal_diff_threshold also gates the roam path's
+# candidate search (better_signal_strength()), so with it unset the roam state
+# machine runs but currently has no signal-reason candidate to move toward:
+# roam_trigger_snr='34' alone buys the 802.11k/beacon-request behaviour, not
+# active kicks.  That is the accepted trade until the denial is understood.
 USTEER_CONFIG = """config usteer 'usteer1'
 	option network 'mgmt'
 	option local_mode '0'
-	option assoc_steering '1'
-	option load_balancing_threshold '1'
+	# 2026-08-29: assoc_steering=1 + signal_diff_threshold=10 + load_balancing_threshold=1
+	# (pushed 2026-08-26) made every AP deny associations (hostapd status_code=17,
+	# usteer reason=better_candidate). usteer's signal compare is band-blind and its
+	# n_assoc compare ignores signal, so APs defer to each other. Reverted.
+	option assoc_steering '0'
+	option load_balancing_threshold '0'
 	option load_kick_enabled '0'
 	option syslog '1'
 	option roam_trigger_snr '34'
-	option signal_diff_threshold '10'
 	list event_log_types 'assoc_req_accept'
 	list event_log_types 'assoc_req_deny'
 	list ssid_list 'ansells'

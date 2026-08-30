@@ -12,6 +12,42 @@
 
 ---
 
+---
+
+## STATUS 2026-08-30 — partially executed, association half REVERTED
+
+This plan was executed out of order and is **not** a live to-do list. Actual
+state, verified against both controllers and the pucks on 2026-08-30:
+
+| Task | State |
+|---|---|
+| 1–4 `steerreport.py` / `steer_report.py` audit tooling | **never built** — no such files exist |
+| 5 fix the inert config | done 2026-08-26 → **association half reverted 2026-08-29** |
+| 6 live canary on one puck | done (puck07) — did **not** catch the regression; see below |
+| 7 functional test with `rpi4-pmod` | **never run** |
+| 8 roll out to both sites | done 2026-08-26; welland reverted 2026-08-29, monarto still carries the 2026-08-26 config |
+
+**The regression:** `assoc_steering=1` + `load_balancing_threshold=1` +
+`signal_diff_threshold=10` made every AP at welland deny associations
+(`status_code=17`, `reason=better_candidate`). Reverted by hand on the welland
+controller. `roam_trigger_snr '34'` and the two `event_log_types` were kept.
+Full analysis: the 2026-08-29 addendum in the design doc.
+
+**Why Task 6 missed it:** the failure denies *new* associations and leaves
+existing ones alone, and the deadlock requires several APs running the config
+at once. A single-puck canary watching an already-connected laptop was
+structurally incapable of seeing it.
+
+**Do not resume Tasks 1–4 as written.** Their premise is that the association
+path is on and needs an instrument to prove it works. The instrument is still
+worth building, but its job is now the opposite: measure association
+*success* and detect mutual deferral. Re-read the design addendum first.
+
+**Monarto is still on the unreverted config** — a known divergence, not an
+oversight. It has ~4 clients across 4 APs, too few to trigger the deadlock.
+
+---
+
 ## Essential context (read before starting)
 
 You are working in the worktree `.worktrees/usteer-band-steering` on branch
