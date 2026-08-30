@@ -152,8 +152,11 @@ def main(argv=None) -> int:
     status = (m["flash_status"] or "(blank — not yet flashed)"
               if m["flash_status_known"] else "(UNKNOWN — no such column)")
     print(f"    flash status : {status}")
-    print(f"    MAC check    : "
-          + {True: "ok", False: "MISMATCH", None: "n/a (sheet has no MACs)"}[m["mac_ok"]])
+    mac_note = {True: "ok", False: "MISMATCH",
+                None: "n/a (sheet cells are blank)"}[m["mac_ok"]]
+    if not m["mac_columns_known"]:
+        mac_note = "UNAVAILABLE (no wan/lan columns in the header)"
+    print(f"    MAC check    : {mac_note}")
     for n in m["notes"]:
         print(f"    - {n}")
 
