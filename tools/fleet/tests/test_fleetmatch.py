@@ -180,3 +180,61 @@ def test_flash_status_is_known_when_the_column_exists():
     r = match_puck(live, _HEADER, _ROWS)
     assert r["flash_status_known"] is True
     assert r["flash_status"] == "flashed+boot-verified"
+
+
+# ---------------------------------------------------------------------------
+# MAC columns follow the sheet's CURRENT names (wan/lan), not the legacy ones
+# ---------------------------------------------------------------------------
+#
+# sheetmap.RENAME_HEADERS renamed eth0->wan and eth1->lan, and the live
+# 'Google WiFi Pucks' tab has carried 'wan'/'lan' since 2026-07-25.
+# match_puck still looked the columns up as "eth0"/"eth1", so _col() returned
+# -1 for both, _cell() turned that into "", and the MAC cross-check silently
+# degraded to mac_ok=None -- reported to the operator as "n/a (sheet has no
+# MACs)".  Verified against the live sheet on 2026-08-30: feeding deliberately
+# wrong MACs for a real flashed puck produced mac_ok=None and no notes, so
+# identify_puck.py could never reach its exit-4 MISMATCH gate.
+
+_RENAMED_HEADER = ["wan" if h == "eth0" else "lan" if h == "eth1" else h
+                   for h in _HEADER]
+
+
+def test_mac_check_works_against_the_renamed_wan_lan_columns():
+    live = {"serial_number": "1605HW000GM",
+            "ethernet_mac0": "AABBCCDDEE00", "ethernet_mac1": "AABBCCDDEE01"}
+    r = match_puck(live, _RENAMED_HEADER, _ROWS)
+    assert r["matched"] is True
+    assert r["mac_ok"] is True
+    assert r["mac_columns_known"] is True
+
+
+def test_mac_mismatch_is_caught_on_the_renamed_columns():
+    """The regression that mattered: a wrong puck must not read as 'n/a'."""
+    live = {"serial_number": "1605HW000GM",
+            "ethernet_mac0": "DEADBEEF0000", "ethernet_mac1": "DEADBEEF0001"}
+    r = match_puck(live, _RENAMED_HEADER, _ROWS)
+    assert r["mac_ok"] is False
+    assert any("mac" in n.lower() for n in r["notes"])
+
+
+def test_legacy_eth0_eth1_headers_still_work():
+    """A sheet that has not been renamed yet must keep cross-checking."""
+    live = {"serial_number": "1605HW000GM",
+            "ethernet_mac0": "DEADBEEF0000", "ethernet_mac1": "DEADBEEF0001"}
+    r = match_puck(live, _HEADER, _ROWS)
+    assert r["mac_ok"] is False
+    assert r["mac_columns_known"] is True
+
+
+def test_absent_mac_columns_are_flagged_not_silently_uncheckable():
+    """No wan/lan AND no eth0/eth1 = unreadable schema, not 'sheet has no MACs'."""
+    header = [h for h in _HEADER if h not in ("eth0", "eth1")]
+    rows = [[""] * len(header)]
+    rows[0][3] = "1605HW000GM"
+    live = {"serial_number": "1605HW000GM",
+            "ethernet_mac0": "AABBCCDDEE00", "ethernet_mac1": "AABBCCDDEE01"}
+    r = match_puck(live, header, rows)
+    assert r["matched"] is True
+    assert r["mac_columns_known"] is False
+    assert r["mac_ok"] is None
+    assert any("mac" in n.lower() for n in r["notes"])

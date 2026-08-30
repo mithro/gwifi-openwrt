@@ -6,7 +6,7 @@ puck's VPD and the sheet's header + rows, find which fleet row it is and report
 its flash status.  Lets the operator identify a connected puck without reading
 a label — the sheet is the source of truth.
 """
-from galeflash.sheetmap import format_mac
+from galeflash.sheetmap import FIELD_TO_HEADER, format_mac
 
 
 def _col(header: list[str], name: str) -> int:
@@ -20,6 +20,26 @@ def _col(header: list[str], name: str) -> int:
 
 def _cell(row: list[str], idx: int) -> str:
     return row[idx].strip() if 0 <= idx < len(row) else ""
+
+
+def _mac_cols(header: list[str]) -> tuple[int, int]:
+    """Return the (wan, lan) MAC column indices, tolerating the legacy names.
+
+    ``sheetmap.RENAME_HEADERS`` renamed ``eth0``->``wan`` and ``eth1``->``lan``,
+    and the live sheet has carried the new names since 2026-07-25.  Looking the
+    columns up under the old names returned -1 for both, which ``_cell()``
+    renders as ``""`` — indistinguishable from a genuinely blank cell, so the
+    cross-check degraded to ``mac_ok=None`` ("sheet has no MACs") instead of
+    catching a mismatch.  Prefer the current names, fall back to the legacy
+    ones so an un-renamed sheet still gets checked.
+    """
+    for wan, lan in ((FIELD_TO_HEADER["ethernet_mac0"],
+                      FIELD_TO_HEADER["ethernet_mac1"]),
+                     ("eth0", "eth1")):
+        wan_col, lan_col = _col(header, wan), _col(header, lan)
+        if wan_col >= 0 and lan_col >= 0:
+            return wan_col, lan_col
+    return -1, -1
 
 
 def find_claimable_row(
@@ -143,11 +163,13 @@ def match_puck(live_identity: dict, header: list[str], rows: list[list[str]]) ->
         row_number:   1-based spreadsheet row of the match (header is row 1), or None.
         flash_status: the matched row's Flash Status cell ("" if blank/absent).
         mac_ok:       True/False if the sheet has MACs to compare, else None.
+        mac_columns_known: False when the header has no MAC columns at all, so
+            callers can tell an unreadable schema from merely blank cells.
         notes:        human-readable warnings (e.g. MAC mismatch).
     """
     serial = (live_identity.get("serial_number") or "").strip()
     serial_col = _col(header, "serial")
-    eth0_col, eth1_col = _col(header, "eth0"), _col(header, "eth1")
+    eth0_col, eth1_col = _mac_cols(header)
     status_col = _col(header, "flash status")
 
     result = {
@@ -163,12 +185,21 @@ def match_puck(live_identity: dict, header: list[str], rows: list[list[str]]) ->
         # reached AH, so this was silently the case for every puck.)
         "flash_status_known": status_col >= 0,
         "mac_ok": None,
+        # False when the sheet has neither the current wan/lan MAC columns nor
+        # the legacy eth0/eth1 ones.  Without this, an unreadable schema is
+        # reported as mac_ok=None -- the same value as "the sheet's cells are
+        # blank" -- so a dead cross-check looks like a benign one.
+        "mac_columns_known": eth0_col >= 0 and eth1_col >= 0,
         "notes": [],
     }
     if status_col < 0:
         result["notes"].append(
             "sheet header has no 'Flash Status' column — flash state is "
             "UNKNOWN, not blank (is the fetched column range wide enough?)")
+    if not result["mac_columns_known"]:
+        result["notes"].append(
+            "sheet header has no 'wan'/'lan' (or legacy 'eth0'/'eth1') MAC "
+            "columns — the MAC cross-check is UNAVAILABLE, not merely blank")
 
     match_idx = None
     for i, row in enumerate(rows):
