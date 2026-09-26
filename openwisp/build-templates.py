@@ -323,6 +323,34 @@ LLDPD_CONFIG = """config lldpd 'config'
 # machine runs but currently has no signal-reason candidate to move toward:
 # roam_trigger_snr='34' alone buys the 802.11k/beacon-request behaviour, not
 # active kicks.  That is the accepted trade until the denial is understood.
+#
+# 2026-09-19 MONITOR-ONLY.  All active steering is off; usteerd still runs
+# (node exchange over mgmt, station tracking, the assoc event log) but never
+# acts on a client.  Applied by hand on the welland controller that day and
+# verified in `ubus call usteer get_config` on puck03/06/07/10/12; this
+# constant carries that file verbatim (less an inert probe_steering line,
+# removed from the controller too on 2026-09-26).  Each switch and the gate it closes
+# (usteer policy.c / band_steering.c):
+#
+#   assoc_steering=0, min_snr=0   usteer_check_request() never denies an assoc
+#   (probe_steering)              NOT settable: a struct field hardcoded to 0 in
+#                                 main.c, absent from the ubus config table and
+#                                 the init script whitelist, so probes are never
+#                                 steered and a UCI line would be silently dropped
+#   roam_scan_snr=0, roam_trigger_snr=0
+#                                 usteer_local_node_roam_check() returns early:
+#                                 no roam state machine, no BSS-TM kicks
+#   min_snr=0                     usteer_local_node_snr_kick() returns early
+#   load_kick_enabled=0           no load kicks
+#   band_steering_interval=0      usteer_band_steering_perform_steer() returns
+#                                 early.  NOT in any earlier version of this
+#                                 file: usteer's DEFAULT is 120000, so band
+#                                 steering (2.4 -> 5 GHz BSS-TM) was live the
+#                                 whole time.  The gate has existed since the
+#                                 component landed (usteer f4e120c, 2022-03-18).
+#   load_balancing_threshold=0    the n_assoc compare in is_better_candidate()
+#                                 short-circuits (band_steering_threshold only
+#                                 matters behind it)
 USTEER_CONFIG = """config usteer 'usteer1'
 	option network 'mgmt'
 	option local_mode '0'
@@ -330,11 +358,18 @@ USTEER_CONFIG = """config usteer 'usteer1'
 	# (pushed 2026-08-26) made every AP deny associations (hostapd status_code=17,
 	# usteer reason=better_candidate). usteer's signal compare is band-blind and its
 	# n_assoc compare ignores signal, so APs defer to each other. Reverted.
+	# 2026-09-19: MONITOR-ONLY. usteerd runs (AP node exchange, station tracking,
+	# event log) but never steers: no assoc/probe denial, no roam/BSS-TM kicks,
+	# no SNR/load kicks, no band steering (band_steering_interval defaults to 120000).
 	option assoc_steering '0'
-	option load_balancing_threshold '0'
+	option min_snr '0'
+	option min_connect_snr '0'
+	option roam_scan_snr '0'
+	option roam_trigger_snr '0'
 	option load_kick_enabled '0'
+	option load_balancing_threshold '0'
+	option band_steering_interval '0'
 	option syslog '1'
-	option roam_trigger_snr '34'
 	list event_log_types 'assoc_req_accept'
 	list event_log_types 'assoc_req_deny'
 	list ssid_list 'ansells'
