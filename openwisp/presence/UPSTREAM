@@ -1,6 +1,9 @@
 Source: https://github.com/rmoesbergen/openwrt-ha-device-tracker
 Commit: a81e6642ed86e53ffed691b91af9e661829ecd53 (main, 2026-07-26)
-presence-detector.py: 283c786d4ba0383c8536a4f6d6432da633b8433dc57aa8953830e67c870692c7 (byte-exact)
+presence-detector.py: upstream sha256 283c786d4ba0383c8536a4f6d6432da633b8433dc57aa8953830e67c870692c7
+  + LOCAL DEVIATIONs, each marked in the file with a "LOCAL DEVIATION from upstream" comment:
+    - _ha_seen(): mark a device registered only once its HA config publish succeeds
+    - set_device_home(): log "is now at home" at INFO only on a transition, not on every fallback sync
 init.d-presence-detector: upstream init.d/presence-detector (sha256 19cb69fc0c363394023cd91eedb8f58f7e12330a88fbc7d5659f3bfbdbeb7ed9) + local path adaptations (see file footer)
 Update procedure: re-fetch at a new pin, re-apply the documented init diff, update this file.
 Known upstream behavior: interface auto-detect shells `ubus list hostapd.*` with

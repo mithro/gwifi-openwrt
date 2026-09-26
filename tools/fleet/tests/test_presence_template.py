@@ -128,3 +128,62 @@ def test_device_is_only_marked_registered_after_a_successful_config_publish():
         "so a failed publish is retried rather than silently skipped")
     # and it must be conditional on the publish result, not unconditional
     assert "if registered:" in body
+
+
+def _presence_module():
+    """Import the vendored presence-detector with paho stubbed out (it only
+    needs paho at connect time, which these tests never reach)."""
+    import sys
+    import types
+    paho = types.ModuleType("paho")
+    paho_mqtt = types.ModuleType("paho.mqtt")
+    paho_mqtt.client = types.ModuleType("paho.mqtt.client")
+    paho.mqtt = paho_mqtt
+    sys.modules.setdefault("paho", paho)
+    sys.modules.setdefault("paho.mqtt", paho_mqtt)
+    sys.modules.setdefault("paho.mqtt.client", paho_mqtt.client)
+    path = BT_PATH.parent / "presence" / "presence-detector.py"
+    spec = importlib.util.spec_from_file_location("presence_detector", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_home_is_logged_at_info_only_on_a_transition():
+    """Local deviation from upstream presence-detector.
+
+    fallback_sync_interval=60 makes _do_full_sync() call set_device_home() for
+    EVERY connected client every minute, and upstream logs each call at INFO:
+    ~90,000 "is now at home" lines/day from puck12 on 2026-09-25 against 12
+    real "away" events. Only a transition may log at INFO; a re-announce of
+    an already-home client logs at debug. The MQTT ADD is still queued every
+    time -- the fallback resync itself must keep working.
+    """
+    import queue
+    mod = _presence_module()
+    logged = []
+
+    det = object.__new__(mod.PresenceDetector)
+    det._settings = types_ns(filter=[], filter_is_denylist=True,
+                             location="home", interfaces=["hostapd.wl0"])
+    det._logger = types_ns(log=lambda text, is_debug=False: logged.append((text, is_debug)))
+    det._queue = queue.Queue()
+    det._online_clients = {"hostapd.wl0": set()}
+
+    det.set_device_home("hostapd.wl0", "aa:bb:cc:dd:ee:ff")   # arrives
+    det.set_device_home("hostapd.wl0", "aa:bb:cc:dd:ee:ff")   # fallback sync
+    det.set_device_home("hostapd.wl0", "aa:bb:cc:dd:ee:ff")   # fallback sync
+    det.set_device_away("hostapd.wl0", "aa:bb:cc:dd:ee:ff")   # leaves
+    det.set_device_home("hostapd.wl0", "aa:bb:cc:dd:ee:ff")   # comes back
+
+    home = [dbg for text, dbg in logged if "is now at home" in text]
+    assert home == [False, True, True, False], home
+    # every set_device_home still queued an ADD for MQTT (plus one DELETE)
+    actions = [det._queue.get_nowait().action for _ in range(det._queue.qsize())]
+    assert actions.count(mod.QueueItem.Action.ADD) == 4
+    assert actions.count(mod.QueueItem.Action.DELETE) == 1
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)

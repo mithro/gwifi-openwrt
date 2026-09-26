@@ -246,10 +246,18 @@ class PresenceDetector(Thread):
         """Add client to the 'add' queue"""
         if not self._should_handle_device(device):
             return
+        # LOCAL DEVIATION from upstream: log "is now at home" at INFO only on a
+        # transition. With fallback_sync_interval=60 every full sync re-calls
+        # this for EVERY connected client, and upstream logs each one at INFO:
+        # ~90,000 syslog lines/day from puck12 alone on 2026-09-25 against 12
+        # real "away" events. The MQTT publish below is unchanged -- only the
+        # log line of an already-home client drops to debug.
+        is_new = device not in self._online_clients[interface]
         self._queue.put(QueueItem(device, interface, QueueItem.Action.ADD))
         self._online_clients[interface].add(device)
         self._logger.log(
-            f"Device {device} on {interface} is now at {self._settings.location}"
+            f"Device {device} on {interface} is now at {self._settings.location}",
+            not is_new,
         )
 
     def _get_all_online_devices(self) -> list[tuple[str, str]]:
