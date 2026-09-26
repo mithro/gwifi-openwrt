@@ -200,45 +200,50 @@ def test_usteer_carries_the_options_the_image_sets():
 # --------------------------------------------------- usteer client steering
 #
 # Until 2026-08-26 usteer was a pure observer on this fleet: it published
-# 802.11k neighbour reports and never moved a single client. Confirmed live
-# by a laptop sitting on puck07 at -76 dBm while puck10 heard it at -50 dBm.
-# Every actuator was switched off; these tests pin the ones that matter.
+# 802.11k neighbour reports and never moved a single client. 2026-08-26 turned
+# steering on, 2026-08-29 took the association path back off after it denied
+# every association, and 2026-09-19 made usteer MONITOR-ONLY again: usteerd
+# runs and logs, but every actuator is off.  These tests pin each gate closed.
 
-def test_usteer_roam_state_machine_is_enabled():
-    """THE fix for sticky clients.
 
-    usteer_local_node_roam_check() (policy.c:425-431) reads:
+def _uci_option(name):
+    m = re.search(rf"^\toption {name} '([^']*)'$", bt.USTEER_CONFIG, re.MULTILINE)
+    return m and m.group(1)
+
+
+def test_usteer_roam_state_machine_is_off():
+    """usteer_local_node_roam_check() (policy.c) reads:
 
         if (config.roam_scan_snr)         min_signal = config.roam_scan_snr;
         else if (config.roam_trigger_snr) min_signal = config.roam_trigger_snr;
         else                              return;
 
-    With both at 0 it returns before looking at a single client, so the roam
-    state machine never runs at all. A non-zero roam_trigger_snr revives it.
+    Both 0 => it returns before looking at a client: no roam state machine,
+    no BSS-TM requests, no roam kicks.  Pinned explicitly at '0' (not merely
+    absent) because openwisp-config MERGES /etc/config/usteer, so an omitted
+    option would keep whatever the puck already had -- e.g. the '34' that
+    shipped 2026-08-26.
     """
-    assert "option roam_trigger_snr '0'" not in bt.USTEER_CONFIG
-    assert "option roam_trigger_snr '34'" in bt.USTEER_CONFIG
+    assert _uci_option("roam_trigger_snr") == "0"
+    assert _uci_option("roam_scan_snr") == "0"
 
 
-def test_usteer_roam_threshold_targets_minus_70_dbm_on_5ghz():
-    """min_signal = node->noise + snr, so the SNR must be read against the
-    MEASURED noise floor, not assumed.
+def test_usteer_band_steering_is_off():
+    """usteer_band_steering_perform_steer() returns early only when
+    band_steering_interval is 0 -- and usteer's DEFAULT is 120000, so band
+    steering (2.4 -> 5 GHz BSS-TM) was live on every puck until 2026-09-19
+    even though no version of this file ever mentioned it."""
+    assert _uci_option("band_steering_interval") == "0"
 
-    Welland 5 GHz noise floors measured 2026-08-26: -105, -104, -102.
-    snr=34 puts the trigger at -71 / -70 / -68 dBm, a 3 dB spread.
 
-    2.4 GHz floors are far more scattered (-99, -91, -80; puck12 sits at -80
-    because ~35 IoT clients saturate that band) so the same SNR is aggressive
-    there. Tolerated because every usteer-tracked SSID has zero 2.4 GHz
-    associations, and because roam_trigger_snr also gates CANDIDATES via
-    over_min_signal(): on a noisy radio candidates are rejected, which costs
-    beacon requests but never a kick.
-    """
-    snr = int(re.search(r"option roam_trigger_snr '(\d+)'",
-                        bt.USTEER_CONFIG).group(1))
-    for noise in (-105, -104, -102):
-        assert -72 <= noise + snr <= -67, (
-            f"snr={snr} puts the 5 GHz trigger at {noise + snr} dBm")
+def test_usteer_does_not_kick_clients():
+    """min_snr kicks a client purely for being weak (usteer_local_node_snr_kick
+    returns early only at 0) and also denies associations below it; load kicks
+    have their own switch.  Both pinned off for the same merge reason as
+    above."""
+    assert _uci_option("min_snr") == "0"
+    assert _uci_option("min_connect_snr") == "0"
+    assert _uci_option("load_kick_enabled") == "0"
 
 
 def test_usteer_association_path_stays_off_after_the_denial_regression():
@@ -251,37 +256,17 @@ def test_usteer_association_path_stays_off_after_the_denial_regression():
     n_assoc compare ignores signal, so every AP concludes some other AP is
     the better candidate and defers; with nobody willing to accept, clients
     associate nowhere.
-
-    These assertions are deliberately the INVERSE of what this file asserted
-    between 2026-08-26 and 2026-08-29.  Re-enabling any of them requires
-    fixing the band-blind comparison first; until then a test that demanded
-    them non-zero would be defending an outage.
     """
-    assert "option assoc_steering '0'" in bt.USTEER_CONFIG
-    assert "option assoc_steering '1'" not in bt.USTEER_CONFIG
-    assert "option load_balancing_threshold '0'" in bt.USTEER_CONFIG
+    assert _uci_option("assoc_steering") == "0"
+    assert _uci_option("load_balancing_threshold") == "0"
     assert "option signal_diff_threshold" not in bt.USTEER_CONFIG
 
 
-def test_usteer_keeps_the_roam_trigger_that_was_not_implicated():
-    """The revert was surgical: only the association path came off.
-
-    roam_trigger_snr drives usteer_local_node_roam_check() -- the ROAM path --
-    and had nothing to do with the association denials, so it stays on along
-    with the two event_log_types (observability only).  Guards against a
-    future "just revert the whole usteer commit" that would silently take the
-    sticky-client fix with it.
-    """
-    assert "option roam_trigger_snr '34'" in bt.USTEER_CONFIG
-    for evt in ("assoc_req_accept", "assoc_req_deny"):
-        assert f"list event_log_types '{evt}'" in bt.USTEER_CONFIG
-
-
-def test_usteer_does_not_absolutely_kick_weak_clients():
-    """min_snr kicks a client purely for being weak, with nowhere better to
-    go. Leave it unset: the roam path only moves a client toward a node it
-    has actually been heard on."""
-    assert "option min_snr '" not in bt.USTEER_CONFIG
+def test_usteer_does_not_claim_a_probe_steering_switch():
+    """probe_steering is a struct field hardcoded to 0 in main.c; it is not in
+    usteer's ubus config table or the init script's whitelist, so a UCI line
+    for it is silently dropped.  Don't write a setting that does nothing."""
+    assert "probe_steering" not in bt.USTEER_CONFIG
 
 
 def test_usteer_logs_assoc_decisions_but_not_probes():
