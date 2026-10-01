@@ -66,6 +66,15 @@ def free_nbd():
 
 def find_root(nbd):
     """The ext4 partition holding etc/debian_version."""
+    # qemu-nbd returns before the kernel has scanned the partition table
+    # (seen 2026-10-01: lsblk listed only the bare nbd0), so wait for it.
+    name = nbd[len("/dev/"):]
+    deadline = time.time() + 30
+    while not list(pathlib.Path(f"/sys/block/{name}").glob(f"{name}p*")):
+        if time.time() > deadline:
+            raise SystemExit(f"ABORT: no partitions appeared on {nbd}")
+        run(["blockdev", "--rereadpt", nbd], check=False)
+        time.sleep(1)
     run(["udevadm", "settle"])
     rows = out(["lsblk", "-rno", "NAME,FSTYPE", nbd]).splitlines()
     for row in rows:
