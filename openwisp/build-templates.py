@@ -475,6 +475,26 @@ uci commit system
 # puck07 2026-08-01: nothing reached the ten64 leg until `log` restarted).
 /etc/init.d/log restart
 
+# SSH is public-key only. The keys come from OpenWISP's default 'SSH Keys'
+# template (the controller's own credential + ADMIN_SSH_PUBKEYS in
+# build-templates.py). The image ships PasswordAuth/RootPasswordAuth on with a
+# blank root password, so until this runs anyone on the mgmt VLAN gets root.
+# Gate on an actual key: switching passwords off on a puck whose
+# authorized_keys is missing would leave it reachable only via the agent.
+AK=/etc/dropbear/authorized_keys
+if [ -s "$AK" ] && grep -q '^ssh-' "$AK"; then
+	pw=off
+else
+	pw=on
+	logger -t post-reload-hook "no key in $AK: leaving dropbear password auth ON"
+fi
+uci set dropbear.@dropbear[0].PasswordAuth="$pw"
+uci set dropbear.@dropbear[0].RootPasswordAuth="$pw"
+uci commit dropbear
+# reload restarts only the listener; established sessions are separate
+# processes and survive.
+/etc/init.d/dropbear reload
+
 # lldpd announces on the physical jacks (config file from this template);
 # ensure the detected trunk is in the list — no-op on pucks (their jacks are
 # pre-listed), adds the virtio eth0 on the tenwrt VM. Runs after every apply

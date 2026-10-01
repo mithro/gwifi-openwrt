@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Admin SSH keys for the pucks (openwisp/build-templates.py)."""
+"""Pucks accept public-key SSH only (openwisp/build-templates.py)."""
 import importlib.util
 import json
 import re
@@ -15,6 +15,11 @@ def _load():
     return mod
 
 
+def _hook():
+    files = _load().netjson_base()["files"]
+    return next(f for f in files if f["path"] == "/etc/openwisp/post-reload-hook")["contents"]
+
+
 def test_admin_keys_are_public_keys():
     keys = _load().ADMIN_SSH_PUBKEYS
     assert len(keys) >= 1
@@ -22,6 +27,27 @@ def test_admin_keys_are_public_keys():
         assert re.match(r"^(ssh-ed25519|ssh-rsa|ecdsa-sha2-\S+) AAAA\S+ \S", k), k
         assert "\n" not in k
         assert "PRIVATE" not in k
+
+
+def test_hook_disables_password_auth():
+    hook = _hook()
+    assert "PasswordAuth" in hook and "RootPasswordAuth" in hook
+    assert "uci commit dropbear" in hook
+    assert "/etc/init.d/dropbear reload" in hook
+
+
+def test_hook_never_disables_passwords_without_a_key():
+    """Turning passwords off on a puck with no authorized key would leave it
+    reachable only through the openwisp agent: the hook must gate on a key."""
+    hook = _hook()
+    gate = hook.index('grep -q \'^ssh-\' "$AK"')
+    assert "AK=/etc/dropbear/authorized_keys" in hook
+    assert gate < hook.index("uci set dropbear")
+    assert "pw=on" in hook and "pw=off" in hook
+
+
+def test_hook_does_not_hide_stderr():
+    assert "2>/dev/null" not in _hook()
 
 
 def test_django_script_carries_keys_and_attaches_ssh_keys_template():
