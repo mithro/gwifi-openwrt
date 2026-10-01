@@ -274,6 +274,15 @@ write_files:
     content: |
       network: {{config: disabled}}
 package_update: true
+# The domain XML gives the VM an org.qemu.guest_agent.0 channel, but the
+# genericcloud image has no agent behind it. Without one, a VM whose ssh key
+# is lost cannot be reached from the hypervisor at all (wisp.monarto,
+# 2026-10-01). The unit is udev-triggered by the virtio port, which already
+# exists when cloud-init installs the package, so start it explicitly.
+packages:
+  - qemu-guest-agent
+runcmd:
+  - [systemctl, start, qemu-guest-agent]
 """
 
 
