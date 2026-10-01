@@ -40,6 +40,7 @@ def _render(site):
         defaults=json.dumps({"ansells_key": "x", "iot_key": "y",
                              "guest_key": "z",
                              "syslog_ip": cfg["syslog_ip"]}),
+        admin_keys=json.dumps(list(bt.ADMIN_SSH_PUBKEYS)),
         pucks=cfg["pucks"], extra=cfg["extra"], render=cfg["render"])
 
 
