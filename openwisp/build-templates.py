@@ -232,6 +232,23 @@ def netjson_mesh_aps():
     ]}
 
 
+# Admin public keys allowed to ssh in as root, alongside OpenWISP's own
+# credential key. Mirrored from the fleet's single list of human admin keys,
+# ~/local/ansible inventory/group_vars/all.yml `tim_user_ssh_pubkeys` (both
+# keys live in ten64's ssh-agent). Public keys: not secret, committed so every
+# access grant to the pucks is reviewable here.
+#
+# They are ADDED to OpenWISP's default 'SSH Keys' template, the one that owns
+# /etc/dropbear/authorized_keys. That template is created by the
+# ansible-openwisp2 role's load_initial_data.py with the controller's
+# generated key, and that loader only ever appends -- so re-running the role
+# keeps these, and this script keeps its key. Revoking a key = removing it
+# here AND from the template contents on the controller.
+ADMIN_SSH_PUBKEYS = (
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDV7GlFQp7yc1pIe/nDYwKhJUTKXRJ9Jf2ra7yK2MNHcsDoJqHrxz/uL96mcRBSaFVRY/2mwfeohawHzE1SBg97KYACuwQ8EQAXjOZMdhFOOaHcx8UlPWg+5x6UdI5m3KgCzlTenFBEMTu7YdeSa4AIRBctm0bbRiy9WtZG5A1GFOQuZ4ThxcsV26jGXhomVfYHJLxr/Xf43khx+VH0y/EOjQ0/e3KGWEZYA28W/RkFhhV7oswd6DfWKFXJOQ42tuTHMLHxMgwgkKULiNbJO9Aa+iVBNUS6mPsQcF1Tk6kWBTypudW1ceCkaFv60Q8FZDJVKa7bEYd2q4uD2wNG4s5ypWOoe2KB9Ux8rJa308mwQxBtoMk7GqcfejQBSGHjeP5Y41D0Bxz2uIYV5q1RMCS5wn6dz2PQG9j+ViSx1lwK8iJ79e8wzoJNBvWSAz6yoyc6uTCuqKhITUxdpd3zFR9sSDmb4bqvPLmC1BtiJGm9VGrOVaz/KHZRPg+Snw7TrHU= tim@desktop",
+    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDq2iw8EFJnLt4GB/cWXdTpPKAf3YpjCbfBJFk51Wcc3JSm4O640L1+13WHM6ASwOL890SNJSe7J7VLJWJky5tn5Axg8nsyuOB48Vere7l+Zv+ivfo0BVdiyY0IKL06wLxnD6xuiA3pDHLZ982zgluhXd4nqSaSm/MPikydKGcwkRzkgDmVYSyd+BWy91X4GBLs+GWiHxDsad3B1zd+4+Nc3WbVI4aYNRvO/fXqZ1GtXoiMuoAzKtmF0UasA63CJM3eQJiiMl1P3Gd9FNyMiKF+BtB3wkSY+KmSmvGZvFBVmLjLhIoyDRsx3VsSuhy+foV8Bfml9YjwROdWMXtAJ5u5ngKTRXExnFvljIin+4EsHgOq+BzUb0K+PYfEkAMnE3z7bepxav46tOOiisD48PI19ZbmZiWB7ELydOCoFdxmc9UZEb6zFX9kr5yJz5QIR2kCAAePiiTamMSxBs2QDNZOIReGLoA0zWtCXfB6daMe5jL94qIgqb9jHYup9AvkSUKhUz8w/HbR7H64XeKh7pUSKW5piNGrgqNEG+O3AXXfOT86ZEr3v1ODUNHN5C3p9XfGOhGFHip6QUKq5UkKNf2PovOY3s2CSGSdsSBXIQIiACWGorKluArkYew+5wE4YKUwZbvIOsvSHyH2SI9ulBzlpdYtME+bX2xXcng3eDxxEw== mithro@mithis.com",
+)
+
 LLDPD_CONFIG = """config lldpd 'config'
 	# Announce on the physical jacks only (both port-name generations are
 	# listed; the init resolves the ones that exist on this device).
@@ -555,6 +572,7 @@ PRESERVED = json.loads({preserved!r})
 BASE = json.loads({base!r})
 PRESENCE = json.loads({presence!r})
 DEFAULTS = json.loads({defaults!r})
+ADMIN_KEYS = json.loads({admin_keys!r})
 PUCKS = {pucks!r}
 # Devices the templates attach to: the pucks + any site extras (the ten64 VM
 # at welland; monarto has none). The attach loop skips names that have not
@@ -632,6 +650,31 @@ pr, prcreated = Template.objects.update_or_create(
 pr.full_clean(); pr.save()
 print("ansells-presence:", "created" if prcreated else "updated", "id=", pr.id)
 
+# 'SSH Keys': OpenWISP's default template owning /etc/dropbear/authorized_keys
+# (created by ansible-openwisp2's load_initial_data.py with the controller's
+# generated key). Never created here -- without that key the controller loses
+# its own ssh access -- so its absence is fatal. Admin keys are appended,
+# never replacing what is there, mirroring the loader.
+AK_PATH = "/etc/dropbear/authorized_keys"
+skq = Template.objects.filter(default=True, config__contains=AK_PATH)
+if skq.count() != 1:
+    raise SystemExit("ERROR: expected exactly one default 'SSH Keys' template "
+                     "holding " + AK_PATH + ", found " + str(skq.count()))
+sk = skq.get()
+skchanged = False
+for f in sk.config["files"]:
+    if f["path"] != AK_PATH:
+        continue
+    lines = [l for l in f["contents"].splitlines() if l.strip()]
+    for k in ADMIN_KEYS:
+        if k not in lines:
+            lines.append(k); skchanged = True
+    f["contents"] = "\n".join(lines) + "\n"
+if skchanged:
+    sk.full_clean(); sk.save()
+print(sk.name + ":", "updated" if skchanged else "unchanged", "id=", sk.id,
+      "admin keys:", len(ADMIN_KEYS))
+
 attached = 0
 missing = []
 # netjsonconfig's evaluate_vars leaves the LITERAL '{{ mqtt_username }}' text
@@ -647,7 +690,10 @@ for name in DEVICES:
     except Device.DoesNotExist:
         missing.append(name); continue
     c, _ = Config.objects.get_or_create(device=d, defaults=dict(backend="netjsonconfig.OpenWrt"))
-    want = (b, tw) if name == "tenwrt" else (b, t, pr)
+    # sk (SSH Keys) is a default template, so normally attached at device
+    # creation -- asserted here because the base hook disables password
+    # auth only when the keys it delivers are present.
+    want = (b, tw, sk) if name == "tenwrt" else (b, t, pr, sk)
     for tpl in want:
         if tpl not in c.templates.all():
             c.templates.add(tpl)
@@ -706,6 +752,7 @@ def main(argv=None) -> int:
                                netjson_presence(cfg["mqtt_host"])),
                            defaults=json.dumps(
                                {**vals, "syslog_ip": cfg["syslog_ip"]}),
+                           admin_keys=json.dumps(list(ADMIN_SSH_PUBKEYS)),
                            pucks=cfg["pucks"],
                            extra=cfg["extra"],
                            render=cfg["render"])

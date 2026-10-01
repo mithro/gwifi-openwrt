@@ -78,7 +78,7 @@ def test_django_script_attaches_presence_to_pucks_not_tenwrt():
     but forgets to wire it into the attach tuple would still pass the two
     substring checks above while silently disabling the whole feature."""
     d = _load().DJANGO
-    assert "(b, t, pr)" in d
+    assert "(b, t, pr, sk)" in d
     assert "detached ansells-presence from tenwrt" in d
 
 
@@ -101,7 +101,8 @@ def test_django_format_still_works_with_presence_placeholder():
     mod = _load()
     rendered = mod.DJANGO.format(
         active="{}", tenwrt="{}", preserved="{}", base="{}",
-        defaults="{}", pucks=[], presence="{}", extra=[], render=[],
+        defaults="{}", admin_keys="[]", pucks=[], presence="{}", extra=[],
+        render=[],
     )
     assert "ansells-presence" in rendered
     # catch indentation/syntax errors locally instead of on the live wisp shell
