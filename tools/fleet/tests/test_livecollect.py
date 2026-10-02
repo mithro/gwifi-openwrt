@@ -78,8 +78,29 @@ def test_upstream_from_lldp_dumb_switch_returns_none():
     assert upstream_from_lldp(doc) is None
 
 
+def test_absent_main_2g4_is_fine():
+    """'ansells' on 2.4 GHz is per-site (welland dropped it 2026-10-02)."""
+    from galeflash.livecollect import check_wifi_complete
+    macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
+    five_only = {k: v for k, v in macs.items() if k != "wl-main-2g4"}
+    check_wifi_complete("puck12", five_only)  # no raise
+
+
+def test_merge_live_fields_drops_main_2g4_when_absent(tmp_path):
+    """Unlike mesh, an absent wl-main-2g4 means the BSS is gone: a stale
+    BSSID must not linger in the inventory."""
+    inv = tmp_path / "SER001.json"
+    inv.write_text(json.dumps({"serial_number": "SER001",
+                               "wifi_macs": {"wl-main-2g4": "old:mac",
+                                             "wl-main-5g": "old:mac5"}}))
+    merge_live_fields(tmp_path, "SER001", name="puck12", upstream=None,
+                      wifi_macs={"wl-main-5g": "42:07:0b:01:a2:24"})
+    data = json.loads(inv.read_text())
+    assert data["wifi_macs"] == {"wl-main-5g": "42:07:0b:01:a2:24"}
+
+
 def test_missing_wifi_interface_detected():
-    """A puck missing one of the 6 required AP interfaces must fail loud."""
+    """A puck missing one of the required AP interfaces must fail loud."""
     from galeflash.livecollect import check_wifi_complete
     macs = parse_iw_dev((FIXTURES / "puck12_iw_dev.txt").read_text())
     check_wifi_complete("puck12", macs)  # complete — no raise
