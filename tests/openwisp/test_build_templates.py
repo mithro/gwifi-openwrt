@@ -32,7 +32,7 @@ def _render(site):
     """Build the remote Django script for a site, with dummy passphrases."""
     cfg = bt.SITES[site]
     return bt.DJANGO.format(
-        active=json.dumps(bt.netjson_simple()),
+        active=json.dumps(bt.netjson_simple(cfg["main_2g4"])),
         tenwrt=json.dumps(bt.netjson_tenwrt_aps()),
         preserved=json.dumps(bt.netjson_mesh_aps()),
         base=json.dumps(bt.netjson_base()),
@@ -72,7 +72,7 @@ def test_both_sites_are_defined():
 
 def test_every_site_defines_every_key():
     keys = {"ten64", "wisp", "pucks", "extra", "syslog_ip", "mqtt_host",
-            "render"}
+            "render", "main_2g4"}
     for site, cfg in bt.SITES.items():
         assert set(cfg) == keys, f"{site} has {set(cfg) ^ keys} mismatched"
 
@@ -358,3 +358,42 @@ def test_fwcfg_peers_exceeds_stations():
 def test_fwcfg_is_mode_0644():
     for f in _fwcfg_files().values():
         assert f["mode"] == "0644"
+
+
+# ------------------------------------------------------------ regulatory
+
+def test_every_radio_declares_the_australian_regdomain():
+    # Without a country the pucks run the driver default (US): wrong channel
+    # set and power limits for where they are installed.
+    for build in (bt.netjson_simple, bt.netjson_tenwrt_aps):
+        radios = build()["radios"]
+        assert radios, build.__name__
+        assert [r.get("country") for r in radios] == ["AU"] * len(radios), \
+            build.__name__
+
+
+# ------------------------------------------------------- 'ansells' band plan
+
+def _ifnames(netjson):
+    return [i["name"] for i in netjson["interfaces"]]
+
+
+def test_welland_serves_ansells_on_5ghz_only():
+    assert bt.SITES["welland"]["main_2g4"] is False
+    names = _ifnames(bt.netjson_simple(bt.SITES["welland"]["main_2g4"]))
+    assert "wl-main-5g" in names
+    assert "wl-main-2g4" not in names
+
+
+def test_monarto_keeps_ansells_on_both_bands():
+    # 56% of monarto's 'ansells' associations were on 2.4 GHz (2026-10-02)
+    assert bt.SITES["monarto"]["main_2g4"] is True
+    names = _ifnames(bt.netjson_simple(bt.SITES["monarto"]["main_2g4"]))
+    assert {"wl-main-5g", "wl-main-2g4"} <= set(names)
+
+
+def test_dropping_main_2g4_leaves_iot_and_guest_on_both_bands():
+    # the IoT fleet lives on 2.4 GHz; only the 'ansells' BSS is band-limited
+    names = _ifnames(bt.netjson_simple(False))
+    assert names == ["wl-main-5g", "wl-iot-5g", "wl-iot-2g4",
+                     "wl-guest-5g", "wl-guest-2g4"]

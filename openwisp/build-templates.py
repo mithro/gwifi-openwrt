@@ -57,7 +57,8 @@ PRESENCE_DIR = Path(__file__).resolve().parent / "presence"
 
 # Per-site wiring. Everything that differs between the two deployments lives
 # here; the template *content* is identical at both sites by design (same
-# SSIDs, same AP layout), only the endpoints and rosters change.
+# SSIDs, same AP layout), only the endpoints and rosters change -- with the
+# one exception of main_2g4 below.
 #
 #   ten64        host holding the hostapd configs the passphrases come from
 #   wisp         the site's OpenWISP controller
@@ -67,6 +68,17 @@ PRESENCE_DIR = Path(__file__).resolve().parent / "presence"
 #   syslog_ip    the site router's wifi leg (rsyslog imudp 514/6666 binds it)
 #   mqtt_host    Home Assistant, for presence-detector
 #   render       devices to render for verification at the end
+#   main_2g4     whether the pucks serve 'ansells' on 2.4 GHz as well as 5 GHz.
+#                Measured from the puck syslog on 2026-10-02 (about two months
+#                of associations per site); no client at either site was seen
+#                on 2.4 GHz only.
+#                  welland  False: 8% of 'ansells' associations were on 2.4
+#                           GHz, a fifth of them at -39 dBm or stronger, i.e.
+#                           next to a puck and on the wrong band (a laptop
+#                           there lost 16-18% of pings at -32..-42 dBm).
+#                  monarto  True: 56% of associations and tens of hours per
+#                           phone are on 2.4 GHz -- the site depends on it.
+#                'ansells-iot' and 'ansells-guest' keep both bands everywhere.
 SITES = {
     "welland": dict(
         ten64="ten64.welland.mithis.com",
@@ -80,6 +92,7 @@ SITES = {
         syslog_ip="10.1.4.1",
         mqtt_host="ha.welland.mithis.com",
         render=["puck12", "tenwrt"],
+        main_2g4=False,
     ),
     "monarto": dict(
         ten64="ten64.monarto.mithis.com",
@@ -91,6 +104,7 @@ SITES = {
         syslog_ip="10.2.4.1",
         mqtt_host="ha.monarto.mithis.com",
         render=["puck13"],
+        main_2g4=True,
     ),
 }
 
@@ -150,6 +164,12 @@ def _wpa2(key):
     return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
 
 
+# Regulatory domain for every radio at both sites (South Australia). Without
+# it the pucks ran the driver default, US: found 2026-10-01 (`iw reg get` =
+# "country US: DFS-FCC", uci country unset), i.e. US channel set and power
+# limits (2.4 GHz reported 30 dBm; AU allows 20).
+COUNTRY = "AU"
+
 # Per-BSS tuning shared by the puck and tenwrt AP templates.
 STEER = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
 IOT = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
@@ -161,19 +181,28 @@ def _ap(name, radio, ssid, network, key, **extra):
         network=[network], encryption=_wpa2(key), **extra)}
 
 
-def netjson_simple():
+def netjson_simple(main_2g4=True):
     """Six-AP simple profile — must render to the same effective config
     puck_profile.py applies locally (psk2+ccmp everywhere; matching per-BSS
-    tuning) so agent applies converge instead of churning."""
+    tuning) so agent applies converge instead of churning.
+
+    main_2g4=False drops the 2.4 GHz 'ansells' BSS (five APs; see SITES).
+    The agent then DELETES wifi_wl_main_2g4 on the puck: openwisp-update-config
+    restores a dropped section from /etc/openwisp/stored only if the puck had
+    it before OpenWISP managed the file, and the backups hold just the
+    mesh-era ifaces (checked on all five welland pucks, 2026-10-02)."""
     radios = [
         {"name": "radio0", "driver": "mac80211", "protocol": "802.11n",
-         "channel": 6, "channel_width": 20},
+         "channel": 6, "channel_width": 20, "country": COUNTRY},
         {"name": "radio1", "driver": "mac80211", "protocol": "802.11ac",
-         "channel": 36, "channel_width": 80},
+         "channel": 36, "channel_width": 80, "country": COUNTRY},
     ]
-    return {"radios": radios, "interfaces": [
-        _ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
-        _ap("wl-main-2g4", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
+    main = [_ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}",
+                **STEER)]
+    if main_2g4:
+        main.append(_ap("wl-main-2g4", "radio0", SSID_MAIN, "roam",
+                        "{{ ansells_key }}", **STEER))
+    return {"radios": radios, "interfaces": main + [
         _ap("wl-iot-5g", "radio1", SSID_IOT, "iot", "{{ iot_key }}", **IOT),
         _ap("wl-iot-2g4", "radio0", SSID_IOT, "iot", "{{ iot_key }}",
             legacy_rates=True, **IOT),
@@ -191,7 +220,7 @@ def netjson_tenwrt_aps():
     channel 36 matches the fleet-wide 5 GHz roaming plan."""
     radios = [
         {"name": "radio0", "driver": "mac80211", "protocol": "802.11ax",
-         "channel": 36, "channel_width": 80},
+         "channel": 36, "channel_width": 80, "country": COUNTRY},
     ]
     return {"radios": radios, "interfaces": [
         _ap("wl-main-5g", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
@@ -764,7 +793,7 @@ def main(argv=None) -> int:
     print(f"site: {site}  ten64={cfg['ten64']}  wisp={cfg['wisp']}")
 
     vals = read_passphrases(site)
-    script = DJANGO.format(active=json.dumps(netjson_simple()),
+    script = DJANGO.format(active=json.dumps(netjson_simple(cfg["main_2g4"])),
                            tenwrt=json.dumps(netjson_tenwrt_aps()),
                            preserved=json.dumps(netjson_mesh_aps()),
                            base=json.dumps(netjson_base()),
