@@ -11,14 +11,20 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
-# The 6 AP interfaces every production gale puck runs (the openwisp-managed
+# The AP interfaces every production gale puck runs (the openwisp-managed
 # simple profile added wl-iot-5g, first seen live 2026-07-25 on puck03).
 # A live puck missing one of these is an error, not a gap to skip.
 REQUIRED_WIFI_IFACES: frozenset[str] = frozenset({
-    "wl-main-2g4", "wl-main-5g",
+    "wl-main-5g",
     "wl-guest-2g4", "wl-guest-5g",
     "wl-iot-2g4", "wl-iot-5g",
 })
+# Served at some sites only: 'ansells' on 2.4 GHz is a per-site choice
+# (openwisp/build-templates.py SITES[...]["main_2g4"]: monarto yes, welland no
+# since 2026-10-02).  Present = record, absent = fine -- and, unlike mesh
+# below, absent means the BSS really is gone, so a recorded BSSID is dropped
+# rather than kept.
+SITE_WIFI_IFACES: frozenset[str] = frozenset({"wl-main-2g4"})
 # Mesh is preserved-but-detached fleet-wide (simple profile): whether the
 # mesh interfaces exist depends on image vintage and reboot state (puck07
 # lost them on its 2026-07-25 reboot; puck03 has them).  Present = record,
@@ -93,7 +99,8 @@ def check_wifi_complete(puck: str, macs: dict[str, str]) -> None:
         raise ValueError(
             f"{puck}: missing wifi interface(s): {', '.join(sorted(missing))}"
         )
-    unexpected = set(macs) - REQUIRED_WIFI_IFACES - OPTIONAL_WIFI_IFACES
+    unexpected = (set(macs) - REQUIRED_WIFI_IFACES - SITE_WIFI_IFACES
+                  - OPTIONAL_WIFI_IFACES)
     if unexpected:
         raise ValueError(
             f"{puck}: unexpected wifi interface(s): {', '.join(sorted(unexpected))}"
