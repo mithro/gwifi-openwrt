@@ -55,7 +55,8 @@ def test_django_script_carries_keys_and_attaches_ssh_keys_template():
     script = mod.DJANGO.format(
         active="{}", tenwrt="{}", preserved="{}", base="{}", presence="{}",
         defaults="{}", admin_keys=json.dumps(list(mod.ADMIN_SSH_PUBKEYS)),
-        pucks=["puck99"], extra=[], render=[])
+        pucks=["puck99"], extra=[], render=[],
+        ft_test="{}", ft_test_devices=[])
     assert "/etc/dropbear/authorized_keys" in script
     assert "ADMIN_KEYS" in script
     # never creates the template: it must already hold OpenWISP's own key

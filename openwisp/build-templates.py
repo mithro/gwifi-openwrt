@@ -79,6 +79,9 @@ PRESENCE_DIR = Path(__file__).resolve().parent / "presence"
 #                  monarto  True: 56% of associations and tens of hours per
 #                           phone are on 2.4 GHz -- the site depends on it.
 #                'ansells-iot' and 'ansells-guest' keep both bands everywhere.
+#   ft_test      TEMPORARY: devices that also serve the 'ansells-ft' 802.11r
+#                proof SSID (netjson_ft_test). Empty = template exists but is
+#                attached to nothing.
 SITES = {
     "welland": dict(
         ten64="ten64.welland.mithis.com",
@@ -93,6 +96,9 @@ SITES = {
         mqtt_host="ha.welland.mithis.com",
         render=["puck12", "tenwrt"],
         main_2g4=False,
+        # puck06 + puck07 hear each other at -53/-54 dBm and are the pair the
+        # laptop bounces between.
+        ft_test=["puck06", "puck07"],
     ),
     "monarto": dict(
         ten64="ten64.monarto.mithis.com",
@@ -105,6 +111,7 @@ SITES = {
         mqtt_host="ha.monarto.mithis.com",
         render=["puck13"],
         main_2g4=True,
+        ft_test=[],
     ),
 }
 
@@ -121,6 +128,7 @@ def ssh_wisp(site):
     ]
 
 SSID_MAIN, SSID_IOT, SSID_GUEST = "ansells", "ansells-iot", "ansells-guest"
+SSID_FT_TEST = "ansells-ft"
 
 
 def parse_hostapd(text):
@@ -173,6 +181,19 @@ COUNTRY = "AU"
 # Per-BSS tuning shared by the puck and tenwrt AP templates.
 STEER = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
 IOT = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
+# 802.11r fast BSS transition. Why: a PMF client returning to a puck that
+# still holds its old association is answered with status 30 + SA Query, and
+# on the laptop (iwlwifi/wpa_supplicant) what follows is a failed 4-way
+# handshake and a 20 s outage (reproduced 2026-10-02 12:14:13 on puck06;
+# ~25 such events in 14 days). hostapd's check_sa_query() skips SA Query for
+# an FT reassociation, so an FT roam never enters that path.
+#   mobility_domain        one value fleet-wide, or FT only works within a puck
+#   ft_psk_generate_local  each AP derives PMK-R1 from the PSK itself: no
+#                          r0kh/r1kh lists, no AP-to-AP key exchange
+#   ft_over_ds False       over-the-air only; over-DS needs the APs to relay
+#                          action frames to each other across the wired side
+FT = {"ieee80211r": True, "mobility_domain": "a137",
+      "ft_psk_generate_local": True, "ft_over_ds": False}
 
 
 def _ap(name, radio, ssid, network, key, **extra):
@@ -210,6 +231,19 @@ def netjson_simple(main_2g4=True):
             isolate=True, **STEER),
         _ap("wl-guest-2g4", "radio0", SSID_GUEST, "guest", "{{ guest_key }}",
             isolate=True, **STEER),
+    ]}
+
+
+def netjson_ft_test():
+    """TEMPORARY proof layer: one extra 5 GHz BSS, 'ansells-ft' = 'ansells'
+    (same key, same roam VLAN, same tuning) plus 802.11r. Lets the laptop be
+    roamed between two pucks with FT while 'ansells' itself is untouched, and
+    gives a like-for-like control run on 'ansells' between the same pucks.
+    Delete this, SITES[...]["ft_test"] and the template once FT is on
+    'ansells' (or abandoned)."""
+    return {"interfaces": [
+        _ap("wl-ft-5g", "radio1", SSID_FT_TEST, "roam", "{{ ansells_key }}",
+            **STEER, **FT),
     ]}
 
 
@@ -620,6 +654,8 @@ TENWRT = json.loads({tenwrt!r})
 PRESERVED = json.loads({preserved!r})
 BASE = json.loads({base!r})
 PRESENCE = json.loads({presence!r})
+FT_TEST = json.loads({ft_test!r})
+FT_TEST_DEVICES = {ft_test_devices!r}
 DEFAULTS = json.loads({defaults!r})
 ADMIN_KEYS = json.loads({admin_keys!r})
 PUCKS = {pucks!r}
@@ -699,6 +735,21 @@ pr, prcreated = Template.objects.update_or_create(
 pr.full_clean(); pr.save()
 print("ansells-presence:", "created" if prcreated else "updated", "id=", pr.id)
 
+# TEMPORARY 802.11r proof SSID: attached to exactly FT_TEST_DEVICES, detached
+# from everything else, so emptying the per-site list takes the SSID down.
+ft, ftcreated = Template.objects.update_or_create(
+    organization=org, name="ansells-ft-test",
+    defaults=dict(type="generic", backend="netjsonconfig.OpenWrt",
+                  config=FT_TEST, default=False, default_values=DEFAULTS),
+)
+ft.full_clean(); ft.save()
+ftdetached = 0
+for c in Config.objects.filter(templates=ft):
+    if c.device.name not in FT_TEST_DEVICES:
+        c.templates.remove(ft); ftdetached += 1
+print("ansells-ft-test:", "created" if ftcreated else "updated", "id=", ft.id,
+      "wanted-on:", FT_TEST_DEVICES, "detached-from:", ftdetached)
+
 # 'SSH Keys': OpenWISP's default template owning /etc/dropbear/authorized_keys
 # (created by ansible-openwisp2's load_initial_data.py with the controller's
 # generated key). Never created here -- without that key the controller loses
@@ -743,6 +794,8 @@ for name in DEVICES:
     # creation -- asserted here because the base hook disables password
     # auth only when the keys it delivers are present.
     want = (b, tw, sk) if name == "tenwrt" else (b, t, pr, sk)
+    if name in FT_TEST_DEVICES:
+        want += (ft,)
     for tpl in want:
         if tpl not in c.templates.all():
             c.templates.add(tpl)
@@ -799,6 +852,8 @@ def main(argv=None) -> int:
                            base=json.dumps(netjson_base()),
                            presence=json.dumps(
                                netjson_presence(cfg["mqtt_host"])),
+                           ft_test=json.dumps(netjson_ft_test()),
+                           ft_test_devices=cfg["ft_test"],
                            defaults=json.dumps(
                                {**vals, "syslog_ip": cfg["syslog_ip"]}),
                            admin_keys=json.dumps(list(ADMIN_SSH_PUBKEYS)),

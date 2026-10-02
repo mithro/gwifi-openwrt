@@ -37,6 +37,8 @@ def _render(site):
         preserved=json.dumps(bt.netjson_mesh_aps()),
         base=json.dumps(bt.netjson_base()),
         presence=json.dumps(bt.netjson_presence(cfg["mqtt_host"])),
+        ft_test=json.dumps(bt.netjson_ft_test()),
+        ft_test_devices=cfg["ft_test"],
         defaults=json.dumps({"ansells_key": "x", "iot_key": "y",
                              "guest_key": "z",
                              "syslog_ip": cfg["syslog_ip"]}),
@@ -72,7 +74,7 @@ def test_both_sites_are_defined():
 
 def test_every_site_defines_every_key():
     keys = {"ten64", "wisp", "pucks", "extra", "syslog_ip", "mqtt_host",
-            "render", "main_2g4"}
+            "render", "main_2g4", "ft_test"}
     for site, cfg in bt.SITES.items():
         assert set(cfg) == keys, f"{site} has {set(cfg) ^ keys} mismatched"
 
@@ -397,3 +399,34 @@ def test_dropping_main_2g4_leaves_iot_and_guest_on_both_bands():
     names = _ifnames(bt.netjson_simple(False))
     assert names == ["wl-main-5g", "wl-iot-5g", "wl-iot-2g4",
                      "wl-guest-5g", "wl-guest-2g4"]
+
+
+# ----------------------------------------------- 802.11r proof SSID (temporary)
+
+def test_ft_test_ssid_is_ansells_plus_fast_transition():
+    (iface,) = bt.netjson_ft_test()["interfaces"]
+    w = iface["wireless"]
+    main = bt.netjson_simple()["interfaces"][0]["wireless"]
+    assert main["ssid"] == "ansells"
+    # same radio, VLAN, key and tuning as 'ansells': the only variable in the
+    # A/B is 802.11r
+    for k in ("radio", "network", "encryption", "ieee80211k", "bss_transition",
+              "ieee80211w"):
+        assert w[k] == main[k], k
+    assert w["ssid"] == "ansells-ft"
+    assert w["ieee80211r"] is True
+    assert w["ft_psk_generate_local"] is True
+    assert w["ft_over_ds"] is False
+    assert w["mobility_domain"] == "a137"
+
+
+def test_ft_test_devices_are_pucks_of_their_own_site():
+    for site, cfg in bt.SITES.items():
+        assert set(cfg["ft_test"]) <= set(cfg["pucks"]), site
+    assert bt.SITES["monarto"]["ft_test"] == []
+
+
+def test_ft_test_template_is_detached_from_devices_not_listed():
+    script = _render("welland")
+    assert "FT_TEST_DEVICES = ['puck06', 'puck07']" in script
+    assert "if c.device.name not in FT_TEST_DEVICES:" in script

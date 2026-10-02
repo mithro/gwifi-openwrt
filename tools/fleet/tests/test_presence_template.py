@@ -102,7 +102,7 @@ def test_django_format_still_works_with_presence_placeholder():
     rendered = mod.DJANGO.format(
         active="{}", tenwrt="{}", preserved="{}", base="{}",
         defaults="{}", admin_keys="[]", pucks=[], presence="{}", extra=[],
-        render=[],
+        render=[], ft_test="{}", ft_test_devices=[],
     )
     assert "ansells-presence" in rendered
     # catch indentation/syntax errors locally instead of on the live wisp shell
