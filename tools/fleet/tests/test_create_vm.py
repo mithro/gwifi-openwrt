@@ -286,6 +286,19 @@ def test_user_data_carries_no_password():
     assert "password" not in raw.lower()
 
 
+def test_user_data_installs_and_starts_the_guest_agent():
+    """The domain XML defines the org.qemu.guest_agent.0 channel, but nothing
+    listens on it unless the guest runs qemu-guest-agent. The genericcloud
+    image does not ship it; without it a VM whose ssh key is lost (wisp.monarto,
+    2026-10-01) is unreachable from the hypervisor. The unit is udev-triggered
+    by the virtio port, which has already appeared by the time cloud-init
+    installs the package, so it must be started explicitly."""
+    cv = _load()
+    ud = yaml.safe_load(cv.user_data(cv.SITES["monarto"], ssh_key="ssh-ed25519 AAAA test"))
+    assert "qemu-guest-agent" in ud["packages"]
+    assert ["systemctl", "start", "qemu-guest-agent"] in ud["runcmd"]
+
+
 def test_meta_data_instance_id_is_site_specific():
     cv = _load()
     md = yaml.safe_load(cv.meta_data(cv.SITES["monarto"]))
