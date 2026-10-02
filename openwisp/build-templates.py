@@ -97,8 +97,10 @@ SITES = {
         render=["puck12", "tenwrt"],
         main_2g4=False,
         # puck06 + puck07 hear each other at -53/-54 dBm and are the pair the
-        # laptop bounces between.
-        ft_test=["puck06", "puck07"],
+        # x1c laptop bounces between. puck12 + puck03 are the only two the
+        # tim-yoga laptop can see (it sits next to puck12, which hears puck06
+        # and puck07 at -88/-85 dBm), added 2026-10-03 so it can join.
+        ft_test=["puck03", "puck06", "puck07", "puck12"],
     ),
     "monarto": dict(
         ten64="ten64.monarto.mithis.com",

@@ -428,5 +428,6 @@ def test_ft_test_devices_are_pucks_of_their_own_site():
 
 def test_ft_test_template_is_detached_from_devices_not_listed():
     script = _render("welland")
-    assert "FT_TEST_DEVICES = ['puck06', 'puck07']" in script
+    assert ("FT_TEST_DEVICES = ['puck03', 'puck06', 'puck07', 'puck12']"
+            in script)
     assert "if c.device.name not in FT_TEST_DEVICES:" in script
