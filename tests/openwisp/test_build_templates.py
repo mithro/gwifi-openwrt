@@ -358,3 +358,15 @@ def test_fwcfg_peers_exceeds_stations():
 def test_fwcfg_is_mode_0644():
     for f in _fwcfg_files().values():
         assert f["mode"] == "0644"
+
+
+# ------------------------------------------------------------ regulatory
+
+def test_every_radio_declares_the_australian_regdomain():
+    # Without a country the pucks run the driver default (US): wrong channel
+    # set and power limits for where they are installed.
+    for build in (bt.netjson_simple, bt.netjson_tenwrt_aps):
+        radios = build()["radios"]
+        assert radios, build.__name__
+        assert [r.get("country") for r in radios] == ["AU"] * len(radios), \
+            build.__name__

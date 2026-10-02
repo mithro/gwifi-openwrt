@@ -150,6 +150,12 @@ def _wpa2(key):
     return {"protocol": "wpa2_personal", "cipher": "ccmp", "key": key}
 
 
+# Regulatory domain for every radio at both sites (South Australia). Without
+# it the pucks ran the driver default, US: found 2026-10-01 (`iw reg get` =
+# "country US: DFS-FCC", uci country unset), i.e. US channel set and power
+# limits (2.4 GHz reported 30 dBm; AU allows 20).
+COUNTRY = "AU"
+
 # Per-BSS tuning shared by the puck and tenwrt AP templates.
 STEER = {"ieee80211k": True, "bss_transition": True, "ieee80211w": "1"}
 IOT = {"dtim_period": 3, "disassoc_low_ack": False, "ieee80211w": "0"}
@@ -167,9 +173,9 @@ def netjson_simple():
     tuning) so agent applies converge instead of churning."""
     radios = [
         {"name": "radio0", "driver": "mac80211", "protocol": "802.11n",
-         "channel": 6, "channel_width": 20},
+         "channel": 6, "channel_width": 20, "country": COUNTRY},
         {"name": "radio1", "driver": "mac80211", "protocol": "802.11ac",
-         "channel": 36, "channel_width": 80},
+         "channel": 36, "channel_width": 80, "country": COUNTRY},
     ]
     return {"radios": radios, "interfaces": [
         _ap("wl-main-5g", "radio1", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
@@ -191,7 +197,7 @@ def netjson_tenwrt_aps():
     channel 36 matches the fleet-wide 5 GHz roaming plan."""
     radios = [
         {"name": "radio0", "driver": "mac80211", "protocol": "802.11ax",
-         "channel": 36, "channel_width": 80},
+         "channel": 36, "channel_width": 80, "country": COUNTRY},
     ]
     return {"radios": radios, "interfaces": [
         _ap("wl-main-5g", "radio0", SSID_MAIN, "roam", "{{ ansells_key }}", **STEER),
